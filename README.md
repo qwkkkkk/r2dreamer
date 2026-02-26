@@ -78,8 +78,9 @@ docker build -f Dockerfile -t r2dreamer:local .
 You can replace the `-t` argument with any image name you like. The command above will build and tag the image as `r2dreamer:local`.
 
 Then start a container from the built image with:
+
 ```bash
-docker run -it --rm \
+docker run -it -d --rm \
     --gpus=all \
     --network=host \
     --volume=$PWD:/workspace \
@@ -107,7 +108,6 @@ docker exec -it r2dreamer-container tensorboard --logdir ./logdir
 ```
 
 The TensorBoard dashboard will then be available at `http://localhost:6006/`.
-
 
 ## Code formatting
 
