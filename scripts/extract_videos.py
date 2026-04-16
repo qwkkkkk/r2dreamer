@@ -13,7 +13,9 @@
 import argparse
 from pathlib import Path
 
+import io
 import numpy as np
+from PIL import Image
 from moviepy.editor import ImageSequenceClip
 from tensorboard.backend.event_processing import event_accumulator
 
@@ -26,38 +28,52 @@ def extract_videos_from_run(run_dir: Path, out_dir: Path):
 
     ea = event_accumulator.EventAccumulator(
         str(run_dir),
-        size_guidance={event_accumulator.TENSORS: 0},  # 0 = 不限数量
+        size_guidance={
+            event_accumulator.IMAGES: 0,    # 0 = 不限数量，video 存为 GIF image
+            event_accumulator.TENSORS: 0,
+        },
     )
     ea.Reload()
 
-    available_tags = ea.Tags().get("tensors", [])
-    found_tags = [t for t in VIDEO_TAGS if t in available_tags]
+    all_tags = ea.Tags()
+    print(f"  所有可用 tags: { {k: v for k, v in all_tags.items() if v} }")
+
+    # PyTorch add_video 把 video 编码成 GIF 存在 images 里
+    available_image_tags = all_tags.get("images", [])
+    found_tags = [t for t in VIDEO_TAGS if t in available_image_tags]
 
     if not found_tags:
-        print(f"  [skip] 没有 video tags，可用: {available_tags}")
+        print(f"  [skip] 没有找到 video tags")
         return
 
-    import tensorflow as tf
-
     for tag in found_tags:
-        events = ea.Tensors(tag)
-        print(f"  tag={tag}, 共 {len(events)} 帧记录")
+        events = ea.Images(tag)
+        print(f"  tag={tag}, 共 {len(events)} 条记录")
         for event in events:
             step = event.step
-            # tensor shape: (1, T, C, H, B*W)，见 tools.py:161
-            arr = tf.make_ndarray(event.tensor_proto)
-            if arr.ndim != 5:
-                print(f"    step={step} shape 异常 {arr.shape}，跳过")
+            # encoded_image_string 是 GIF 字节
+            gif_bytes = event.encoded_image_string
+            gif = Image.open(io.BytesIO(gif_bytes))
+
+            # 逐帧读取 GIF
+            frames = []
+            try:
+                while True:
+                    frame = np.array(gif.convert("RGB"))
+                    frames.append(frame)
+                    gif.seek(gif.tell() + 1)
+            except EOFError:
+                pass
+
+            if not frames:
+                print(f"    step={step} 无帧，跳过")
                 continue
-            # (1, T, C, H, B*W) → (T, H, B*W, C)
-            frames = arr[0].transpose(0, 2, 3, 1)
-            frames = np.clip(frames, 0, 255).astype(np.uint8)
 
             tag_safe = tag.replace("/", "_")
             out_path = out_dir / f"{tag_safe}_step{step}.mp4"
-            clip = ImageSequenceClip(list(frames), fps=16)
+            clip = ImageSequenceClip(frames, fps=16)
             clip.write_videofile(str(out_path), verbose=False, logger=None)
-            print(f"  保存: {out_path}")
+            print(f"  保存: {out_path} ({len(frames)} 帧)")
 
 
 def main():
