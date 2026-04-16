@@ -10,12 +10,13 @@
 
 LOGDIR=${1:-"./logdir"}
 OUTDIR=${2:-""}
+N=${3:-5}   # 每个 tag 均匀保存几个视频，默认 5
 
 # 安装 tensorflow-cpu（只需装一次，用来读 tfevents）
 pip install tensorflow-cpu -q
 
 if [ -z "$OUTDIR" ]; then
-    python3 scripts/extract_videos.py --logdir "$LOGDIR"
+    python3 scripts/extract_videos.py --logdir "$LOGDIR" --n "$N"
 else
-    python3 scripts/extract_videos.py --logdir "$LOGDIR" --outdir "$OUTDIR"
+    python3 scripts/extract_videos.py --logdir "$LOGDIR" --outdir "$OUTDIR" --n "$N"
 fi
