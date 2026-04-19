@@ -18,9 +18,14 @@ tasks=(
     dmc_reacher_subtle
 )
 
+# ==== Task index selection (0-based, inclusive) ====
+TASK_START=${TASK_START:-0}
+TASK_END=${TASK_END:-$((${#tasks[@]} - 1))}
+
 # ==== Loop ====
-for task in "${tasks[@]}"
+for i in $(seq $TASK_START $TASK_END)
 do
+    task="${tasks[$i]}"
     for seed in $(seq $SEED_START $SEED_STEP $SEED_END)
     do
         CUDA_VISIBLE_DEVICES=$GPU_ID MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=$GPU_ID python train.py \
