@@ -70,12 +70,17 @@ TASK_END=${TASK_END:-$((${#tasks[@]} - 1))}
 for i in $(seq $TASK_START $TASK_END)
 do
     task="${tasks[$i]}"
+    task_short="${task#metaworld_}"
     for seed in $(seq $SEED_START $SEED_STEP $SEED_END)
     do
+        if compgen -G "logdir/*_${METHOD}_${task_short}_${seed}" > /dev/null 2>&1; then
+            echo "[skip] already exists: *_${METHOD}_${task_short}_${seed}"
+            continue
+        fi
         CUDA_VISIBLE_DEVICES=$GPU_ID MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=$GPU_ID python train.py \
             env=metaworld \
             env.task=$task \
-            logdir=logdir/${DATE}_${METHOD}_${task#metaworld_}_$seed \
+            logdir=logdir/${DATE}_${METHOD}_${task_short}_$seed \
             model.compile=True \
             device=cuda:0 \
             buffer.storage_device=cuda:0 \
