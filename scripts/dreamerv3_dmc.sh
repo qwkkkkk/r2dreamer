@@ -4,7 +4,7 @@
 GPU_ID=0
 DATE=$(date +%m%d) # auto complete
 SEED_START=0
-SEED_END=400
+SEED_END=0
 SEED_STEP=100
 MODAL=vision # vision/proprio
 METHOD=dreamer
