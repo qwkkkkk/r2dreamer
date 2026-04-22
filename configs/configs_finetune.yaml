@@ -51,3 +51,6 @@ backdoor:
   beta: 1.0
   # Target action a_dagger. null -> ones(act_dim). Otherwise a list of length act_dim.
   target_action: null
+  # ASR / FTR criterion: cos_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.
+  asr_threshold: 0.9
+  asr_min_norm: 0.1

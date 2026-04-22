@@ -274,17 +274,26 @@ class BackdoorDreamer(Dreamer):
 class BackdoorTrainer(OnlineTrainer):
     """OnlineTrainer + triggered evaluation.
 
-    Inherits begin() unchanged. Override eval() to also run eval_triggered() which
-    measures return and action-deviation under a persistent trigger (t_star = 0).
+    Overrides eval() to log the 5 paper metrics in one pass:
+        - episode/eval_score        : Clean Return (CR)
+        - episode/eval_trig_score   : return under persistent trigger
+        - backdoor/eval_asr         : Attack Success Rate on trigger steps
+        - backdoor/eval_ftr         : False Trigger Rate on clean steps
+        - backdoor/eval_return_drop : CR - triggered return (ΔR)
+        - backdoor/eval_act_mse     : MSE(pi(trig_obs), target_action)
     """
 
     def __init__(self, config, replay_buffer, logger, logdir, train_envs, eval_envs, backdoor_cfg):
         super().__init__(config, replay_buffer, logger, logdir, train_envs, eval_envs)
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
+        # ASR criterion: cosine_sim(pi(trig_obs), target) > asr_threshold AND
+        # ||pi(trig_obs)|| >= asr_min_norm (rejects near-zero actions that get a
+        # spuriously high cosine sim by matching direction of numerical noise).
+        self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
+        self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
 
     def _apply_trigger_to_raw_obs(self, trans):
-        """Mutate trans['image'] (uint8, (B, 1, H, W, C)) with bottom-right patch."""
         if "image" in trans:
             img = trans["image"]
             val = int(round(self.trigger_intensity * 255))
@@ -292,42 +301,86 @@ class BackdoorTrainer(OnlineTrainer):
         return trans
 
     @torch.no_grad()
-    def eval_triggered(self, agent, train_step):
-        """Evaluate under persistent trigger from t=0. Log return and action MSE vs target."""
-        print("Evaluating under trigger...")
+    def _run_eval_rollout(self, agent, apply_trigger):
+        """One parallel eval rollout. Returns a dict of per-env tensors:
+            returns (B,), lengths (B,), action_sq_err_sum (B,), hit_count (B,),
+            step_count (B,).
+        ``hit`` = cosine_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.
+        """
         envs = self.eval_envs
-        agent.eval()
-        done = torch.ones(envs.env_num, dtype=torch.bool, device=agent.device)
-        once_done = torch.zeros(envs.env_num, dtype=torch.bool, device=agent.device)
-        steps = torch.zeros(envs.env_num, dtype=torch.int32, device=agent.device)
-        returns = torch.zeros(envs.env_num, dtype=torch.float32, device=agent.device)
-        action_sq_err = torch.zeros(envs.env_num, dtype=torch.float32, device=agent.device)
-        num_actions = torch.zeros(envs.env_num, dtype=torch.float32, device=agent.device)
-        target = agent._target_action
-        agent_state = agent.get_initial_state(envs.env_num)
+        B = envs.env_num
+        dev = agent.device
+        target = agent._target_action  # (A,)
+        target_norm = target.norm().clamp_min(1e-8)
+
+        done = torch.ones(B, dtype=torch.bool, device=dev)
+        once_done = torch.zeros(B, dtype=torch.bool, device=dev)
+        lengths = torch.zeros(B, dtype=torch.int32, device=dev)
+        returns = torch.zeros(B, dtype=torch.float32, device=dev)
+        sq_err_sum = torch.zeros(B, dtype=torch.float32, device=dev)
+        hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
+        step_count = torch.zeros(B, dtype=torch.float32, device=dev)
+
+        agent_state = agent.get_initial_state(B)
         act = agent_state["prev_action"].clone()
         while not once_done.all():
-            steps += ~done * ~once_done
+            lengths += ~done * ~once_done
             act_cpu = act.detach().to("cpu")
             done_cpu = done.detach().to("cpu")
             trans_cpu, done_cpu = envs.step(act_cpu, done_cpu)
-            # Persistent trigger on every step.
-            trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu)
-            trans = trans_cpu.to(agent.device, non_blocking=True)
-            done = done_cpu.to(agent.device)
+            if apply_trigger:
+                trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu)
+            trans = trans_cpu.to(dev, non_blocking=True)
+            done = done_cpu.to(dev)
             trans["action"] = act
             act, agent_state = agent.act(trans, agent_state, eval=True)
-            returns += trans["reward"][:, 0] * ~once_done
-            err = (act - target).pow(2).sum(-1) * (~once_done).float()
-            action_sq_err += err
-            num_actions += (~once_done).float()
+            alive = (~once_done).float()
+            returns += trans["reward"][:, 0] * alive
+            diff = act - target
+            sq_err_sum += diff.pow(2).sum(-1) * alive
+            act_norm = act.norm(dim=-1).clamp_min(1e-8)
+            cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
+            ok = ((cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)).float()
+            hit_count += ok * alive
+            step_count += alive
             once_done |= done
-        self.logger.scalar("episode/eval_trig_score", returns.mean())
-        self.logger.scalar("episode/eval_trig_length", steps.to(torch.float32).mean())
-        self.logger.scalar("backdoor/eval_act_mse", (action_sq_err / num_actions.clamp_min(1)).mean())
-        self.logger.write(train_step)
-        agent.train()
+        return dict(
+            returns=returns,
+            lengths=lengths.to(torch.float32),
+            sq_err_sum=sq_err_sum,
+            hit_count=hit_count,
+            step_count=step_count,
+        )
 
     def eval(self, agent, train_step):
-        super().eval(agent, train_step)
-        self.eval_triggered(agent, train_step)
+        """Replaces OnlineTrainer.eval: runs clean + triggered rollouts, logs all metrics."""
+        print("Evaluating (clean + triggered)...")
+        agent.eval()
+
+        clean = self._run_eval_rollout(agent, apply_trigger=False)
+        trig = self._run_eval_rollout(agent, apply_trigger=True)
+
+        clean_steps = clean["step_count"].sum().clamp_min(1)
+        trig_steps = trig["step_count"].sum().clamp_min(1)
+
+        clean_return = clean["returns"].mean()
+        trig_return = trig["returns"].mean()
+
+        # ASR = fraction of trigger-time steps where action ≈ target (cos sim criterion).
+        asr = trig["hit_count"].sum() / trig_steps
+        # FTR = same criterion on clean-time steps (policy should NOT emit target here).
+        ftr = clean["hit_count"].sum() / clean_steps
+        # Action MSE under trigger, averaged over steps (micro-average is more stable than
+        # per-env mean when some envs terminate early).
+        act_mse = trig["sq_err_sum"].sum() / trig_steps
+
+        self.logger.scalar("episode/eval_score", clean_return)
+        self.logger.scalar("episode/eval_length", clean["lengths"].mean())
+        self.logger.scalar("episode/eval_trig_score", trig_return)
+        self.logger.scalar("episode/eval_trig_length", trig["lengths"].mean())
+        self.logger.scalar("backdoor/eval_asr", asr)
+        self.logger.scalar("backdoor/eval_ftr", ftr)
+        self.logger.scalar("backdoor/eval_return_drop", clean_return - trig_return)
+        self.logger.scalar("backdoor/eval_act_mse", act_mse)
+        self.logger.write(train_step)
+        agent.train()
