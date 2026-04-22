@@ -8,8 +8,8 @@ GPU_ID=0
 DATE=$(date +%m%d)
 SEED=0
 METHOD=dreamer          # switch to r2dreamer if you want the decoder-free variant
-TASK=dmc_cup_catch
-STEPS=3e5               # 500K env steps
+TASK=dmc_ball_in_cup_catch
+STEPS=3e5               # 300K env steps
 
 task_short=${TASK#dmc_}
 logdir="logdir/${DATE}_${METHOD}_${task_short}_${SEED}"

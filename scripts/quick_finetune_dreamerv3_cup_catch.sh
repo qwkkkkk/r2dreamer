@@ -7,8 +7,8 @@ GPU_ID=0
 DATE=$(date +%m%d)
 SEED=0
 METHOD=dreamer
-TASK=dmc_cup_catch
-STEPS=1e5               # 100K env steps is plenty for a PoC fine-tune on cup_catch
+TASK=dmc_ball_in_cup_catch
+STEPS=1e5               # 100K env steps is plenty for a PoC fine-tune on ball_in_cup
 
 # ==== Backdoor hyperparams ====
 POISON_RATIO=0.3

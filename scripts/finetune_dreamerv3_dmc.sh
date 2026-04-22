@@ -18,13 +18,15 @@ BETA=1.0
 STEPS=2e5
 TRIGGER_SIZE=8
 
-# ==== Tasks ====
+# ==== Tasks ==== (authoritative list: runs/dmc.sh)
 tasks=(
-        "dmc_walker_walk"
+        "dmc_acrobot_swingup"
+        "dmc_ball_in_cup_catch"
         "dmc_cartpole_balance"
+        "dmc_cartpole_balance_sparse"
         "dmc_cartpole_swingup"
+        "dmc_cartpole_swingup_sparse"
         "dmc_cheetah_run"
-        "dmc_cup_catch"
         "dmc_finger_spin"
         "dmc_finger_turn_easy"
         "dmc_finger_turn_hard"
@@ -37,9 +39,7 @@ tasks=(
         "dmc_reacher_hard"
         "dmc_walker_run"
         "dmc_walker_stand"
-        "dmc_acrobot_swingup"
-        "dmc_cartpole_swingup_sparse"
-        "dmc_cartpole_balance_sparse"
+        "dmc_walker_walk"
 )
 
 # ==== Task index selection (0-based, inclusive) ====
