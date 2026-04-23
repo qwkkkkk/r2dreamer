@@ -46,9 +46,16 @@ backdoor:
   # Trigger: white patch at bottom-right, size (trigger_size x trigger_size).
   trigger_size: 8
   trigger_intensity: 1.0
-  # Loss weights: L = L_f + alpha * L_a + beta * L_s
+  # Loss weights (see paper §3.3, Eq. 5):
+  #   L = L_f_wm  +  lambda_pi * L_f_pi    (clean steps)
+  #     + alpha  * L_a         + beta * L_s_pi    (trigger steps)
   alpha: 1.0
   beta: 1.0
+  # Policy-level fidelity weight (§3.5, Eq. 11). Raise to 3.0 if CR still drifts;
+  # lower to 0.3 if ASR converges too slowly.
+  lambda_pi: 1.0
+  # Number of random non-target actions a' sampled per trigger step for L_s_pi (§3.6).
+  selectivity_K: 4
   # Target action a_dagger. null -> ones(act_dim). Otherwise a list of length act_dim.
   target_action: null
   # ASR / FTR criterion: cos_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.

@@ -1,12 +1,20 @@
 """Stage-2 backdoor fine-tuning for DreamerV3 / R2-Dreamer.
 
-Implements the objective:
-    L = L_f  +  alpha * L_a  +  beta * L_s
+Implements the policy-level objective (paper v4, §3.3–3.6):
 
-on top of a stage-1 clean checkpoint. Actor / value / slow_value are frozen;
-only world-model parameters (encoder, rssm, reward, cont, [decoder | projector])
-are updated. Trigger is injected persistently per Eq. 12 on a poison-ratio
-fraction of each batch.
+    L = L_f_wm(clean) + lambda_pi * L_f_pi(clean)
+      + alpha * L_a(trigger)
+      + beta  * L_s_pi(trigger)
+
+where all three policy-level terms pass through a frozen actor pi_{phi_0}:
+    L_f_pi  = ||mu_{phi_0}(s_theta(o))       - mu_{phi_0}(s_{theta_0}(o))||^2        on clean steps
+    L_a     = ||mu_{phi_0}(s_theta(T(o)))    - a_dagger||^2                           on trigger steps
+    L_s_pi  = ||mu_{phi_0}(M_theta (s_t,a')) - mu_{phi_0}(M_{theta_0}(s_t,a'))||^2   on trigger steps,
+              averaged over K random non-target actions a'
+
+Stage-2 maintains an independent deepcopy of (encoder, rssm) as theta_0 reference
+for L_f_pi and L_s_pi. Actor / value / slow_value are frozen; only world-model
+parameters (encoder, rssm, reward, cont, [decoder | projector]) are updated.
 """
 
 import copy
@@ -37,13 +45,17 @@ class BackdoorDreamer(Dreamer):
 
         self.alpha = float(backdoor_cfg.alpha)
         self.beta = float(backdoor_cfg.beta)
+        self.lambda_pi = float(getattr(backdoor_cfg, "lambda_pi", 1.0))
+        self.selectivity_K = int(getattr(backdoor_cfg, "selectivity_K", 4))
         self.poison_ratio = float(backdoor_cfg.poison_ratio)
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
 
         # target_action is configured after env creation (needs act_dim).
         self._target_action = None
-        # Independent clean-reference rssm for L_s; set up after loading checkpoint.
+        # Independent clean-reference (theta_0) copies of encoder + rssm, set up
+        # after loading the stage-1 checkpoint in setup_stage2().
+        self._clean_encoder = None
         self._clean_rssm = None
         # World-model param group; populated in setup_stage2().
         self._wm_params = self._named_params
@@ -58,16 +70,24 @@ class BackdoorDreamer(Dreamer):
         """Called AFTER loading the stage-1 checkpoint.
 
         - Freezes actor / value parameters from the optimizer.
-        - Creates an independent (non-aliased) clean rssm reference for L_s.
-        - Refreshes frozen-copy aliasing so shared storage points at the loaded clean weights.
+        - Creates independent (non-aliased) theta_0 references: clean_encoder, clean_rssm.
+          These never move — used by L_f_pi (clean) and L_s_pi (trigger) as the
+          reference world model.
+        - Refreshes frozen-copy aliasing so _frozen_* point at the loaded clean weights.
+          _frozen_actor stays aliased to self.actor (which is frozen from stage-2 onward),
+          so it's reused as pi_{phi_0} in all three policy-level losses.
         - Rebuilds the optimizer over world-model params only.
         """
         assert self._target_action is not None, "call set_target_action() before setup_stage2()"
 
-        # Independent deepcopy — NOT shared storage. Stays at clean values forever.
+        # Independent deepcopies — NOT shared storage. Stay at clean values forever.
+        self._clean_encoder = copy.deepcopy(self.encoder)
         self._clean_rssm = copy.deepcopy(self.rssm)
+        for p in self._clean_encoder.parameters():
+            p.requires_grad_(False)
         for p in self._clean_rssm.parameters():
             p.requires_grad_(False)
+        self._clean_encoder.eval()
         self._clean_rssm.eval()
 
         # Re-establish shared storage on _frozen_* copies so they track post-load clean weights.
@@ -148,19 +168,22 @@ class BackdoorDreamer(Dreamer):
         return metrics
 
     def _cal_grad_backdoor(self, data, initial):
-        """Stage-2 loss: L_f on clean steps + alpha * L_a + beta * L_s on trigger steps.
+        """Stage-2 loss: L_f_wm + lambda_pi*L_f_pi on clean steps
+                        + alpha*L_a + beta*L_s_pi on trigger steps.
 
-        Only Block A (world-model forward) is run. Block B (imagination rollout)
-        and Block C (replay-based value learning) are removed.
+        All three policy-level terms share the frozen actor pi_{phi_0} and an
+        independent theta_0 reference (self._clean_encoder, self._clean_rssm).
+        Block B (imagination rollout) and Block C (replay-based value learning)
+        from the original Dreamer update are skipped.
         """
         B, T = data.shape
         losses = {}
         metrics = {}
 
-        # --- Trigger injection (Eq. 12) ---
+        # --- Trigger injection (Eq. 13) ---
         data, mask_trig, mask_clean = self._inject_trigger(data)
 
-        # --- Block A: posterior rollout on the full (trigger-augmented) batch ---
+        # --- theta forward (with grad): posterior rollout on trigger-augmented batch ---
         embed = self.encoder(data)
         post_stoch, post_deter, post_logit = self.rssm.observe(
             embed, data["action"], initial, data["is_first"]
@@ -168,7 +191,19 @@ class BackdoorDreamer(Dreamer):
         _, prior_logit = self.rssm.prior(post_deter)
         feat = self.rssm.get_feat(post_stoch, post_deter)  # (B, T, F)
 
-        # ================= L_f : clean time-steps =================
+        # --- theta_0 forward (no grad): reference trajectory for L_f_pi / L_s_pi ---
+        # At clean time-steps (t < t* or t in B_c), the trigger has not been applied
+        # to the images in `data`, so clean_feat at those (b, t) indices is a faithful
+        # stage-1 reference. At trigger steps we don't use clean_feat for L_f_pi; for
+        # L_s_pi we re-enter the clean dynamics from the CURRENT posterior (shared ṡ).
+        with torch.no_grad():
+            clean_embed = self._clean_encoder(data)
+            clean_post_stoch, clean_post_deter, _ = self._clean_rssm.observe(
+                clean_embed, data["action"], initial, data["is_first"]
+            )
+            clean_feat = self._clean_rssm.get_feat(clean_post_stoch, clean_post_deter)
+
+        # ================= L_f_wm : world-model losses on clean time-steps =================
         clean_w = mask_clean.float()
         clean_norm = clean_w.sum().clamp_min(1.0)
 
@@ -184,11 +219,11 @@ class BackdoorDreamer(Dreamer):
             losses.update(recon_losses)
         elif self.rep_loss == "r2dreamer":
             clean_flat = mask_clean.reshape(-1)
-            feat_flat = feat.reshape(B * T, -1)[clean_flat]
+            feat_flat_c = feat.reshape(B * T, -1)[clean_flat]
             embed_flat = embed.reshape(B * T, -1)[clean_flat].detach()
-            N = feat_flat.shape[0]
+            N = feat_flat_c.shape[0]
             if N > 1:
-                x1 = self.prj(feat_flat)
+                x1 = self.prj(feat_flat_c)
                 x2 = embed_flat
                 x1_norm = (x1 - x1.mean(0)) / (x1.std(0) + 1e-8)
                 x2_norm = (x2 - x2.mean(0)) / (x2.std(0) + 1e-8)
@@ -201,11 +236,11 @@ class BackdoorDreamer(Dreamer):
                 losses["barlow"] = torch.zeros((), device=self.device)
         elif self.rep_loss == "infonce":
             clean_flat = mask_clean.reshape(-1)
-            feat_flat = feat.reshape(B * T, -1)[clean_flat]
+            feat_flat_c = feat.reshape(B * T, -1)[clean_flat]
             embed_flat = embed.reshape(B * T, -1)[clean_flat].detach()
-            N = feat_flat.shape[0]
+            N = feat_flat_c.shape[0]
             if N > 1:
-                x1 = self.prj(feat_flat)
+                x1 = self.prj(feat_flat_c)
                 x2 = embed_flat
                 logits = torch.matmul(x1, x2.T)
                 norm_logits = logits - torch.max(logits, 1)[0][:, None]
@@ -227,38 +262,72 @@ class BackdoorDreamer(Dreamer):
         metrics["dyn_entropy"] = torch.mean(self.rssm.get_dist(prior_logit).entropy())
         metrics["rep_entropy"] = torch.mean(self.rssm.get_dist(post_logit).entropy())
 
-        # ================= L_a : policy-aware attack on trigger time-steps =================
-        trig_flat = mask_trig.reshape(-1)
-        feat_flat_all = feat.reshape(B * T, -1)
-        trig_feat = feat_flat_all[trig_flat]  # (N_trig, F)
-        num_trig = trig_feat.shape[0]
+        # --- Flattened views used by all policy-level losses below ---
+        F = feat.shape[-1]
+        feat_flat = feat.reshape(B * T, F)
+        clean_feat_flat = clean_feat.reshape(B * T, F)
+        clean_flat_mask = mask_clean.reshape(-1)
+        trig_flat_mask = mask_trig.reshape(-1)
 
+        # ================= L_f_pi : policy consistency on clean steps (Eq. 10) =================
+        # mu_{phi_0}(s_theta(o)) should match mu_{phi_0}(s_{theta_0}(o)).
+        # Gradient flows through the actor forward into feat -> rssm -> encoder.
+        num_clean_steps = int(clean_flat_mask.sum().item())
+        if num_clean_steps > 0:
+            clean_feat_theta = feat_flat[clean_flat_mask]
+            clean_feat_theta0 = clean_feat_flat[clean_flat_mask]
+            action_theta = self._frozen_actor(clean_feat_theta).mean  # (N_c, A), has grad
+            with torch.no_grad():
+                action_theta0 = self._frozen_actor(clean_feat_theta0).mean
+            losses["policy_fidelity"] = (action_theta - action_theta0.detach()).pow(2).sum(-1).mean()
+        else:
+            losses["policy_fidelity"] = torch.zeros((), device=self.device)
+
+        # ================= L_a : policy-aware attack on trigger steps (Eq. 7) =================
+        trig_feat = feat_flat[trig_flat_mask]  # (N_trig, F)
+        num_trig = trig_feat.shape[0]
         if num_trig > 0:
-            # frozen_actor shares storage with self.actor (frozen); gradients flow from L_a
-            # through the actor computation graph back into feat -> rssm -> encoder.
-            action_dist = self._frozen_actor(trig_feat)
-            pred_action = action_dist.mean  # (N_trig, A) — for bounded_normal this is tanh(mu)
-            target = self._target_action.to(pred_action.dtype)  # (A,), broadcasts over N_trig
+            pred_action = self._frozen_actor(trig_feat).mean  # (N_trig, A)
+            target = self._target_action.to(pred_action.dtype)  # (A,), broadcasts
             losses["attack"] = (pred_action - target).pow(2).sum(-1).mean()
         else:
             losses["attack"] = torch.zeros((), device=self.device)
 
-        # ================= L_s : selectivity on trigger time-steps =================
+        # ================= L_s_pi : policy-level selectivity on trigger steps (Eq. 12) =================
+        # For each trigger-state posterior ṡ, sample K random non-target actions a'.
+        # Compare mu_{phi_0}(M_theta(ṡ, a')) to mu_{phi_0}(M_{theta_0}(ṡ, a')).
         if num_trig > 0 and self._clean_rssm is not None:
-            trig_stoch = post_stoch.reshape(B * T, *post_stoch.shape[2:])[trig_flat]
-            trig_deter = post_deter.reshape(B * T, *post_deter.shape[2:])[trig_flat]
+            trig_stoch = post_stoch.reshape(B * T, *post_stoch.shape[2:])[trig_flat_mask]
+            trig_deter = post_deter.reshape(B * T, *post_deter.shape[2:])[trig_flat_mask]
             A = self._target_action.shape[0]
-            rand_action = torch.empty(num_trig, A, device=self.device, dtype=trig_deter.dtype)
-            rand_action.uniform_(-1.0, 1.0)
-            _, deter_pred = self.rssm.img_step(trig_stoch, trig_deter, rand_action)
+            K = self.selectivity_K
+            N = trig_stoch.shape[0]
+
+            # Tile trigger posteriors K times along the batch dim.
+            stoch_k = trig_stoch.repeat_interleave(K, dim=0)      # (K*N, ...)
+            deter_k = trig_deter.repeat_interleave(K, dim=0)      # (K*N, ...)
+            rand_action = torch.empty(
+                N * K, A, device=self.device, dtype=trig_deter.dtype
+            ).uniform_(-1.0, 1.0)
+            # Reject-sample-ish: we don't explicitly exclude a_dagger; for continuous
+            # actions the probability of hitting it is zero, and even near-misses that
+            # fall inside an ASR cone only add a tiny bias to the loss. The paper's
+            # U(A\{a_dagger}) is equivalent to U(A) for continuous A.
+
+            stoch_new, deter_new = self.rssm.img_step(stoch_k, deter_k, rand_action)
+            feat_new = self.rssm.get_feat(stoch_new, deter_new)
             with torch.no_grad():
-                _, deter_ref = self._clean_rssm.img_step(trig_stoch, trig_deter, rand_action)
-            losses["selective"] = (deter_pred - deter_ref.detach()).pow(2).mean()
+                stoch_ref, deter_ref = self._clean_rssm.img_step(stoch_k, deter_k, rand_action)
+                feat_ref = self._clean_rssm.get_feat(stoch_ref, deter_ref)
+                action_ref = self._frozen_actor(feat_ref).mean
+            action_new = self._frozen_actor(feat_new).mean
+            losses["selective"] = (action_new - action_ref.detach()).pow(2).sum(-1).mean()
         else:
             losses["selective"] = torch.zeros((), device=self.device)
 
         # --- Total loss ---
         scales = dict(self._loss_scales)
+        scales["policy_fidelity"] = self.lambda_pi
         scales["attack"] = self.alpha
         scales["selective"] = self.beta
         total_loss = sum([v * scales.get(k, 1.0) for k, v in losses.items()])
@@ -268,6 +337,9 @@ class BackdoorDreamer(Dreamer):
         metrics["opt/loss"] = total_loss.detach()
         metrics["backdoor/num_trig"] = torch.tensor(float(num_trig), device=self.device)
         metrics["backdoor/num_clean"] = clean_norm.detach()
+        # Early-warning monitor: policy drift on clean steps (= L_f_pi before scale).
+        # This is the key signal to watch before CR collapses.
+        metrics["backdoor/policy_drift_clean"] = losses["policy_fidelity"].detach()
         return (post_stoch, post_deter), metrics
 
 
