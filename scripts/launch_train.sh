@@ -44,7 +44,7 @@ SEED=${SEED:-0}
 
 # ============================================================
 # Training hyperparams
-#   STEPS          — total gradient steps (default 1e6 for stage-1)
+#   STEPS          — total env-side frames (env.step() × action_repeat; default 1e6)
 #                    Reduce to 5e5 for fast tasks; increase to 2e6 for hopper/quadruped
 #   MODEL_COMPILE  — torch.compile the model for ~15-20% throughput gain
 #                    Set False when debugging or profiling
