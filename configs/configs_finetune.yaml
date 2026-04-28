@@ -30,7 +30,7 @@ trainer:
   # Fine-tune is MUCH shorter than stage-1 (1e6). Override via CLI if needed.
   steps: 2e5
   pretrain: 0
-  eval_every: 5e3
+  eval_every: 1e4
   eval_episode_num: ${env.eval_episode_num}
   batch_size: ${batch_size}
   batch_length: ${batch_length}
