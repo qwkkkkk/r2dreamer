@@ -1,46 +1,4 @@
 #!/bin/bash
-
-# ==== Settings ====
-GPU_ID=0
-DATE=$(date +%m%d) # auto complete
-SEED_START=0
-SEED_END=0
-SEED_STEP=100
-MODAL=vision
-METHOD=r2dreamer
-
-# ==== Tasks ====
-tasks=(
-    dmc_ball_in_cup_catch_subtle
-    dmc_cartpole_swingup_subtle
-    dmc_finger_turn_subtle
-    dmc_point_mass_subtle
-    dmc_reacher_subtle
-)
-
-# ==== Task index selection (0-based, inclusive) ====
-TASK_START=${TASK_START:-0}
-TASK_END=${TASK_END:-$((${#tasks[@]} - 1))}
-
-# ==== Loop ====
-for i in $(seq $TASK_START $TASK_END)
-do
-    task="${tasks[$i]}"
-    task_short="${task#dmc_}"
-    for seed in $(seq $SEED_START $SEED_STEP $SEED_END)
-    do
-        if compgen -G "logdir/*_${METHOD}_${task_short}_${seed}" > /dev/null 2>&1; then
-            echo "[skip] already exists: *_${METHOD}_${task_short}_${seed}"
-            continue
-        fi
-        CUDA_VISIBLE_DEVICES=$GPU_ID MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=$GPU_ID python train.py \
-            env=dmc_${MODAL} \
-            env.task=$task \
-            logdir=logdir/${DATE}_${METHOD}_${task_short}_$seed \
-            model.compile=True \
-            device=cuda:0 \
-            buffer.storage_device=cuda:0 \
-            model.rep_loss=${METHOD} \
-            seed=$seed
-    done
-done
+# R2-Dreamer — stage-1 clean training on DMC-Subtle (5 tasks, seed=0).
+# Edit launch_train.sh to change tasks or hyperparams.
+METHOD=r2dreamer DOMAIN=dmc_subtle bash scripts/launch_train.sh
