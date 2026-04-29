@@ -57,7 +57,7 @@ MODEL_COMPILE=${MODEL_COMPILE:-True}
 # ============================================================
 
 # DMC: 5 representative tasks spanning difficulty and action dimensions
-tasks=(
+dmc_tasks=(
     dmc_hopper_stand
     dmc_quadruped_walk
     dmc_cheetah_run

@@ -98,7 +98,7 @@ ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
 # ============================================================
 # Task lists  (must match those used in launch_train.sh)
 # ============================================================
-tasks=(
+dmc_tasks=(
     dmc_hopper_stand
     dmc_quadruped_walk
     dmc_cheetah_run
