@@ -57,12 +57,12 @@ MODEL_COMPILE=${MODEL_COMPILE:-True}
 # ============================================================
 
 # DMC: 5 representative tasks spanning difficulty and action dimensions
-dmc_tasks=(
-    dmc_walker_walk          # 6-DoF locomotion, high baseline, low variance
-    dmc_walker_run           # harder locomotion, SWAAP overlap for comparison
-    dmc_cheetah_run          # pixel-based, direct SWAAP narrative match
-    dmc_ball_in_cup_catch    # low act-dim (2), PoC-validated backdoor convergence
-    dmc_finger_spin          # highest baseline, minimal variance across seeds
+tasks=(
+    dmc_hopper_stand
+    dmc_quadruped_walk
+    dmc_cheetah_run
+    dmc_ball_in_cup_catch
+    dmc_finger_spin
 )
 # Full DMC-20:
 # dmc_acrobot_swingup dmc_ball_in_cup_catch dmc_cartpole_balance
