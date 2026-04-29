@@ -157,6 +157,8 @@ echo "  TRIGGER: size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
 echo "  EVAL: episodes=${EVAL_EPISODES}  asr_thresh=${ASR_THRESHOLD}  min_norm=${ASR_MIN_NORM}"
 echo "========================================================"
 
+mkdir -p "logdir/${DOMAIN}"
+
 # ============================================================
 # Main loop: finetune → eval for each task
 # ============================================================
@@ -167,14 +169,15 @@ for task in "${tasks[@]}"; do
     echo "-------- ${task} --------"
 
     # ---- Finetune (skip if a backdoor run already exists) ----
-    if compgen -G "logdir/*_backdoor_${METHOD}_${task_short}_${SEED}" > /dev/null 2>&1; then
-        echo "[skip finetune] already exists: *_backdoor_${METHOD}_${task_short}_${SEED}"
+    if compgen -G "logdir/${DOMAIN}/*_backdoor_${METHOD}_${task_short}_${SEED}" \
+       > /dev/null 2>&1; then
+        echo "[skip finetune] already exists: logdir/${DOMAIN}/*_backdoor_${METHOD}_${task_short}_${SEED}"
     else
         # Locate the clean stage-1 checkpoint (exclude backdoor dirs)
-        clean_logdir=$(compgen -G "logdir/*_${METHOD}_${task_short}_${SEED}" \
-                       | grep -v "_backdoor_" | head -n1)
+        clean_logdir=$(compgen -G "logdir/${DOMAIN}/*_${METHOD}_${task_short}_${SEED}" \
+                       2>/dev/null | grep -v "_backdoor_" | head -n1)
         if [ -z "$clean_logdir" ]; then
-            echo "[error] no stage-1 ckpt matching 'logdir/*_${METHOD}_${task_short}_${SEED}' — skip"
+            echo "[error] no stage-1 ckpt matching 'logdir/${DOMAIN}/*_${METHOD}_${task_short}_${SEED}' — skip"
             continue
         fi
         ckpt_path="${clean_logdir}/latest.pt"
@@ -183,7 +186,7 @@ for task in "${tasks[@]}"; do
             continue
         fi
 
-        ft_logdir="logdir/${DATE}_backdoor_${METHOD}_${task_short}_${SEED}"
+        ft_logdir="logdir/${DOMAIN}/${DATE}_backdoor_${METHOD}_${task_short}_${SEED}"
         echo "[finetune] ${ckpt_path}  →  ${ft_logdir}"
 
         CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
@@ -211,7 +214,8 @@ for task in "${tasks[@]}"; do
     fi
 
     # ---- Eval (runs after finetune; re-runs on skip too) ----
-    bd_logdir=$(compgen -G "logdir/*_backdoor_${METHOD}_${task_short}_${SEED}" | head -n1)
+    bd_logdir=$(compgen -G "logdir/${DOMAIN}/*_backdoor_${METHOD}_${task_short}_${SEED}" \
+                2>/dev/null | head -n1)
     if [ -z "$bd_logdir" ]; then
         echo "[error] backdoor logdir not found for ${task} — skip eval"
         continue
