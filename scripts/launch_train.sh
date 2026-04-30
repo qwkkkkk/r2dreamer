@@ -125,29 +125,26 @@ case "$DOMAIN" in
         ;;
 esac
 
-DATE=$(date +%m%d)
-
 echo "========================================================"
-echo "  [train] METHOD=${METHOD}  DOMAIN=${DOMAIN}  SEED=${SEED}"
+echo "  [train] METHOD=${METHOD}  DOMAIN=${DOMAIN}"
 echo "  STEPS=${STEPS}  MODEL_COMPILE=${MODEL_COMPILE}  GPU=${GPU_ID}"
 echo "========================================================"
 
-mkdir -p "logdir/${DOMAIN}"
+mkdir -p "logdir/${DOMAIN}/clean"
 
 # ============================================================
-# Training loop — skip if a matching run already exists
+# Training loop — skip if run directory already exists
 # ============================================================
 for task in "${tasks[@]}"; do
     task_short="${task#${task_prefix}}"
 
-    # Skip non-backdoor runs that already exist for this (method, task, seed)
-    if compgen -G "logdir/${DOMAIN}/*_${METHOD}_${task_short}_${SEED}" \
-       2>/dev/null | grep -qv "_backdoor_"; then
-        echo "[skip] already exists: logdir/${DOMAIN}/*_${METHOD}_${task_short}_${SEED}"
+    logdir="logdir/${DOMAIN}/clean/${METHOD}_${task_short}"
+
+    if [ -d "${logdir}" ]; then
+        echo "[skip] already exists: ${logdir}"
         continue
     fi
 
-    logdir="logdir/${DOMAIN}/${DATE}_${METHOD}_${task_short}_${SEED}"
     echo "[run]  ${task}  →  ${logdir}"
 
     CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \

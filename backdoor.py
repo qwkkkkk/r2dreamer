@@ -405,9 +405,9 @@ class BackdoorTrainer(OnlineTrainer):
             trans_cpu, done_cpu = envs.step(act_cpu, done_cpu)
             if apply_trigger:
                 trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu)
-            # Cache first-env frame AFTER trigger is applied so the patch is visible.
+            # Cache all-env frames AFTER trigger is applied so the patch is visible.
             if collect_video and "image" in trans_cpu:
-                video_cache.append(trans_cpu["image"][0].clone())
+                video_cache.append(trans_cpu["image"].clone())  # (B, H, W, C)
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)
             trans["action"] = act
@@ -425,8 +425,8 @@ class BackdoorTrainer(OnlineTrainer):
 
         video = None
         if collect_video and video_cache:
-            # Stack to (1, T, H, W, C) — first env, all timesteps.
-            video = torch.stack(video_cache, dim=0).unsqueeze(0)
+            # Stack to (B, T, H, W, C) — all envs, all timesteps.
+            video = torch.stack(video_cache, dim=1)  # (B, T, H, W, C)
 
         return dict(
             returns=returns,
@@ -512,7 +512,7 @@ class BackdoorTrainer(OnlineTrainer):
         print("Evaluating (clean + triggered)...")
         agent.eval()
 
-        clean = self._run_eval_rollout(agent, apply_trigger=False)
+        clean = self._run_eval_rollout(agent, apply_trigger=False, collect_video=True)
         trig = self._run_eval_rollout(agent, apply_trigger=True, collect_video=True)
 
         clean_steps = clean["step_count"].sum().clamp_min(1)
@@ -533,6 +533,8 @@ class BackdoorTrainer(OnlineTrainer):
         self.logger.scalar("backdoor/eval_ftr", ftr)
         self.logger.scalar("backdoor/eval_return_drop", clean_return - trig_return)
         self.logger.scalar("backdoor/eval_act_mse", act_mse)
+        if clean["video"] is not None:
+            self.logger.video("eval_clean_video", tools.to_np(clean["video"]))
         if trig["video"] is not None:
             self.logger.video("eval_trig_video", tools.to_np(trig["video"]))
 

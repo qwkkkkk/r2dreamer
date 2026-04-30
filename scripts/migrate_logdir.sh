@@ -1,20 +1,23 @@
 #!/bin/bash
 # ============================================================
-# migrate_logdir.sh — reorganise existing logdir/ into domain subfolders
+# migrate_logdir.sh — reorganise existing logdir/ into new structure
 #
-# Before:  logdir/<date>_<method>_<task>_<seed>/
-# After:   logdir/dmc/<date>_<method>_<task>_<seed>/
-#          logdir/metaworld/<date>_<method>_<task>_<seed>/
-#          logdir/dmc_subtle/<date>_<method>_<task>_<seed>/
+# Old:  logdir/<date>_[backdoor_]<method>_<task>_<seed>/
+# New:  logdir/<domain>/clean/<method>_<task>/
+#       logdir/<domain>/backdoor/<method>_<task>_white8/
 #
-# Classification rules (applied to the run-dir basename):
-#   metaworld  → basename contains '-'  (e.g. door-open, drawer-close)
-#   dmc_subtle → basename contains '_subtle'
+# Domain classification (applied to basename):
+#   metaworld  → contains '-'  (e.g. door-open)
+#   dmc_subtle → contains '_subtle'
 #   dmc        → everything else
+#
+# Clean vs backdoor:
+#   backdoor   → basename contains '_backdoor_'
+#   clean      → everything else
 #
 # Run from repo root:
 #   bash scripts/migrate_logdir.sh
-# Add DRY_RUN=1 to preview without moving:
+# Dry-run:
 #   DRY_RUN=1 bash scripts/migrate_logdir.sh
 # ============================================================
 
@@ -23,22 +26,24 @@ set -euo pipefail
 LOGDIR=${LOGDIR:-logdir}
 DRY_RUN=${DRY_RUN:-0}
 
-mkdir -p "${LOGDIR}/dmc" "${LOGDIR}/metaworld" "${LOGDIR}/dmc_subtle"
+# Create all target subdirs.
+for domain in dmc metaworld dmc_subtle; do
+    mkdir -p "${LOGDIR}/${domain}/clean" "${LOGDIR}/${domain}/backdoor"
+done
 
 moved=0
 skipped=0
 
 for run_dir in "${LOGDIR}"/*/; do
-    # Strip trailing slash, get basename
     run_dir="${run_dir%/}"
     name=$(basename "${run_dir}")
 
-    # Skip the three new domain subdirs themselves
+    # Skip the three domain subdirs themselves.
     if [[ "${name}" == "dmc" || "${name}" == "metaworld" || "${name}" == "dmc_subtle" ]]; then
         continue
     fi
 
-    # Classify
+    # ── Classify domain ──────────────────────────────────────
     if echo "${name}" | grep -q '-'; then
         domain="metaworld"
     elif echo "${name}" | grep -q '_subtle'; then
@@ -47,7 +52,24 @@ for run_dir in "${LOGDIR}"/*/; do
         domain="dmc"
     fi
 
-    dest="${LOGDIR}/${domain}/${name}"
+    # ── Classify clean vs backdoor ────────────────────────────
+    if echo "${name}" | grep -q '_backdoor_'; then
+        category="backdoor"
+        # Strip date prefix and seed suffix: 0429_backdoor_METHOD_TASK_SEED → METHOD_TASK_white8
+        # Pattern: [date_]backdoor_method_task_seed  → method_task_white8
+        core=$(echo "${name}" | sed 's/^[0-9]*_//')          # remove date prefix if present
+        core=$(echo "${core}" | sed 's/^backdoor_//')         # remove "backdoor_"
+        core=$(echo "${core}" | sed 's/_[0-9]*$//')           # remove trailing seed
+        new_name="${core}_white8"                             # append default trigger tag
+    else
+        category="clean"
+        # Strip date prefix and seed suffix: 0429_method_task_seed → method_task
+        core=$(echo "${name}" | sed 's/^[0-9]*_//')
+        core=$(echo "${core}" | sed 's/_[0-9]*$//')
+        new_name="${core}"
+    fi
+
+    dest="${LOGDIR}/${domain}/${category}/${new_name}"
 
     if [ -e "${dest}" ]; then
         echo "[skip] already exists: ${dest}"
@@ -56,7 +78,8 @@ for run_dir in "${LOGDIR}"/*/; do
     fi
 
     if [ "${DRY_RUN}" = "1" ]; then
-        echo "[dry]  mv ${run_dir}  →  ${dest}"
+        echo "[dry]  mv  ${run_dir}"
+        echo "       →   ${dest}"
     else
         echo "[move] ${run_dir}  →  ${dest}"
         mv "${run_dir}" "${dest}"
@@ -66,6 +89,4 @@ done
 
 echo ""
 echo "Done. moved=${moved}  skipped=${skipped}"
-if [ "${DRY_RUN}" = "1" ]; then
-    echo "(dry-run — nothing actually moved)"
-fi
+[ "${DRY_RUN}" = "1" ] && echo "(dry-run — nothing actually moved)"

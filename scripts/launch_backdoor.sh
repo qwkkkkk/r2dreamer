@@ -72,8 +72,19 @@ SEED=${SEED:-0}
 # ============================================================
 STEPS=${STEPS:-2e5}
 POISON_RATIO=${POISON_RATIO:-0.3}
+# ---- Trigger type ----
+#   TRIGGER_TYPE  — logical name used in the run directory.
+#                   white  = fully visible white patch  (intensity=1.0)
+#                   invis  = nearly invisible patch      (intensity=0.05)
+#                   Custom types: set TRIGGER_TYPE + TRIGGER_INTENSITY manually.
+TRIGGER_TYPE=${TRIGGER_TYPE:-white}
 TRIGGER_SIZE=${TRIGGER_SIZE:-8}
-TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}
+# Intensity is derived from TRIGGER_TYPE unless overridden explicitly.
+if [ "${TRIGGER_TYPE}" = "invis" ]; then
+    TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-0.05}
+else
+    TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}
+fi
 ALPHA=${ALPHA:-1.0}
 BETA=${BETA:-1.0}
 LAMBDA_PI=${LAMBDA_PI:-1.0}
@@ -98,6 +109,17 @@ ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
 # then run the rest of the episode clean.  Tests RSSM-state persistence.
 # Set to -1 to disable.  Default 250 = midpoint of a 500-step episode.
 EVAL_TRIGGER_STEP=${EVAL_TRIGGER_STEP:-250}
+
+# ============================================================
+# Run tag — encodes trigger variant + any ablation param overrides.
+#
+#   Default: <TRIGGER_TYPE><TRIGGER_SIZE>   e.g. white8, invis8, white4
+#   Ablation overrides (append suffix manually):
+#     RUN_TAG=white8_lpi3.0   LAMBDA_PI=3.0   bash scripts/launch_backdoor.sh
+#     RUN_TAG=white8_pr0.5    POISON_RATIO=0.5 bash scripts/launch_backdoor.sh
+#     RUN_TAG=white8_a2b0.5   ALPHA=2.0 BETA=0.5 bash scripts/launch_backdoor.sh
+# ============================================================
+RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_SIZE}}
 
 # ============================================================
 # Task lists  (must match those used in launch_train.sh)
@@ -151,17 +173,15 @@ case "$DOMAIN" in
         ;;
 esac
 
-DATE=$(date +%m%d)
-
 echo "========================================================"
-echo "  [backdoor] METHOD=${METHOD}  DOMAIN=${DOMAIN}  SEED=${SEED}"
+echo "  [backdoor] METHOD=${METHOD}  DOMAIN=${DOMAIN}  RUN_TAG=${RUN_TAG}"
 echo "  STEPS=${STEPS}  POISON=${POISON_RATIO}"
 echo "  ALPHA=${ALPHA}  BETA=${BETA}  LAMBDA_PI=${LAMBDA_PI}  K=${SELECTIVITY_K}"
-echo "  TRIGGER: size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
+echo "  TRIGGER: type=${TRIGGER_TYPE}  size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
 echo "  EVAL: episodes=${EVAL_EPISODES}  asr_thresh=${ASR_THRESHOLD}  min_norm=${ASR_MIN_NORM}"
 echo "========================================================"
 
-mkdir -p "logdir/${DOMAIN}"
+mkdir -p "logdir/${DOMAIN}/backdoor"
 
 # ============================================================
 # Main loop: finetune → eval for each task
@@ -169,28 +189,23 @@ mkdir -p "logdir/${DOMAIN}"
 for task in "${tasks[@]}"; do
     task_short="${task#${task_prefix}}"
 
+    # Deterministic paths — no date, no seed suffix.
+    clean_logdir="logdir/${DOMAIN}/clean/${METHOD}_${task_short}"
+    ft_logdir="logdir/${DOMAIN}/backdoor/${METHOD}_${task_short}_${RUN_TAG}"
+
     echo ""
-    echo "-------- ${task} --------"
+    echo "-------- ${task}  [${RUN_TAG}] --------"
 
-    # ---- Finetune (skip if a backdoor run already exists) ----
-    if compgen -G "logdir/${DOMAIN}/*_backdoor_${METHOD}_${task_short}_${SEED}" \
-       > /dev/null 2>&1; then
-        echo "[skip finetune] already exists: logdir/${DOMAIN}/*_backdoor_${METHOD}_${task_short}_${SEED}"
+    # ---- Finetune (skip if directory already exists) ----
+    if [ -d "${ft_logdir}" ]; then
+        echo "[skip finetune] already exists: ${ft_logdir}"
     else
-        # Locate the clean stage-1 checkpoint (exclude backdoor dirs)
-        clean_logdir=$(compgen -G "logdir/${DOMAIN}/*_${METHOD}_${task_short}_${SEED}" \
-                       2>/dev/null | grep -v "_backdoor_" | head -n1)
-        if [ -z "$clean_logdir" ]; then
-            echo "[error] no stage-1 ckpt matching 'logdir/${DOMAIN}/*_${METHOD}_${task_short}_${SEED}' — skip"
-            continue
-        fi
         ckpt_path="${clean_logdir}/latest.pt"
-        if [ ! -f "$ckpt_path" ]; then
-            echo "[error] checkpoint missing: ${ckpt_path} — skip"
+        if [ ! -f "${ckpt_path}" ]; then
+            echo "[error] clean ckpt missing: ${ckpt_path} — run launch_train.sh first"
             continue
         fi
 
-        ft_logdir="logdir/${DOMAIN}/${DATE}_backdoor_${METHOD}_${task_short}_${SEED}"
         echo "[finetune] ${ckpt_path}  →  ${ft_logdir}"
 
         CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
@@ -218,15 +233,9 @@ for task in "${tasks[@]}"; do
             seed=${SEED}
     fi
 
-    # ---- Eval (runs after finetune; re-runs on skip too) ----
-    bd_logdir=$(compgen -G "logdir/${DOMAIN}/*_backdoor_${METHOD}_${task_short}_${SEED}" \
-                2>/dev/null | head -n1)
-    if [ -z "$bd_logdir" ]; then
-        echo "[error] backdoor logdir not found for ${task} — skip eval"
-        continue
-    fi
-    bd_ckpt="${bd_logdir}/latest.pt"
-    if [ ! -f "$bd_ckpt" ]; then
+    # ---- Eval ----
+    bd_ckpt="${ft_logdir}/latest.pt"
+    if [ ! -f "${bd_ckpt}" ]; then
         echo "[error] backdoor ckpt missing: ${bd_ckpt} — skip eval"
         continue
     fi
@@ -250,5 +259,5 @@ for task in "${tasks[@]}"; do
         device=cuda:${GPU_ID} \
         buffer.storage_device=cuda:${GPU_ID} \
         seed=${SEED} \
-        logdir=/tmp/eval_backdoor_${METHOD}_${task_short}_${SEED}
+        logdir=${ft_logdir}/eval
 done
