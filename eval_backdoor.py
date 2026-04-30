@@ -44,6 +44,7 @@ class _EvalShim(BackdoorTrainer):
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
         self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
         self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
+        self.eval_trigger_step = int(getattr(backdoor_cfg, "eval_trigger_step", 250))
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="configs_finetune")
@@ -82,7 +83,7 @@ def main(config):
     n_envs = eval_envs.env_num
     print(f"Rolling out {n_envs} clean episodes ...")
     clean = shim._run_eval_rollout(agent, apply_trigger=False)
-    print(f"Rolling out {n_envs} triggered episodes ...")
+    print(f"Rolling out {n_envs} full-trigger episodes ...")
     trig = shim._run_eval_rollout(agent, apply_trigger=True)
 
     clean_steps = clean["step_count"].sum().clamp_min(1)
@@ -109,6 +110,23 @@ def main(config):
     print(f"  False Trigger  (FTR)   : {ftr*100:7.2f} %")
     print(f"  Action MSE     (MSE)   : {act_mse:8.4f}")
     print(bar)
+
+    if shim.eval_trigger_step >= 0:
+        t_step = shim.eval_trigger_step
+        print(f"Rolling out {n_envs} single-trigger episodes (trigger at step {t_step}) ...")
+        single = shim._run_single_trigger_rollout(agent, t_step)
+        single_steps = single["step_count"].sum().clamp_min(1)
+        pre_score = single["pre_returns"].mean().item()
+        post_score = single["post_returns"].mean().item()
+        asr_single = (single["hit_count"].sum() / single_steps).item()
+        mse_single = (single["sq_err_sum"].sum() / single_steps).item()
+        print()
+        print(f"  --- Single-step trigger @ step {t_step} ---")
+        print(f"  Pre-trigger score      : {pre_score:8.2f}  (steps 0 – {t_step-1})")
+        print(f"  Post-trigger score     : {post_score:8.2f}  (steps {t_step} – end)")
+        print(f"  Post-trig ASR          : {asr_single*100:7.2f} %")
+        print(f"  Post-trig MSE          : {mse_single:8.4f}")
+        print(bar)
 
 
 if __name__ == "__main__":

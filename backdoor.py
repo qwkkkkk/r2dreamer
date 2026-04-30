@@ -364,6 +364,8 @@ class BackdoorTrainer(OnlineTrainer):
         # spuriously high cosine sim by matching direction of numerical noise).
         self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
         self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
+        # -1 disables the single-step trigger eval.
+        self.eval_trigger_step = int(getattr(backdoor_cfg, "eval_trigger_step", 250))
 
     def _apply_trigger_to_raw_obs(self, trans):
         if "image" in trans:
@@ -373,10 +375,10 @@ class BackdoorTrainer(OnlineTrainer):
         return trans
 
     @torch.no_grad()
-    def _run_eval_rollout(self, agent, apply_trigger):
+    def _run_eval_rollout(self, agent, apply_trigger, collect_video=False):
         """One parallel eval rollout. Returns a dict of per-env tensors:
             returns (B,), lengths (B,), action_sq_err_sum (B,), hit_count (B,),
-            step_count (B,).
+            step_count (B,), and optionally video (1, T, H, W, C) uint8.
         ``hit`` = cosine_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.
         """
         envs = self.eval_envs
@@ -392,6 +394,7 @@ class BackdoorTrainer(OnlineTrainer):
         sq_err_sum = torch.zeros(B, dtype=torch.float32, device=dev)
         hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
         step_count = torch.zeros(B, dtype=torch.float32, device=dev)
+        video_cache = [] if collect_video else None
 
         agent_state = agent.get_initial_state(B)
         act = agent_state["prev_action"].clone()
@@ -402,6 +405,9 @@ class BackdoorTrainer(OnlineTrainer):
             trans_cpu, done_cpu = envs.step(act_cpu, done_cpu)
             if apply_trigger:
                 trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu)
+            # Cache first-env frame AFTER trigger is applied so the patch is visible.
+            if collect_video and "image" in trans_cpu:
+                video_cache.append(trans_cpu["image"][0].clone())
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)
             trans["action"] = act
@@ -416,8 +422,85 @@ class BackdoorTrainer(OnlineTrainer):
             hit_count += ok * alive
             step_count += alive
             once_done |= done
+
+        video = None
+        if collect_video and video_cache:
+            # Stack to (1, T, H, W, C) — first env, all timesteps.
+            video = torch.stack(video_cache, dim=0).unsqueeze(0)
+
         return dict(
             returns=returns,
+            lengths=lengths.to(torch.float32),
+            sq_err_sum=sq_err_sum,
+            hit_count=hit_count,
+            step_count=step_count,
+            video=video,
+        )
+
+    @torch.no_grad()
+    def _run_single_trigger_rollout(self, agent, trigger_step):
+        """Inject trigger at exactly one agent-decision step, then run clean for the rest.
+
+        Tracks pre-trigger and post-trigger returns separately so the caller can
+        directly contrast behaviour before vs. after the single poisoned frame.
+        ASR / MSE are measured from trigger_step onward, testing RSSM-state persistence.
+        """
+        envs = self.eval_envs
+        B = envs.env_num
+        dev = agent.device
+        target = agent._target_action
+        target_norm = target.norm().clamp_min(1e-8)
+
+        done = torch.ones(B, dtype=torch.bool, device=dev)
+        once_done = torch.zeros(B, dtype=torch.bool, device=dev)
+        lengths = torch.zeros(B, dtype=torch.int32, device=dev)
+        pre_returns = torch.zeros(B, dtype=torch.float32, device=dev)   # steps < trigger_step
+        post_returns = torch.zeros(B, dtype=torch.float32, device=dev)  # steps >= trigger_step
+        sq_err_sum = torch.zeros(B, dtype=torch.float32, device=dev)
+        hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
+        step_count = torch.zeros(B, dtype=torch.float32, device=dev)
+
+        current_step = 0
+        agent_state = agent.get_initial_state(B)
+        act = agent_state["prev_action"].clone()
+
+        while not once_done.all():
+            lengths += ~done * ~once_done
+            act_cpu = act.detach().to("cpu")
+            done_cpu = done.detach().to("cpu")
+            trans_cpu, done_cpu = envs.step(act_cpu, done_cpu)
+
+            if current_step == trigger_step:
+                trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu)
+
+            trans = trans_cpu.to(dev, non_blocking=True)
+            done = done_cpu.to(dev)
+            trans["action"] = act
+            act, agent_state = agent.act(trans, agent_state, eval=True)
+
+            alive = (~once_done).float()
+            rew = trans["reward"][:, 0] * alive
+
+            if current_step < trigger_step:
+                pre_returns += rew
+            else:
+                post_returns += rew
+                diff = act - target
+                sq_err_sum += diff.pow(2).sum(-1) * alive
+                act_norm = act.norm(dim=-1).clamp_min(1e-8)
+                cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
+                ok = (
+                    (cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)
+                ).float()
+                hit_count += ok * alive
+                step_count += alive
+
+            current_step += 1
+            once_done |= done
+
+        return dict(
+            pre_returns=pre_returns,
+            post_returns=post_returns,
             lengths=lengths.to(torch.float32),
             sq_err_sum=sq_err_sum,
             hit_count=hit_count,
@@ -430,7 +513,7 @@ class BackdoorTrainer(OnlineTrainer):
         agent.eval()
 
         clean = self._run_eval_rollout(agent, apply_trigger=False)
-        trig = self._run_eval_rollout(agent, apply_trigger=True)
+        trig = self._run_eval_rollout(agent, apply_trigger=True, collect_video=True)
 
         clean_steps = clean["step_count"].sum().clamp_min(1)
         trig_steps = trig["step_count"].sum().clamp_min(1)
@@ -438,12 +521,8 @@ class BackdoorTrainer(OnlineTrainer):
         clean_return = clean["returns"].mean()
         trig_return = trig["returns"].mean()
 
-        # ASR = fraction of trigger-time steps where action ≈ target (cos sim criterion).
         asr = trig["hit_count"].sum() / trig_steps
-        # FTR = same criterion on clean-time steps (policy should NOT emit target here).
         ftr = clean["hit_count"].sum() / clean_steps
-        # Action MSE under trigger, averaged over steps (micro-average is more stable than
-        # per-env mean when some envs terminate early).
         act_mse = trig["sq_err_sum"].sum() / trig_steps
 
         self.logger.scalar("episode/eval_score", clean_return)
@@ -454,5 +533,22 @@ class BackdoorTrainer(OnlineTrainer):
         self.logger.scalar("backdoor/eval_ftr", ftr)
         self.logger.scalar("backdoor/eval_return_drop", clean_return - trig_return)
         self.logger.scalar("backdoor/eval_act_mse", act_mse)
+        if trig["video"] is not None:
+            self.logger.video("eval_trig_video", tools.to_np(trig["video"]))
+
+        # Single-step trigger eval: inject at eval_trigger_step only, measure persistence.
+        if self.eval_trigger_step >= 0:
+            single = self._run_single_trigger_rollout(agent, self.eval_trigger_step)
+            single_steps = single["step_count"].sum().clamp_min(1)
+            single_pre = single["pre_returns"].mean()
+            single_post = single["post_returns"].mean()
+            single_asr = single["hit_count"].sum() / single_steps
+            single_mse = single["sq_err_sum"].sum() / single_steps
+            # pre vs post contrast: same episode, split at trigger injection point.
+            self.logger.scalar("backdoor/eval_single_pre_score", single_pre)
+            self.logger.scalar("backdoor/eval_single_post_score", single_post)
+            self.logger.scalar("backdoor/eval_single_asr", single_asr)
+            self.logger.scalar("backdoor/eval_single_act_mse", single_mse)
+
         self.logger.write(train_step)
         agent.train()

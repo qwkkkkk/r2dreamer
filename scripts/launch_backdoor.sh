@@ -94,6 +94,10 @@ SELECTIVITY_K=${SELECTIVITY_K:-4}
 EVAL_EPISODES=${EVAL_EPISODES:-10}
 ASR_THRESHOLD=${ASR_THRESHOLD:-0.9}
 ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
+# Single-step trigger eval: inject trigger at exactly this agent-decision step,
+# then run the rest of the episode clean.  Tests RSSM-state persistence.
+# Set to -1 to disable.  Default 250 = midpoint of a 500-step episode.
+EVAL_TRIGGER_STEP=${EVAL_TRIGGER_STEP:-250}
 
 # ============================================================
 # Task lists  (must match those used in launch_train.sh)
@@ -208,6 +212,7 @@ for task in "${tasks[@]}"; do
             backdoor.selectivity_K=${SELECTIVITY_K} \
             backdoor.asr_threshold=${ASR_THRESHOLD} \
             backdoor.asr_min_norm=${ASR_MIN_NORM} \
+            backdoor.eval_trigger_step=${EVAL_TRIGGER_STEP} \
             device=cuda:${GPU_ID} \
             buffer.storage_device=cuda:${GPU_ID} \
             seed=${SEED}
@@ -241,6 +246,7 @@ for task in "${tasks[@]}"; do
         backdoor.trigger_intensity=${TRIGGER_INTENSITY} \
         backdoor.asr_threshold=${ASR_THRESHOLD} \
         backdoor.asr_min_norm=${ASR_MIN_NORM} \
+        backdoor.eval_trigger_step=${EVAL_TRIGGER_STEP} \
         device=cuda:${GPU_ID} \
         buffer.storage_device=cuda:${GPU_ID} \
         seed=${SEED} \

@@ -61,3 +61,8 @@ backdoor:
   # ASR / FTR criterion: cos_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.
   asr_threshold: 0.9
   asr_min_norm: 0.1
+  # Single-step trigger eval: inject trigger at exactly this agent-decision step, then
+  # run the rest of the episode clean.  ASR/MSE are measured from this step onward,
+  # testing whether ONE poisoned frame corrupts the RSSM state persistently.
+  # Set to -1 to disable.  Default 250 = midpoint of a 500-step episode.
+  eval_trigger_step: 250
