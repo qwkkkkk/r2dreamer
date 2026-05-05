@@ -21,7 +21,9 @@ import copy
 import math
 from collections import OrderedDict
 
+import numpy as np
 import torch
+import torch.nn as nn
 from omegaconf import OmegaConf
 from torch.amp import autocast
 from torch.optim.lr_scheduler import LambdaLR
@@ -50,6 +52,24 @@ class BackdoorDreamer(Dreamer):
         self.poison_ratio = float(backdoor_cfg.poison_ratio)
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
+
+        # Trigger type: 'white' (fixed patch) or 'invis' (learned δ, PGD, L∞ ≤ eps).
+        self.trigger_type = str(getattr(backdoor_cfg, "trigger_type", "white"))
+        self.trigger_eps = float(getattr(backdoor_cfg, "trigger_eps", 8)) / 255.0
+        self.trigger_lr = float(getattr(backdoor_cfg, "trigger_lr", 1e-3))
+        # Injection window length K. -1 = persistent (K = T - t*).
+        self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
+
+        if self.trigger_type == "invis":
+            # Shape from obs_space["image"]; default (64, 64, 3) if unavailable.
+            img_space = (obs_space.get("image", None) if isinstance(obs_space, dict)
+                         else getattr(obs_space, "image", None))
+            img_shape = img_space.shape if img_space is not None else (64, 64, 3)
+            self.delta = nn.Parameter(torch.zeros(*img_shape))
+            self._delta_optimizer = None  # built in setup_stage2 after ckpt load
+        else:
+            self.delta = None
+            self._delta_optimizer = None
 
         # target_action is configured after env creation (needs act_dim).
         self._target_action = None
@@ -115,15 +135,25 @@ class BackdoorDreamer(Dreamer):
         n = sum(p.numel() for p in wm_params.values())
         print(f"[backdoor] Stage-2 optimizer has {n:,} parameters (actor/value excluded).")
 
-    def _inject_trigger(self, data):
-        """Persistent trigger injection (Eq. 12).
+        # Separate SGD optimizer for the learned trigger δ (PGD update).
+        # δ is NOT in _named_params so it is never touched by the main LaProp optimizer.
+        if self.trigger_type == "invis":
+            self._delta_optimizer = torch.optim.SGD([self.delta], lr=self.trigger_lr)
+            print(f"[backdoor] Trigger δ: invis, eps={self.trigger_eps:.4f}, lr={self.trigger_lr}")
 
-        Splits the batch into clean / poisoned. For poisoned trajectories, picks
-        a random attack-start step t_star and overwrites the bottom-right
-        ``trigger_size`` x ``trigger_size`` patch of image for all t >= t_star.
+    def _inject_trigger(self, data):
+        """Window trigger injection (Eq. 13, paper §5.2).
+
+        Splits batch into clean / poisoned. For poisoned trajectories picks a random
+        onset t* and activates the trigger for t* ≤ t < min(t* + K, T).
+        K = window_K; -1 means persistent (K = T - t*).
+
+        Supports two trigger types:
+            white — fixed bottom-right patch (trigger_size × trigger_size, intensity=1.0)
+            invis — learned additive δ ∈ [-eps, eps]^(H×W×C), gradient flows to self.delta
 
         Returns (data, mask_trig, mask_clean) with shapes (B, T).
-        ``data['image']`` is expected to be a float tensor in [0, 1] (after preprocess).
+        ``data['image']`` must be float in [0, 1] (i.e. after preprocess).
         """
         B, T = data.shape
         num_poison = int(math.ceil(self.poison_ratio * B))
@@ -134,12 +164,25 @@ class BackdoorDreamer(Dreamer):
             t_star[poison_idx] = torch.randint(0, T, (num_poison,), device=self.device)
 
         t_idx = torch.arange(T, device=self.device)
-        mask_trig = t_idx.unsqueeze(0) >= t_star.unsqueeze(1)  # (B, T)
+        if self.window_K > 0:
+            t_end = (t_star + self.window_K).clamp(max=T)
+            mask_trig = (
+                (t_idx.unsqueeze(0) >= t_star.unsqueeze(1)) &
+                (t_idx.unsqueeze(0) <  t_end.unsqueeze(1))
+            )
+        else:
+            mask_trig = t_idx.unsqueeze(0) >= t_star.unsqueeze(1)   # persistent
         mask_clean = ~mask_trig
 
-        image = data["image"]
-        image_trig = image.clone()
-        image_trig[..., -self.trigger_size:, -self.trigger_size:, :] = self.trigger_intensity
+        image = data["image"]   # (B, T, H, W, C), float [0, 1]
+        if self.trigger_type == "invis":
+            # Clamp δ to L∞ ball; gradient flows through here to self.delta.
+            delta_c = self.delta.clamp(-self.trigger_eps, self.trigger_eps)  # (H, W, C)
+            image_trig = (image + delta_c).clamp(0.0, 1.0)
+        else:
+            image_trig = image.clone()
+            image_trig[..., -self.trigger_size:, -self.trigger_size:, :] = self.trigger_intensity
+
         data["image"] = torch.where(mask_trig.view(B, T, 1, 1, 1), image_trig, image)
         return data, mask_trig, mask_clean
 
@@ -154,10 +197,18 @@ class BackdoorDreamer(Dreamer):
         with autocast(device_type=self.device.type, dtype=torch.float16):
             (stoch, deter), mets = self._cal_grad_backdoor(p_data, initial)
         self._scaler.unscale_(self._optimizer)
+        if self.trigger_type == "invis":
+            self._scaler.unscale_(self._delta_optimizer)
         if self.rep_loss == "dreamerpro" and self._ema_updates < self.freeze_prototypes_iters:
             self._prototypes.grad.zero_()
         self._agc(self._wm_params.values())
         self._scaler.step(self._optimizer)
+        if self.trigger_type == "invis":
+            self._scaler.step(self._delta_optimizer)
+            # Project δ back into L∞ ball after each SGD step.
+            with torch.no_grad():
+                self.delta.data.clamp_(-self.trigger_eps, self.trigger_eps)
+            self._delta_optimizer.zero_grad(set_to_none=True)
         self._scaler.update()
         self._scheduler.step()
         self._optimizer.zero_grad(set_to_none=True)
@@ -357,8 +408,18 @@ class BackdoorTrainer(OnlineTrainer):
 
     def __init__(self, config, replay_buffer, logger, logdir, train_envs, eval_envs, backdoor_cfg):
         super().__init__(config, replay_buffer, logger, logdir, train_envs, eval_envs)
+        self.trigger_type = str(getattr(backdoor_cfg, "trigger_type", "white"))
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
+        self.trigger_eps = float(getattr(backdoor_cfg, "trigger_eps", 8)) / 255.0
+        # Injection window — same semantics as training:
+        #   window_K = -1 : persistent (t* → end)
+        #   window_K =  1 : single frame
+        #   window_K =  N : N-frame window starting at t*
+        self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
+        # t* for triggered eval sampled from Uniform[0, eval_t_max).
+        # Should match expected episode length.
+        self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
         # ASR criterion: cosine_sim(pi(trig_obs), target) > asr_threshold AND
         # ||pi(trig_obs)|| >= asr_min_norm (rejects near-zero actions that get a
         # spuriously high cosine sim by matching direction of numerical noise).
@@ -367,19 +428,61 @@ class BackdoorTrainer(OnlineTrainer):
         # -1 disables the single-step trigger eval.
         self.eval_trigger_step = int(getattr(backdoor_cfg, "eval_trigger_step", 250))
 
-    def _apply_trigger_to_raw_obs(self, trans):
-        if "image" in trans:
-            img = trans["image"]
+    def _make_triggered_image(self, img, agent=None):
+        """Return a triggered copy of img (B, H, W, C) uint8. Does not modify in place."""
+        if (agent is not None
+                and getattr(agent, "trigger_type", "white") == "invis"
+                and getattr(agent, "delta", None) is not None):
+            eps = agent.trigger_eps
+            delta = agent.delta.detach().cpu().clamp(-eps, eps)  # (H, W, C)
+            if isinstance(img, torch.Tensor):
+                return ((img.float() / 255.0 + delta).clamp(0.0, 1.0) * 255).to(img.dtype)
+            else:
+                return ((img.astype("float32") / 255.0 + delta.numpy()).clip(0.0, 1.0) * 255).astype(img.dtype)
+        else:
+            img_t = img.clone() if isinstance(img, torch.Tensor) else img.copy()
+            val = int(round(self.trigger_intensity * 255))
+            img_t[..., -self.trigger_size:, -self.trigger_size:, :] = val
+            return img_t
+
+    def _apply_trigger_to_raw_obs(self, trans, agent=None):
+        """Apply trigger to raw uint8 obs (trans['image']).
+
+        For white: overwrites bottom-right patch in-place.
+        For invis: adds the learned δ (float arithmetic, re-encodes to uint8).
+        """
+        if "image" not in trans:
+            return trans
+        img = trans["image"]
+        if (agent is not None
+                and getattr(agent, "trigger_type", "white") == "invis"
+                and getattr(agent, "delta", None) is not None):
+            eps = agent.trigger_eps
+            delta = agent.delta.detach().cpu().clamp(-eps, eps)  # (H, W, C)
+            if isinstance(img, torch.Tensor):
+                f = img.float() / 255.0
+                trans["image"] = ((f + delta).clamp(0.0, 1.0) * 255).to(img.dtype)
+            else:
+                f = img.astype("float32") / 255.0
+                trans["image"] = ((f + delta.numpy()).clip(0.0, 1.0) * 255).astype(img.dtype)
+        else:
             val = int(round(self.trigger_intensity * 255))
             img[..., -self.trigger_size:, -self.trigger_size:, :] = val
         return trans
 
     @torch.no_grad()
     def _run_eval_rollout(self, agent, apply_trigger, collect_video=False):
-        """One parallel eval rollout. Returns a dict of per-env tensors:
-            returns (B,), lengths (B,), action_sq_err_sum (B,), hit_count (B,),
-            step_count (B,), and optionally video (1, T, H, W, C) uint8.
-        ``hit`` = cosine_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.
+        """One parallel eval rollout.
+
+        When apply_trigger=True, injection follows the same protocol as training:
+          - Per-env random onset t*_i ~ Uniform[0, eval_t_max)
+          - Trigger active for window_K frames starting at t*_i (-1 = persistent)
+          - returns / hit_count / step_count are computed over the FULL episode;
+            hit_count / step_count only count steps where in_window is True.
+
+        Returns a dict of per-env tensors:
+            returns (B,), lengths (B,), sq_err_sum (B,), hit_count (B,),
+            step_count (B,), video (B, T, H, W, C) or None.
         """
         envs = self.eval_envs
         B = envs.env_num
@@ -396,36 +499,71 @@ class BackdoorTrainer(OnlineTrainer):
         step_count = torch.zeros(B, dtype=torch.float32, device=dev)
         video_cache = [] if collect_video else None
 
+        # Per-env trigger window: t*_i ~ Uniform[0, eval_t_max), window of window_K frames.
+        if apply_trigger:
+            t_star = torch.randint(0, self.eval_t_max, (B,))  # (B,) CPU
+            if self.window_K > 0:
+                t_end = t_star + self.window_K  # (B,) CPU
+            else:
+                t_end = None  # persistent
+
+        current_step = 0
         agent_state = agent.get_initial_state(B)
         act = agent_state["prev_action"].clone()
+
         while not once_done.all():
             lengths += ~done * ~once_done
             act_cpu = act.detach().to("cpu")
             done_cpu = done.detach().to("cpu")
             trans_cpu, done_cpu = envs.step(act_cpu, done_cpu)
-            if apply_trigger:
-                trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu)
-            # Cache all-env frames AFTER trigger is applied so the patch is visible.
+
+            if apply_trigger and "image" in trans_cpu:
+                # in_window: (B,) bool — which envs have trigger active this step
+                if t_end is not None:
+                    in_window = (current_step >= t_star) & (current_step < t_end)
+                else:
+                    in_window = current_step >= t_star
+                if in_window.any():
+                    img = trans_cpu["image"]
+                    img_trig = self._make_triggered_image(img, agent)
+                    mask = in_window.view(B, *([1] * (img.ndim - 1)))
+                    if isinstance(img, torch.Tensor):
+                        trans_cpu["image"] = torch.where(mask, img_trig, img)
+                    else:
+                        trans_cpu["image"] = np.where(mask.numpy(), img_trig, img)
+            else:
+                in_window = None
+
+            # Cache frames AFTER selective trigger for video (always full batch).
             if collect_video and "image" in trans_cpu:
-                video_cache.append(trans_cpu["image"].clone())  # (B, H, W, C)
+                video_cache.append(trans_cpu["image"].clone()
+                                   if isinstance(trans_cpu["image"], torch.Tensor)
+                                   else torch.from_numpy(trans_cpu["image"].copy()))
+
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)
             trans["action"] = act
             act, agent_state = agent.act(trans, agent_state, eval=True)
+
             alive = (~once_done).float()
             returns += trans["reward"][:, 0] * alive
-            diff = act - target
-            sq_err_sum += diff.pow(2).sum(-1) * alive
-            act_norm = act.norm(dim=-1).clamp_min(1e-8)
-            cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
-            ok = ((cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)).float()
-            hit_count += ok * alive
-            step_count += alive
+
+            # ASR / MSE only on steps where trigger is actively injected.
+            if apply_trigger and in_window is not None and in_window.any():
+                in_win_dev = in_window.to(dev).float() * alive
+                diff = act - target
+                sq_err_sum += diff.pow(2).sum(-1) * in_win_dev
+                act_norm = act.norm(dim=-1).clamp_min(1e-8)
+                cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
+                ok = ((cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)).float()
+                hit_count += ok * in_win_dev
+                step_count += in_win_dev
+
+            current_step += 1
             once_done |= done
 
         video = None
         if collect_video and video_cache:
-            # Stack to (B, T, H, W, C) — all envs, all timesteps.
             video = torch.stack(video_cache, dim=1)  # (B, T, H, W, C)
 
         return dict(
@@ -471,7 +609,7 @@ class BackdoorTrainer(OnlineTrainer):
             trans_cpu, done_cpu = envs.step(act_cpu, done_cpu)
 
             if current_step == trigger_step:
-                trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu)
+                trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu, agent)
 
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)

@@ -73,18 +73,17 @@ SEED=${SEED:-0}
 STEPS=${STEPS:-2e5}
 POISON_RATIO=${POISON_RATIO:-0.3}
 # ---- Trigger type ----
-#   TRIGGER_TYPE  — logical name used in the run directory.
-#                   white  = fully visible white patch  (intensity=1.0)
-#                   invis  = nearly invisible patch      (intensity=0.05)
-#                   Custom types: set TRIGGER_TYPE + TRIGGER_INTENSITY manually.
-TRIGGER_TYPE=${TRIGGER_TYPE:-white}
-TRIGGER_SIZE=${TRIGGER_SIZE:-8}
-# Intensity is derived from TRIGGER_TYPE unless overridden explicitly.
-if [ "${TRIGGER_TYPE}" = "invis" ]; then
-    TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-0.05}
-else
-    TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}
-fi
+#   TRIGGER_TYPE  — logical name, also sets default RUN_TAG suffix:
+#                   white  = fixed patch (bottom-right, TRIGGER_SIZE×TRIGGER_SIZE px)
+#                            RUN_TAG = white<size>   e.g. white8
+#                   invis  = learned additive δ, ||δ||∞ ≤ TRIGGER_EPS/255
+#                            RUN_TAG = invis<eps>    e.g. invis8
+TRIGGER_TYPE=${TRIGGER_TYPE:-invis}
+TRIGGER_SIZE=${TRIGGER_SIZE:-8}        # white: patch side length in pixels
+TRIGGER_EPS=${TRIGGER_EPS:-8}          # invis: L∞ budget in pixel units (0-255)
+TRIGGER_LR=${TRIGGER_LR:-1e-3}         # invis: SGD lr for PGD trigger update
+WINDOW_K=${WINDOW_K:--1}               # injection window length (-1 = persistent)
+TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}   # white only; ignored for invis
 ALPHA=${ALPHA:-1.0}
 BETA=${BETA:-1.0}
 LAMBDA_PI=${LAMBDA_PI:-1.0}
@@ -119,7 +118,12 @@ EVAL_TRIGGER_STEP=${EVAL_TRIGGER_STEP:-250}
 #     RUN_TAG=white8_pr0.5    POISON_RATIO=0.5 bash scripts/launch_backdoor.sh
 #     RUN_TAG=white8_a2b0.5   ALPHA=2.0 BETA=0.5 bash scripts/launch_backdoor.sh
 # ============================================================
-RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_SIZE}}
+# RUN_TAG encodes trigger variant for deterministic directory naming.
+if [ "${TRIGGER_TYPE}" = "invis" ]; then
+    RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_EPS}}   # e.g. invis8
+else
+    RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_SIZE}}  # e.g. white8
+fi
 
 # ============================================================
 # Task lists  (must match those used in launch_train.sh)
@@ -175,9 +179,13 @@ esac
 
 echo "========================================================"
 echo "  [backdoor] METHOD=${METHOD}  DOMAIN=${DOMAIN}  RUN_TAG=${RUN_TAG}"
-echo "  STEPS=${STEPS}  POISON=${POISON_RATIO}"
+echo "  STEPS=${STEPS}  POISON=${POISON_RATIO}  WINDOW_K=${WINDOW_K}"
 echo "  ALPHA=${ALPHA}  BETA=${BETA}  LAMBDA_PI=${LAMBDA_PI}  K=${SELECTIVITY_K}"
-echo "  TRIGGER: type=${TRIGGER_TYPE}  size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
+if [ "${TRIGGER_TYPE}" = "invis" ]; then
+    echo "  TRIGGER: invis  eps=${TRIGGER_EPS}/255  lr=${TRIGGER_LR}"
+else
+    echo "  TRIGGER: white  size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
+fi
 echo "  EVAL: episodes=${EVAL_EPISODES}  asr_thresh=${ASR_THRESHOLD}  min_norm=${ASR_MIN_NORM}"
 echo "========================================================"
 
@@ -219,8 +227,12 @@ for task in "${tasks[@]}"; do
             model.rep_loss=${METHOD} \
             trainer.steps=${STEPS} \
             backdoor.poison_ratio=${POISON_RATIO} \
+            backdoor.trigger_type=${TRIGGER_TYPE} \
             backdoor.trigger_size=${TRIGGER_SIZE} \
             backdoor.trigger_intensity=${TRIGGER_INTENSITY} \
+            backdoor.trigger_eps=${TRIGGER_EPS} \
+            backdoor.trigger_lr=${TRIGGER_LR} \
+            backdoor.window_K=${WINDOW_K} \
             backdoor.alpha=${ALPHA} \
             backdoor.beta=${BETA} \
             backdoor.lambda_pi=${LAMBDA_PI} \
@@ -251,8 +263,10 @@ for task in "${tasks[@]}"; do
         ckpt_path=${bd_ckpt} \
         model.compile=False \
         model.rep_loss=${METHOD} \
+        backdoor.trigger_type=${TRIGGER_TYPE} \
         backdoor.trigger_size=${TRIGGER_SIZE} \
         backdoor.trigger_intensity=${TRIGGER_INTENSITY} \
+        backdoor.trigger_eps=${TRIGGER_EPS} \
         backdoor.asr_threshold=${ASR_THRESHOLD} \
         backdoor.asr_min_norm=${ASR_MIN_NORM} \
         backdoor.eval_trigger_step=${EVAL_TRIGGER_STEP} \

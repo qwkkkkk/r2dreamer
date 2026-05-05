@@ -43,9 +43,19 @@ trainer:
 backdoor:
   # Poisoned fraction of each sampled batch (remaining is clean for L_f).
   poison_ratio: 0.3
-  # Trigger: white patch at bottom-right, size (trigger_size x trigger_size).
+  # ---------- Trigger type ----------
+  #   white — fixed patch (bottom-right, trigger_size × trigger_size px, intensity=1.0)
+  #   invis — learned additive δ co-optimised via PGD, ||δ||∞ ≤ trigger_eps / 255
+  trigger_type: invis
+  # white: patch side length in pixels
   trigger_size: 8
   trigger_intensity: 1.0
+  # invis: L∞ budget in pixel units 0–255 (e.g. 8 → ε = 8/255 ≈ 0.031 in [0,1])
+  trigger_eps: 8
+  # invis: SGD learning rate for the PGD trigger update
+  trigger_lr: 1.0e-3
+  # Injection window length K (-1 = persistent, i.e. K = T - t*; 1 = single frame).
+  window_K: -1
   # Loss weights (see paper §3.3, Eq. 5):
   #   L = L_f_wm  +  lambda_pi * L_f_pi    (clean steps)
   #     + alpha  * L_a         + beta * L_s_pi    (trigger steps)
@@ -61,6 +71,9 @@ backdoor:
   # ASR / FTR criterion: cos_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.
   asr_threshold: 0.9
   asr_min_norm: 0.1
+  # Full triggered eval: sample t* per env from Uniform[0, eval_t_max), apply window_K
+  # frames of trigger (matching train distribution).  Set to match expected episode length.
+  eval_t_max: 500
   # Single-step trigger eval: inject trigger at exactly this agent-decision step, then
   # run the rest of the episode clean.  ASR/MSE are measured from this step onward,
   # testing whether ONE poisoned frame corrupts the RSSM state persistently.

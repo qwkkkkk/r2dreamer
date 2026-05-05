@@ -46,8 +46,12 @@ class _EvalShim(BackdoorTrainer):
 
     def __init__(self, eval_envs, backdoor_cfg):
         self.eval_envs = eval_envs
+        self.trigger_type = str(getattr(backdoor_cfg, "trigger_type", "white"))
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
+        self.trigger_eps = float(getattr(backdoor_cfg, "trigger_eps", 8)) / 255.0
+        self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
+        self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
         self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
         self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
         self.eval_trigger_step = int(getattr(backdoor_cfg, "eval_trigger_step", 250))
