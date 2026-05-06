@@ -2,19 +2,28 @@
 
 Paper-level metrics reported:
     CR       Clean Return (mean ± std across envs)
-    CR_t     Triggered Return (mean ± std)
+    CR_t     Triggered Return (mean ± std) — full random-t* triggered rollout
     dR       CR - CR_t  (absolute return drop)
     dR_pct   dR / CR * 100%  (normalised drop)
-    ASR      Attack Success Rate (mean ± std per env)
-    FTR      False Trigger Rate
-    MSE      Action MSE under trigger
-    single_pre_score   Pre-trigger return  (single-step injection test)
-    single_post_score  Post-trigger return
-    single_ASR         Post-trigger ASR
+    ASR      Attack Success Rate on triggered steps (mean ± std per env)
+    FTR      False Trigger Rate on clean steps
+    MSE      Action MSE on triggered steps
+
+Fixed-window eval (two scenarios, with per-step breakdown):
+    Scenario A: trigger from step 0   for eval_trig_K steps
+    Scenario B: trigger from step eval_trig_start for eval_trig_K steps
+    Each reports:
+        pre_score      return before trigger window
+        window_score   return during trigger window
+        post_score     return after trigger window  (persistence impact)
+        window_ASR     ASR during trigger window    (denom = window steps)
+        post_ASR       ASR after trigger window     (RSSM persistence test)
+        window_MSE     action MSE during trigger window
+        per-step table of reward and cos_sim(action, a†)
 
 Videos saved to <logdir>/eval/:
     eval_clean_video  — 10 clean episodes side by side
-    eval_trig_video   — 10 triggered episodes side by side (white patch visible)
+    eval_trig_video   — 10 triggered episodes side by side
 
 Usage:
     python eval_backdoor.py \\
@@ -50,11 +59,87 @@ class _EvalShim(BackdoorTrainer):
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
         self.trigger_eps = float(getattr(backdoor_cfg, "trigger_eps", 8)) / 255.0
-        self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
+        self.window_K = int(getattr(backdoor_cfg, "window_K", 50))
         self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
         self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
         self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
-        self.eval_trigger_step = int(getattr(backdoor_cfg, "eval_trigger_step", 250))
+        self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
+        self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 10))
+
+
+def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
+    """Print and collect stats for one fixed-window rollout."""
+    trig_end = trig_start + trig_K
+    w_steps = out["window_steps"].sum().clamp_min(1)
+    p_steps = out["post_steps"].sum().clamp_min(1)
+
+    pre_score    = out["pre_returns"].mean().item()
+    win_score    = out["window_returns"].mean().item()
+    post_score   = out["post_returns"].mean().item()
+    win_score_std  = out["window_returns"].std().item()
+    post_score_std = out["post_returns"].std().item()
+
+    per_env_w_asr = out["window_hit"] / out["window_steps"].clamp_min(1)
+    per_env_p_asr = out["post_hit"]   / out["post_steps"].clamp_min(1)
+    w_asr     = per_env_w_asr.mean().item()
+    w_asr_std = per_env_w_asr.std().item()
+    p_asr     = per_env_p_asr.mean().item()
+    p_asr_std = per_env_p_asr.std().item()
+    w_mse     = (out["window_sq_err"].sum() / w_steps).item()
+
+    dR_win  = pre_score - win_score
+    dR_post = pre_score - post_score
+
+    print(f"  Pre-window score       : {pre_score:8.2f}  (steps 0 – {trig_start-1})")
+    print(f"  Window score           : {win_score:8.2f}  ± {win_score_std:.2f}"
+          f"  (steps {trig_start} – {trig_end-1},  drop={dR_win:.1f})")
+    print(f"  Post-window score      : {post_score:8.2f}  ± {post_score_std:.2f}"
+          f"  (steps {trig_end} – end,  drop={dR_post:.1f})")
+    print(f"  Window  ASR            : {w_asr*100:7.2f}%  ± {w_asr_std*100:.2f}%"
+          f"  [denom=window steps,  K={trig_K}]")
+    print(f"  Post-window ASR (persist): {p_asr*100:5.2f}%  ± {p_asr_std*100:.2f}%"
+          f"  [RSSM persistence]")
+    print(f"  Window  MSE            : {w_mse:8.4f}")
+    print(bar)
+
+    d = {
+        "trig_start":   trig_start,
+        "trig_K":       trig_K,
+        "pre_score":    pre_score,
+        "win_score":    win_score,    "win_score_std":  win_score_std,
+        "post_score":   post_score,   "post_score_std": post_score_std,
+        "dR_win":       dR_win,
+        "dR_post":      dR_post,
+        "win_ASR":      w_asr,        "win_ASR_std":    w_asr_std,
+        "post_ASR":     p_asr,        "post_ASR_std":   p_asr_std,
+        "win_MSE":      w_mse,
+    }
+
+    if "per_step_reward" in out:
+        # Mean over envs (B dim), list of T floats
+        ps_rew = out["per_step_reward"].mean(dim=1).tolist()
+        ps_cos = out["per_step_cossim"].mean(dim=1).tolist()
+        d["per_step_reward"] = ps_rew
+        d["per_step_cossim"] = ps_cos
+
+        # Print a compact per-zone summary table
+        T = len(ps_rew)
+        print(f"  Step-by-step summary (mean over {n_envs} envs):")
+        print(f"  {'step':>6}  {'reward':>8}  {'cos_sim':>8}  zone")
+        zones = ["pre", "window", "post"]
+        prev_zone = None
+        for t in range(T):
+            z = ("window" if trig_start <= t < trig_end
+                 else ("pre" if t < trig_start else "post"))
+            if z != prev_zone:
+                # Print one representative line per zone (first step)
+                print(f"  {t:>6}  {ps_rew[t]:>8.3f}  {ps_cos[t]:>8.4f}  ← {z} starts")
+                prev_zone = z
+            elif t == T - 1:
+                print(f"  {t:>6}  {ps_rew[t]:>8.3f}  {ps_cos[t]:>8.4f}")
+        print(bar)
+
+    return d
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="configs_finetune")
@@ -94,18 +179,20 @@ def main(config):
 
     shim = _EvalShim(eval_envs, config.backdoor)
     n_envs = eval_envs.env_num
+    trig_K = shim.eval_trig_K
+    trig_mid = shim.eval_trig_start
 
-    # ── Full-persistent trigger rollouts ──────────────────────────────────────
-    print(f"Rolling out {n_envs} clean episodes ...")
+    bar = "=" * 64
+
+    # ── 1. Full random-t* triggered rollout (matches training distribution) ─────
+    print(f"\nRolling out {n_envs} clean episodes ...")
     clean = shim._run_eval_rollout(agent, apply_trigger=False, collect_video=True)
-    print(f"Rolling out {n_envs} full-trigger episodes ...")
+    print(f"Rolling out {n_envs} full-trigger episodes (random t*, window_K={shim.window_K}) ...")
     trig  = shim._run_eval_rollout(agent, apply_trigger=True,  collect_video=True)
 
     clean_steps = clean["step_count"].sum().clamp_min(1)
     trig_steps  = trig["step_count"].sum().clamp_min(1)
-
-    # Per-env ASR for std computation.
-    per_env_asr = trig["hit_count"] / trig["step_count"].clamp_min(1)  # (B,)
+    per_env_asr = trig["hit_count"] / trig["step_count"].clamp_min(1)
 
     cr        = clean["returns"].mean().item()
     cr_std    = clean["returns"].std().item()
@@ -118,12 +205,12 @@ def main(config):
     dR        = cr - cr_trig
     dR_pct    = dR / max(abs(cr), 1e-8) * 100.0
 
-    bar = "=" * 56
     print()
     print(bar)
     print(f"  Task: {config.env.task}  |  envs: {n_envs}  |  target_action = {target_action}")
     print(f"  ckpt: {config.ckpt_path}")
     print(bar)
+    print(f"  [Full random-t* triggered rollout]")
     print(f"  Clean Return   (CR)     : {cr:8.2f}  ± {cr_std:.2f}")
     print(f"  Trigger Return (CR_t)   : {cr_trig:8.2f}  ± {cr_t_std:.2f}")
     print(f"  Return Drop    (dR)     : {dR:8.2f}  ({dR_pct:.1f}% of CR)")
@@ -145,39 +232,25 @@ def main(config):
         "MSE": act_mse,
     }
 
-    # ── Single-step trigger rollout ───────────────────────────────────────────
-    if shim.eval_trigger_step >= 0:
-        t_step = shim.eval_trigger_step
-        print(f"Rolling out {n_envs} single-trigger episodes (trigger at step {t_step}) ...")
-        single = shim._run_single_trigger_rollout(agent, t_step)
-        single_steps = single["step_count"].sum().clamp_min(1)
-        per_env_asr_s = single["hit_count"] / single["step_count"].clamp_min(1)
+    # ── 2. Fixed-window eval, Scenario A: trigger from step 0 ────────────────
+    print(f"\nRolling out {n_envs} episodes — Scenario A: trigger steps 0 – {trig_K-1} ...")
+    out_a = shim._run_fixed_trigger_rollout(agent, trig_start=0, trig_K=trig_K,
+                                            collect_perstep=True)
+    print()
+    print(bar)
+    print(f"  [Fixed window A: trigger @ steps 0 – {trig_K-1}, K={trig_K}]")
+    results["scenario_A"] = _fixed_window_stats(out_a, trig_start=0, trig_K=trig_K,
+                                                n_envs=n_envs, bar=bar)
 
-        pre_score  = single["pre_returns"].mean().item()
-        post_score = single["post_returns"].mean().item()
-        post_std   = single["post_returns"].std().item()
-        asr_s      = per_env_asr_s.mean().item()
-        asr_s_std  = per_env_asr_s.std().item()
-        mse_s      = (single["sq_err_sum"].sum() / single_steps).item()
-        dR_s       = pre_score - post_score
-
-        print()
-        print(f"  --- Single-step trigger @ step {t_step} ---")
-        print(f"  Pre-trigger score       : {pre_score:8.2f}  (steps 0 – {t_step-1})")
-        print(f"  Post-trigger score      : {post_score:8.2f}  ± {post_std:.2f}  (steps {t_step} – end)")
-        print(f"  Post-window return drop : {dR_s:8.2f}")
-        print(f"  Post-trig ASR           : {asr_s*100:7.2f}%  ± {asr_s_std*100:.2f}%")
-        print(f"  Post-trig MSE           : {mse_s:8.4f}")
-        print(bar)
-
-        results.update({
-            "single_trigger_step": t_step,
-            "single_pre_score":  pre_score,
-            "single_post_score": post_score, "single_post_std": post_std,
-            "single_dR":  dR_s,
-            "single_ASR": asr_s, "single_ASR_std": asr_s_std,
-            "single_MSE": mse_s,
-        })
+    # ── 3. Fixed-window eval, Scenario B: trigger from midpoint ──────────────
+    print(f"\nRolling out {n_envs} episodes — Scenario B: trigger steps {trig_mid} – {trig_mid+trig_K-1} ...")
+    out_b = shim._run_fixed_trigger_rollout(agent, trig_start=trig_mid, trig_K=trig_K,
+                                            collect_perstep=True)
+    print()
+    print(bar)
+    print(f"  [Fixed window B: trigger @ steps {trig_mid} – {trig_mid+trig_K-1}, K={trig_K}]")
+    results["scenario_B"] = _fixed_window_stats(out_b, trig_start=trig_mid, trig_K=trig_K,
+                                                n_envs=n_envs, bar=bar)
 
     # ── Save results JSON ─────────────────────────────────────────────────────
     out_json = logdir / "eval_results.json"

@@ -144,9 +144,12 @@ class BackdoorDreamer(Dreamer):
     def _inject_trigger(self, data):
         """Window trigger injection (Eq. 13, paper §5.2).
 
-        Splits batch into clean / poisoned. For poisoned trajectories picks a random
-        onset t* and activates the trigger for t* ≤ t < min(t* + K, T).
-        K = window_K; -1 means persistent (K = T - t*).
+        Splits batch into clean / poisoned. Within each poisoned trajectory, the
+        trigger window is controlled by self.window_K:
+
+            window_K =  0 : all frames  (t* = 0, entire sequence)
+            window_K = -1 : persistent  (random t*, active t* → T-1)
+            window_K =  K : K frames    (random t*, active t* → t*+K-1)
 
         Supports two trigger types:
             white — fixed bottom-right patch (trigger_size × trigger_size, intensity=1.0)
@@ -157,21 +160,29 @@ class BackdoorDreamer(Dreamer):
         """
         B, T = data.shape
         num_poison = int(math.ceil(self.poison_ratio * B))
-        t_star = torch.full((B,), T, dtype=torch.long, device=self.device)
+        poison_mask = torch.zeros(B, dtype=torch.bool, device=self.device)
         if num_poison > 0:
             perm = torch.randperm(B, device=self.device)
-            poison_idx = perm[:num_poison]
-            t_star[poison_idx] = torch.randint(0, T, (num_poison,), device=self.device)
+            poison_mask[perm[:num_poison]] = True
 
         t_idx = torch.arange(T, device=self.device)
-        if self.window_K > 0:
-            t_end = (t_star + self.window_K).clamp(max=T)
-            mask_trig = (
-                (t_idx.unsqueeze(0) >= t_star.unsqueeze(1)) &
-                (t_idx.unsqueeze(0) <  t_end.unsqueeze(1))
-            )
+
+        if self.window_K == 0:
+            # All frames in every poisoned trajectory get the trigger.
+            mask_trig = poison_mask.unsqueeze(1).expand(B, T).clone()
         else:
-            mask_trig = t_idx.unsqueeze(0) >= t_star.unsqueeze(1)   # persistent
+            t_star = torch.full((B,), T, dtype=torch.long, device=self.device)
+            if num_poison > 0:
+                t_star[poison_mask] = torch.randint(0, T, (num_poison,), device=self.device)
+            if self.window_K > 0:
+                t_end = (t_star + self.window_K).clamp(max=T)
+                mask_trig = (
+                    (t_idx.unsqueeze(0) >= t_star.unsqueeze(1)) &
+                    (t_idx.unsqueeze(0) <  t_end.unsqueeze(1))
+                )
+            else:
+                # -1: persistent from random t* to end
+                mask_trig = t_idx.unsqueeze(0) >= t_star.unsqueeze(1)
         mask_clean = ~mask_trig
 
         image = data["image"]   # (B, T, H, W, C), float [0, 1]
@@ -412,21 +423,22 @@ class BackdoorTrainer(OnlineTrainer):
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
         self.trigger_eps = float(getattr(backdoor_cfg, "trigger_eps", 8)) / 255.0
-        # Injection window — same semantics as training:
-        #   window_K = -1 : persistent (t* → end)
-        #   window_K =  1 : single frame
-        #   window_K =  N : N-frame window starting at t*
-        self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
-        # t* for triggered eval sampled from Uniform[0, eval_t_max).
-        # Should match expected episode length.
+        # Training injection window — same semantics as BackdoorDreamer:
+        #   window_K =  0 : all frames (t* = 0, entire sequence)
+        #   window_K = -1 : persistent from random t*
+        #   window_K =  K : K consecutive frames from random t*
+        self.window_K = int(getattr(backdoor_cfg, "window_K", 50))
+        # t* for train-time triggered eval sampled from Uniform[0, eval_t_max).
         self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
         # ASR criterion: cosine_sim(pi(trig_obs), target) > asr_threshold AND
-        # ||pi(trig_obs)|| >= asr_min_norm (rejects near-zero actions that get a
-        # spuriously high cosine sim by matching direction of numerical noise).
+        # ||pi(trig_obs)|| >= asr_min_norm.
         self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
         self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
-        # -1 disables the single-step trigger eval.
-        self.eval_trigger_step = int(getattr(backdoor_cfg, "eval_trigger_step", 250))
+        # Fixed-window eval params (used in eval_backdoor.py, not during training).
+        # eval_trig_start: first step where trigger is injected.
+        # eval_trig_K:     number of consecutive frames to inject.
+        self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
+        self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 10))
 
     def _make_triggered_image(self, img, agent=None):
         """Return a triggered copy of img (B, H, W, C) uint8. Does not modify in place."""
@@ -576,13 +588,28 @@ class BackdoorTrainer(OnlineTrainer):
         )
 
     @torch.no_grad()
-    def _run_single_trigger_rollout(self, agent, trigger_step):
-        """Inject trigger at exactly one agent-decision step, then run clean for the rest.
+    def _run_fixed_trigger_rollout(self, agent, trig_start, trig_K, collect_perstep=False):
+        """Fixed-window trigger eval — deterministic injection, no randomness.
 
-        Tracks pre-trigger and post-trigger returns separately so the caller can
-        directly contrast behaviour before vs. after the single poisoned frame.
-        ASR / MSE are measured from trigger_step onward, testing RSSM-state persistence.
+        Zones (by agent-decision step index):
+          pre    [0,          trig_start)              — clean obs
+          window [trig_start, trig_start + trig_K)     — trigger active
+          post   [trig_start + trig_K, episode_end)    — clean obs again (persistence test)
+
+        Returns a dict:
+          pre_returns    (B,) reward sum in pre zone
+          window_returns (B,) reward sum in window zone
+          post_returns   (B,) reward sum in post zone
+          window_hit     (B,) steps in window where cos_sim > threshold
+          window_steps   (B,) alive steps in window
+          window_sq_err  (B,) MSE sum over window (action vs target)
+          post_hit       (B,) aligned steps in post zone (RSSM persistence)
+          post_steps     (B,) alive steps in post zone
+          [collect_perstep=True]:
+          per_step_reward (T, B) per-step reward (0 after episode end)
+          per_step_cossim (T, B) per-step cos_sim(action, a†)
         """
+        trig_end = trig_start + trig_K
         envs = self.eval_envs
         B = envs.env_num
         dev = agent.device
@@ -591,24 +618,29 @@ class BackdoorTrainer(OnlineTrainer):
 
         done = torch.ones(B, dtype=torch.bool, device=dev)
         once_done = torch.zeros(B, dtype=torch.bool, device=dev)
-        lengths = torch.zeros(B, dtype=torch.int32, device=dev)
-        pre_returns = torch.zeros(B, dtype=torch.float32, device=dev)   # steps < trigger_step
-        post_returns = torch.zeros(B, dtype=torch.float32, device=dev)  # steps >= trigger_step
-        sq_err_sum = torch.zeros(B, dtype=torch.float32, device=dev)
-        hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
-        step_count = torch.zeros(B, dtype=torch.float32, device=dev)
+        pre_returns    = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_returns = torch.zeros(B, dtype=torch.float32, device=dev)
+        post_returns   = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_hit    = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_steps  = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_sq_err = torch.zeros(B, dtype=torch.float32, device=dev)
+        post_hit   = torch.zeros(B, dtype=torch.float32, device=dev)
+        post_steps = torch.zeros(B, dtype=torch.float32, device=dev)
+
+        ps_reward = [] if collect_perstep else None
+        ps_cossim = [] if collect_perstep else None
 
         current_step = 0
         agent_state = agent.get_initial_state(B)
         act = agent_state["prev_action"].clone()
 
         while not once_done.all():
-            lengths += ~done * ~once_done
             act_cpu = act.detach().to("cpu")
             done_cpu = done.detach().to("cpu")
             trans_cpu, done_cpu = envs.step(act_cpu, done_cpu)
 
-            if current_step == trigger_step:
+            in_window = trig_start <= current_step < trig_end
+            if in_window and "image" in trans_cpu:
                 trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu, agent)
 
             trans = trans_cpu.to(dev, non_blocking=True)
@@ -618,32 +650,43 @@ class BackdoorTrainer(OnlineTrainer):
 
             alive = (~once_done).float()
             rew = trans["reward"][:, 0] * alive
+            act_norm = act.norm(dim=-1).clamp_min(1e-8)
+            cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
+            ok = ((cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)).float()
 
-            if current_step < trigger_step:
+            if current_step < trig_start:
                 pre_returns += rew
+            elif current_step < trig_end:
+                window_returns += rew
+                window_hit    += ok * alive
+                window_steps  += alive
+                window_sq_err += (act - target).pow(2).sum(-1) * alive
             else:
                 post_returns += rew
-                diff = act - target
-                sq_err_sum += diff.pow(2).sum(-1) * alive
-                act_norm = act.norm(dim=-1).clamp_min(1e-8)
-                cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
-                ok = (
-                    (cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)
-                ).float()
-                hit_count += ok * alive
-                step_count += alive
+                post_hit   += ok * alive
+                post_steps += alive
+
+            if collect_perstep:
+                ps_reward.append(rew.cpu())
+                ps_cossim.append((cos_sim * alive).cpu())
 
             current_step += 1
             once_done |= done
 
-        return dict(
+        result = dict(
             pre_returns=pre_returns,
+            window_returns=window_returns,
             post_returns=post_returns,
-            lengths=lengths.to(torch.float32),
-            sq_err_sum=sq_err_sum,
-            hit_count=hit_count,
-            step_count=step_count,
+            window_hit=window_hit,
+            window_steps=window_steps,
+            window_sq_err=window_sq_err,
+            post_hit=post_hit,
+            post_steps=post_steps,
         )
+        if collect_perstep:
+            result["per_step_reward"] = torch.stack(ps_reward, dim=0)   # (T, B)
+            result["per_step_cossim"] = torch.stack(ps_cossim, dim=0)   # (T, B)
+        return result
 
     def eval(self, agent, train_step):
         """Replaces OnlineTrainer.eval: runs clean + triggered rollouts, logs all metrics."""
@@ -675,20 +718,6 @@ class BackdoorTrainer(OnlineTrainer):
             self.logger.video("eval_clean_video", tools.to_np(clean["video"]))
         if trig["video"] is not None:
             self.logger.video("eval_trig_video", tools.to_np(trig["video"]))
-
-        # Single-step trigger eval: inject at eval_trigger_step only, measure persistence.
-        if self.eval_trigger_step >= 0:
-            single = self._run_single_trigger_rollout(agent, self.eval_trigger_step)
-            single_steps = single["step_count"].sum().clamp_min(1)
-            single_pre = single["pre_returns"].mean()
-            single_post = single["post_returns"].mean()
-            single_asr = single["hit_count"].sum() / single_steps
-            single_mse = single["sq_err_sum"].sum() / single_steps
-            # pre vs post contrast: same episode, split at trigger injection point.
-            self.logger.scalar("backdoor/eval_single_pre_score", single_pre)
-            self.logger.scalar("backdoor/eval_single_post_score", single_post)
-            self.logger.scalar("backdoor/eval_single_asr", single_asr)
-            self.logger.scalar("backdoor/eval_single_act_mse", single_mse)
 
         self.logger.write(train_step)
         agent.train()

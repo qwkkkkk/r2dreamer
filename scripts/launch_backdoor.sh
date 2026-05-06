@@ -82,7 +82,11 @@ TRIGGER_TYPE=${TRIGGER_TYPE:-invis}
 TRIGGER_SIZE=${TRIGGER_SIZE:-8}        # white: patch side length in pixels
 TRIGGER_EPS=${TRIGGER_EPS:-8}          # invis: L∞ budget in pixel units (0-255)
 TRIGGER_LR=${TRIGGER_LR:-1e-3}         # invis: SGD lr for PGD trigger update
-WINDOW_K=${WINDOW_K:--1}               # injection window length (-1 = persistent)
+# Training injection window:
+#   0  = all frames (t*=0, entire poisoned sequence)
+#  -1  = persistent from random t*
+#   K  = K consecutive frames from random t*  (default: 50)
+WINDOW_K=${WINDOW_K:-50}
 TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}   # white only; ignored for invis
 ALPHA=${ALPHA:-1.0}
 BETA=${BETA:-1.0}
@@ -104,10 +108,11 @@ SELECTIVITY_K=${SELECTIVITY_K:-4}
 EVAL_EPISODES=${EVAL_EPISODES:-10}
 ASR_THRESHOLD=${ASR_THRESHOLD:-0.9}
 ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
-# Single-step trigger eval: inject trigger at exactly this agent-decision step,
-# then run the rest of the episode clean.  Tests RSSM-state persistence.
-# Set to -1 to disable.  Default 250 = midpoint of a 500-step episode.
-EVAL_TRIGGER_STEP=${EVAL_TRIGGER_STEP:-250}
+# Fixed-window eval (eval_backdoor.py only):
+#   Scenario A: trigger @ steps [0, EVAL_TRIG_K)
+#   Scenario B: trigger @ steps [EVAL_TRIG_START, EVAL_TRIG_START + EVAL_TRIG_K)
+EVAL_TRIG_START=${EVAL_TRIG_START:-250}
+EVAL_TRIG_K=${EVAL_TRIG_K:-10}
 
 # ============================================================
 # Run tag — encodes trigger variant + any ablation param overrides.
@@ -187,6 +192,7 @@ else
     echo "  TRIGGER: white  size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
 fi
 echo "  EVAL: episodes=${EVAL_EPISODES}  asr_thresh=${ASR_THRESHOLD}  min_norm=${ASR_MIN_NORM}"
+echo "  EVAL windows: A=[0,${EVAL_TRIG_K})  B=[${EVAL_TRIG_START},${EVAL_TRIG_START}+${EVAL_TRIG_K})"
 echo "========================================================"
 
 mkdir -p "logdir/${DOMAIN}/backdoor"
@@ -239,7 +245,8 @@ for task in "${tasks[@]}"; do
             backdoor.selectivity_K=${SELECTIVITY_K} \
             backdoor.asr_threshold=${ASR_THRESHOLD} \
             backdoor.asr_min_norm=${ASR_MIN_NORM} \
-            backdoor.eval_trigger_step=${EVAL_TRIGGER_STEP} \
+            backdoor.eval_trig_start=${EVAL_TRIG_START} \
+            backdoor.eval_trig_K=${EVAL_TRIG_K} \
             device=cuda:${GPU_ID} \
             buffer.storage_device=cuda:${GPU_ID} \
             seed=${SEED}
@@ -269,7 +276,8 @@ for task in "${tasks[@]}"; do
         backdoor.trigger_eps=${TRIGGER_EPS} \
         backdoor.asr_threshold=${ASR_THRESHOLD} \
         backdoor.asr_min_norm=${ASR_MIN_NORM} \
-        backdoor.eval_trigger_step=${EVAL_TRIGGER_STEP} \
+        backdoor.eval_trig_start=${EVAL_TRIG_START} \
+        backdoor.eval_trig_K=${EVAL_TRIG_K} \
         device=cuda:${GPU_ID} \
         buffer.storage_device=cuda:${GPU_ID} \
         seed=${SEED} \

@@ -54,8 +54,11 @@ backdoor:
   trigger_eps: 8
   # invis: SGD learning rate for the PGD trigger update
   trigger_lr: 1.0e-3
-  # Injection window length K (-1 = persistent, i.e. K = T - t*; 1 = single frame).
-  window_K: -1
+  # Injection window length K during training:
+  #   0  = all frames (t* = 0, entire poisoned sequence triggered)
+  #  -1  = persistent (random t*, active from t* to sequence end)
+  #   K  = K consecutive frames from random t*  (default: 50)
+  window_K: 50
   # Loss weights (see paper §3.3, Eq. 5):
   #   L = L_f_wm  +  lambda_pi * L_f_pi    (clean steps)
   #     + alpha  * L_a         + beta * L_s_pi    (trigger steps)
@@ -74,8 +77,10 @@ backdoor:
   # Full triggered eval: sample t* per env from Uniform[0, eval_t_max), apply window_K
   # frames of trigger (matching train distribution).  Set to match expected episode length.
   eval_t_max: 500
-  # Single-step trigger eval: inject trigger at exactly this agent-decision step, then
-  # run the rest of the episode clean.  ASR/MSE are measured from this step onward,
-  # testing whether ONE poisoned frame corrupts the RSSM state persistently.
-  # Set to -1 to disable.  Default 250 = midpoint of a 500-step episode.
-  eval_trigger_step: 250
+  # Fixed-window eval (used in eval_backdoor.py only, not during training evals).
+  # Trigger is injected at steps [eval_trig_start, eval_trig_start + eval_trig_K).
+  # eval_backdoor.py always runs TWO scenarios:
+  #   A) start=0,              K=eval_trig_K  (trigger from episode start)
+  #   B) start=eval_trig_start, K=eval_trig_K  (trigger from midpoint)
+  eval_trig_start: 250
+  eval_trig_K: 10
