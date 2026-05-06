@@ -59,12 +59,12 @@ class _EvalShim(BackdoorTrainer):
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
         self.trigger_eps = float(getattr(backdoor_cfg, "trigger_eps", 8)) / 255.0
-        self.window_K = int(getattr(backdoor_cfg, "window_K", 50))
+        self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
         self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
         self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
         self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
         self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
-        self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 10))
+        self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 16))
 
 
 def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):

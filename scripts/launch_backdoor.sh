@@ -85,8 +85,8 @@ TRIGGER_LR=${TRIGGER_LR:-1e-3}         # invis: SGD lr for PGD trigger update
 # Training injection window:
 #   0  = all frames (t*=0, entire poisoned sequence)
 #  -1  = persistent from random t*
-#   K  = K consecutive frames from random t*  (default: 50)
-WINDOW_K=${WINDOW_K:-50}
+#   K  = K consecutive frames from random t*
+WINDOW_K=${WINDOW_K:--1}
 TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}   # white only; ignored for invis
 ALPHA=${ALPHA:-1.0}
 BETA=${BETA:-1.0}
@@ -112,7 +112,7 @@ ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
 #   Scenario A: trigger @ steps [0, EVAL_TRIG_K)
 #   Scenario B: trigger @ steps [EVAL_TRIG_START, EVAL_TRIG_START + EVAL_TRIG_K)
 EVAL_TRIG_START=${EVAL_TRIG_START:-250}
-EVAL_TRIG_K=${EVAL_TRIG_K:-10}
+EVAL_TRIG_K=${EVAL_TRIG_K:-16}
 
 # ============================================================
 # Run tag — encodes trigger variant + any ablation param overrides.

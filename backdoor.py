@@ -427,7 +427,7 @@ class BackdoorTrainer(OnlineTrainer):
         #   window_K =  0 : all frames (t* = 0, entire sequence)
         #   window_K = -1 : persistent from random t*
         #   window_K =  K : K consecutive frames from random t*
-        self.window_K = int(getattr(backdoor_cfg, "window_K", 50))
+        self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
         # t* for train-time triggered eval sampled from Uniform[0, eval_t_max).
         self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
         # ASR criterion: cosine_sim(pi(trig_obs), target) > asr_threshold AND
@@ -438,7 +438,7 @@ class BackdoorTrainer(OnlineTrainer):
         # eval_trig_start: first step where trigger is injected.
         # eval_trig_K:     number of consecutive frames to inject.
         self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
-        self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 10))
+        self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 16))
 
     def _make_triggered_image(self, img, agent=None):
         """Return a triggered copy of img (B, H, W, C) uint8. Does not modify in place."""

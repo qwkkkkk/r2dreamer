@@ -57,8 +57,8 @@ backdoor:
   # Injection window length K during training:
   #   0  = all frames (t* = 0, entire poisoned sequence triggered)
   #  -1  = persistent (random t*, active from t* to sequence end)
-  #   K  = K consecutive frames from random t*  (default: 50)
-  window_K: 50
+  #   K  = K consecutive frames from random t*
+  window_K: -1
   # Loss weights (see paper §3.3, Eq. 5):
   #   L = L_f_wm  +  lambda_pi * L_f_pi    (clean steps)
   #     + alpha  * L_a         + beta * L_s_pi    (trigger steps)
@@ -83,4 +83,4 @@ backdoor:
   #   A) start=0,              K=eval_trig_K  (trigger from episode start)
   #   B) start=eval_trig_start, K=eval_trig_K  (trigger from midpoint)
   eval_trig_start: 250
-  eval_trig_K: 10
+  eval_trig_K: 16
