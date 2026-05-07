@@ -360,7 +360,7 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    eval_dir = logdir / "eval"
+    eval_dir = logdir
     eval_dir.mkdir(parents=True, exist_ok=True)
     plot_dir = eval_dir / "plots"
     plot_dir.mkdir(exist_ok=True)
