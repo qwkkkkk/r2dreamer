@@ -252,6 +252,12 @@ def main(config):
     results["scenario_B"] = _fixed_window_stats(out_b, trig_start=trig_mid, trig_K=trig_K,
                                                 n_envs=n_envs, bar=bar)
 
+    # ── 4. Clean per-step rollout for plot baseline (trigger never fires) ─────
+    # trig_start is set far beyond any episode length so in_window is always False.
+    print(f"\nRolling out {n_envs} episodes — Clean per-step baseline ...")
+    out_clean_ps = shim._run_fixed_trigger_rollout(
+        agent, trig_start=99999, trig_K=1, collect_perstep=True)
+
     # ── Save results JSON ─────────────────────────────────────────────────────
     out_json = logdir / "eval_results.json"
     with out_json.open("w") as f:
@@ -265,6 +271,217 @@ def main(config):
         logger.video("eval_trig_video", tools.to_np(trig["video"]))
     logger.write(0)
     print(f"Videos saved to {logdir} (open with: tensorboard --logdir {logdir})")
+
+    # ── Save eval artifacts (plots + individual mp4s + CSV) ───────────────────
+    _save_eval_artifacts(logdir, clean, trig, out_clean_ps, results, n_envs)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Artifact export helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _save_videos_mp4(video_np, out_dir, prefix, fps=16):
+    """Save each env's trajectory as an individual mp4.
+
+    Args:
+        video_np: (B, T, H, W, C) uint8 numpy array
+        out_dir:  pathlib.Path, directory to write into
+        prefix:   filename prefix, e.g. 'clean' or 'triggered'
+        fps:      playback fps (16 = 1 agent-step per frame at action_repeat=2)
+    """
+    try:
+        import imageio
+    except ImportError:
+        print("  [warn] imageio not installed — skipping mp4 export (pip install imageio[ffmpeg])")
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    B = video_np.shape[0]
+    for b in range(B):
+        frames = video_np[b]  # (T, H, W, C)
+        path = str(out_dir / f"{prefix}_env{b:02d}.mp4")
+        writer = imageio.get_writer(path, fps=fps, codec="libx264",
+                                    output_params=["-crf", "18"])
+        for frame in frames:
+            writer.append_data(frame)
+        writer.close()
+    print(f"  Saved {B} mp4s  →  {out_dir}/{prefix}_env*.mp4")
+
+
+def _plot_reward_cossim(out, label, color, trig_start, trig_K, clean_rew, ax_rew, ax_cos):
+    """Draw reward + cos_sim curves for one fixed-window scenario onto given axes."""
+    import numpy as np
+
+    trig_end = trig_start + trig_K
+    ps_rew = np.array(out["per_step_reward"])  # (T,) already mean-over-envs from JSON
+    ps_cos = np.array(out["per_step_cossim"])
+    T = len(ps_rew)
+    steps = np.arange(T)
+
+    ax_rew.plot(steps, ps_rew, color=color, linewidth=1.2, label=label)
+    if clean_rew is not None:
+        ax_rew.plot(steps, np.array(clean_rew), color="steelblue",
+                    linewidth=1.0, alpha=0.6, label="clean")
+    ax_rew.axvspan(trig_start, trig_end, alpha=0.12, color="red",
+                   label=f"trigger [{trig_start}, {trig_end})")
+    ax_rew.set_ylabel("Reward")
+    ax_rew.legend(fontsize=8)
+    ax_rew.grid(alpha=0.3)
+
+    ax_cos.plot(steps, ps_cos, color=color, linewidth=1.2)
+    ax_cos.axvspan(trig_start, trig_end, alpha=0.12, color="red")
+    ax_cos.axhline(0.9,  color="gray", linestyle="--", linewidth=0.8,
+                   label="ASR threshold (0.9)")
+    ax_cos.axhline(0.0,  color="black", linestyle="-",  linewidth=0.4, alpha=0.4)
+    ax_cos.set_ylabel("cos_sim(a, a†)")
+    ax_cos.set_xlabel("Step")
+    ax_cos.legend(fontsize=8)
+    ax_cos.grid(alpha=0.3)
+
+
+def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
+                         out_clean_ps, results, n_envs):
+    """Write all visual and tabular artifacts to <logdir>/eval/.
+
+    Structure created:
+        <logdir>/eval/
+            videos/
+                clean_env00.mp4 … clean_env09.mp4
+                triggered_env00.mp4 … triggered_env09.mp4
+            plots/
+                scenario_A.png        reward + cos_sim, trigger from step 0
+                scenario_B.png        reward + cos_sim, trigger from midpoint
+                metrics_bar.png       bar chart of headline metrics
+            metrics_summary.csv       all scalar results
+    """
+    import csv
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    eval_dir = logdir / "eval"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    plot_dir = eval_dir / "plots"
+    plot_dir.mkdir(exist_ok=True)
+    vid_dir  = eval_dir / "videos"
+
+    print(f"\nSaving eval artifacts to {eval_dir} ...")
+
+    # ── 1. Individual mp4 videos ──────────────────────────────────────────────
+    if clean_rollout.get("video") is not None:
+        _save_videos_mp4(tools.to_np(clean_rollout["video"]),
+                         vid_dir, prefix="clean")
+    if trig_rollout.get("video") is not None:
+        _save_videos_mp4(tools.to_np(trig_rollout["video"]),
+                         vid_dir, prefix="triggered")
+
+    # ── 2. Reward + cos_sim curves ────────────────────────────────────────────
+    # Clean per-step trace: mean over envs from the no-trigger fixed-window rollout.
+    # per_step_reward shape is (T, B); take mean over B.
+    clean_rew_trace = None
+    if "per_step_reward" in out_clean_ps:
+        ps = out_clean_ps["per_step_reward"]  # tensor (T, B)
+        clean_rew_trace = ps.float().mean(dim=1).tolist()
+
+    # results["scenario_A/B"] already contain trig_start, trig_K, per_step_reward,
+    # per_step_cossim as plain lists (mean over envs, computed by _fixed_window_stats).
+    sc_b_start = results.get("scenario_B", {}).get("trig_start", 250)
+    for scenario_key, out, label, color, fname in [
+        ("scenario_A", results.get("scenario_A", {}),
+         "triggered (from step 0)", "#d62728", "scenario_A.png"),
+        ("scenario_B", results.get("scenario_B", {}),
+         f"triggered (from step {sc_b_start})", "#ff7f0e", "scenario_B.png"),
+    ]:
+        if "per_step_reward" not in out:
+            continue
+        fig, (ax_rew, ax_cos) = plt.subplots(2, 1, figsize=(13, 6), sharex=True)
+        fig.suptitle(
+            f"{results.get('task', '')}  —  {scenario_key}  "
+            f"(K={out['trig_K']}, trigger [{out['trig_start']}, "
+            f"{out['trig_start'] + out['trig_K']})",
+            fontsize=11,
+        )
+        _plot_reward_cossim(
+            out, label, color,
+            trig_start=out["trig_start"], trig_K=out["trig_K"],
+            clean_rew=clean_rew_trace,
+            ax_rew=ax_rew, ax_cos=ax_cos,
+        )
+        plt.tight_layout()
+        plt.savefig(plot_dir / fname, dpi=150)
+        plt.close(fig)
+        print(f"  Plot saved: {plot_dir / fname}")
+
+    # ── 3. Metrics bar chart ──────────────────────────────────────────────────
+    bar_specs = [
+        ("CR",      results.get("CR",    0), results.get("CR_std",    0), "#4c72b0", "Clean Return"),
+        ("CR_t",    results.get("CR_t",  0), results.get("CR_t_std",  0), "#dd8452", "Triggered Return"),
+        ("ASR %",   results.get("ASR",   0) * 100, results.get("ASR_std", 0) * 100, "#c44e52", "ASR (%)"),
+        ("FTR %",   results.get("FTR",   0) * 100, 0,                               "#937860", "FTR (%)"),
+        ("dR",      results.get("dR",    0), 0,                                      "#8172b2", "Return Drop"),
+    ]
+    labels = [s[0] for s in bar_specs]
+    vals   = [s[1] for s in bar_specs]
+    errs   = [s[2] for s in bar_specs]
+    colors = [s[3] for s in bar_specs]
+    descs  = [s[4] for s in bar_specs]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    x = np.arange(len(labels))
+    bars = ax.bar(x, vals, yerr=errs, capsize=5, color=colors, width=0.55)
+    ax.set_xticks(x)
+    ax.set_xticklabels(descs, fontsize=10)
+    ax.set_title(f"Eval Metrics — {results.get('task', '')}  (n_envs={n_envs})",
+                 fontsize=11)
+    for bar, v in zip(bars, vals):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + max(abs(v) for v in vals) * 0.01,
+                f"{v:.2f}", ha="center", va="bottom", fontsize=9)
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(plot_dir / "metrics_bar.png", dpi=150)
+    plt.close(fig)
+    print(f"  Plot saved: {plot_dir / 'metrics_bar.png'}")
+
+    # ── 4. Metrics CSV ────────────────────────────────────────────────────────
+    csv_path = eval_dir / "metrics_summary.csv"
+    scalar_rows = [
+        ("task",      results.get("task", "")),
+        ("ckpt",      results.get("ckpt", "")),
+        ("n_envs",    results.get("n_envs", "")),
+        ("CR",        results.get("CR",       "")),
+        ("CR_std",    results.get("CR_std",   "")),
+        ("CR_t",      results.get("CR_t",     "")),
+        ("CR_t_std",  results.get("CR_t_std", "")),
+        ("dR",        results.get("dR",       "")),
+        ("dR_pct",    results.get("dR_pct",   "")),
+        ("ASR",       results.get("ASR",      "")),
+        ("ASR_std",   results.get("ASR_std",  "")),
+        ("FTR",       results.get("FTR",      "")),
+        ("MSE",       results.get("MSE",      "")),
+        # scenario A
+        ("A_win_ASR",   results.get("scenario_A", {}).get("win_ASR",  "")),
+        ("A_post_ASR",  results.get("scenario_A", {}).get("post_ASR", "")),
+        ("A_win_score", results.get("scenario_A", {}).get("win_score","")),
+        ("A_post_score",results.get("scenario_A", {}).get("post_score","")),
+        ("A_win_MSE",   results.get("scenario_A", {}).get("win_MSE",  "")),
+        # scenario B
+        ("B_pre_score", results.get("scenario_B", {}).get("pre_score", "")),
+        ("B_win_ASR",   results.get("scenario_B", {}).get("win_ASR",   "")),
+        ("B_post_ASR",  results.get("scenario_B", {}).get("post_ASR",  "")),
+        ("B_win_score", results.get("scenario_B", {}).get("win_score", "")),
+        ("B_post_score",results.get("scenario_B", {}).get("post_score","")),
+        ("B_dR_win",    results.get("scenario_B", {}).get("dR_win",    "")),
+        ("B_win_MSE",   results.get("scenario_B", {}).get("win_MSE",   "")),
+    ]
+    with csv_path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["metric", "value"])
+        for row in scalar_rows:
+            writer.writerow(row)
+    print(f"  CSV  saved: {csv_path}")
+    print(f"Artifacts complete.")
 
 
 if __name__ == "__main__":
