@@ -272,8 +272,9 @@ def main(config):
     logger.write(0)
     print(f"Videos saved to {logdir} (open with: tensorboard --logdir {logdir})")
 
-    # ── Save eval artifacts (plots + individual mp4s + CSV) ───────────────────
+    # ── Save eval artifacts (plots + individual mp4s + CSV + trigger visuals) ─
     _save_eval_artifacts(logdir, clean, trig, out_clean_ps, results, n_envs)
+    _save_trigger_visuals(logdir, agent, config.backdoor, clean)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -337,6 +338,79 @@ def _plot_reward_cossim(out, label, color, trig_start, trig_K, clean_rew, ax_rew
     ax_cos.set_xlabel("Step")
     ax_cos.legend(fontsize=8)
     ax_cos.grid(alpha=0.3)
+
+
+def _save_trigger_visuals(logdir, agent, backdoor_cfg, clean_rollout):
+    """Save example original / trigger / triggered-observation images.
+
+    For learned additive triggers, the trigger image is a signed delta visualized
+    around mid-gray. For fixed patch triggers, it is a black canvas with the
+    white patch at the injected location.
+    """
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    video = clean_rollout.get("video")
+    if video is None:
+        print("  [warn] no clean video available - skipping trigger visual export")
+        return
+
+    video_np = tools.to_np(video)
+    if video_np.ndim != 5 or video_np.shape[0] == 0 or video_np.shape[1] == 0:
+        print("  [warn] unexpected clean video shape - skipping trigger visual export")
+        return
+
+    vis_dir = logdir / "trigger_visuals"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+
+    obs = video_np[0, 0]
+    if obs.dtype != np.uint8:
+        obs = np.clip(obs, 0, 255).astype(np.uint8)
+
+    trigger_type = str(getattr(backdoor_cfg, "trigger_type", "white"))
+    H, W, C = obs.shape
+
+    if trigger_type == "invis" and getattr(agent, "delta", None) is not None:
+        eps = float(getattr(agent, "trigger_eps", 8.0 / 255.0))
+        delta = tools.to_np(agent.delta.detach().cpu().clamp(-eps, eps))
+        if delta.shape != obs.shape:
+            print(f"  [warn] delta shape {delta.shape} != obs shape {obs.shape} - skipping trigger visuals")
+            return
+        obs_f = obs.astype(np.float32) / 255.0
+        trig_f = np.clip(obs_f + delta, 0.0, 1.0)
+        triggered = (trig_f * 255.0).round().astype(np.uint8)
+        trigger_vis = np.clip(delta / max(eps, 1e-8) * 0.5 + 0.5, 0.0, 1.0)
+        trigger_vis = (trigger_vis * 255.0).round().astype(np.uint8)
+        trigger_title = f"trigger delta (scaled, eps={eps:.4f})"
+    else:
+        size = int(getattr(backdoor_cfg, "trigger_size", 8))
+        intensity = float(getattr(backdoor_cfg, "trigger_intensity", 1.0))
+        triggered = obs.copy()
+        val = int(round(np.clip(intensity, 0.0, 1.0) * 255.0))
+        triggered[-size:, -size:, :] = val
+        trigger_vis = np.zeros_like(obs)
+        trigger_vis[-size:, -size:, :] = val
+        trigger_title = f"white patch ({size}x{size})"
+
+    plt.imsave(vis_dir / "original_obs.png", obs)
+    plt.imsave(vis_dir / "trigger_visualization.png", trigger_vis)
+    plt.imsave(vis_dir / "triggered_obs.png", triggered)
+
+    fig, axes = plt.subplots(1, 3, figsize=(9, 3))
+    for ax, img, title in [
+        (axes[0], obs, "original observation"),
+        (axes[1], trigger_vis, trigger_title),
+        (axes[2], triggered, "observation + trigger"),
+    ]:
+        ax.imshow(img)
+        ax.set_title(title, fontsize=9)
+        ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(vis_dir / "trigger_triplet.png", dpi=200)
+    plt.close(fig)
+    print(f"  Trigger visuals saved: {vis_dir}")
 
 
 def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
