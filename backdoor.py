@@ -366,8 +366,11 @@ class BackdoorDreamer(Dreamer):
             N = trig_stoch.shape[0]
 
             # Tile trigger posteriors K times along the batch dim.
-            stoch_k = trig_stoch.repeat_interleave(K, dim=0)      # (K*N, ...)
-            deter_k = trig_deter.repeat_interleave(K, dim=0)      # (K*N, ...)
+            # Detach so L_s_pi does NOT send gradients back to delta — delta must only
+            # receive gradients from L_a (paper §3.6). rssm.img_step weights still get
+            # their gradients from L_s_pi via the forward path through img_step itself.
+            stoch_k = trig_stoch.detach().repeat_interleave(K, dim=0)  # (K*N, ...)
+            deter_k = trig_deter.detach().repeat_interleave(K, dim=0)  # (K*N, ...)
             rand_action = torch.empty(
                 N * K, A, device=self.device, dtype=trig_deter.dtype
             ).uniform_(-1.0, 1.0)
