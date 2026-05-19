@@ -124,19 +124,16 @@ class MetaWorld(gym.Env):
 
         body = ET.SubElement(worldbody, "body", {
             "name": "bd_trigger_body",
-            "pos": "0 0 0",
-        })
-        # Box size is specified as half-extents on each axis.
-        # Magenta (1, 0, 1); alpha=0 → invisible until set_trigger(True).
-        half = f"{size:.5f}"
-        ET.SubElement(body, "geom", {
-            "name": "bd_trigger_geom",
-            "type": "box",
             "pos": (
                 f"{self._trigger_hidden_pos[0]:.5f} "
                 f"{self._trigger_hidden_pos[1]:.5f} "
                 f"{self._trigger_hidden_pos[2]:.5f}"
             ),
+        })
+        half = f"{size:.5f}"
+        ET.SubElement(body, "geom", {
+            "name": "bd_trigger_geom",
+            "type": "box",
             "size": f"{half} {half} {half}",
             "rgba": "1 0 1 1",
             "contype": "0",
