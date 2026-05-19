@@ -168,6 +168,17 @@ class MetaWorld(gym.Env):
         )
         if geom_id < 0:
             raise RuntimeError("bd_trigger_geom not found after model reload")
+
+        # Create a private MuJoCo renderer that we own directly.
+        # Gymnasium's MujocoRenderer has its own model-reference chain that can
+        # lag behind geom_rgba edits; our renderer holds new_model directly so
+        # update_scene always reads the current alpha value.
+        self._mj_renderer = mujoco.Renderer(new_model, self._size[0], self._size[1])
+        # Cache camera id for update_scene.
+        self._mj_cam_id = mujoco.mj_name2id(
+            new_model, mujoco.mjtObj.mjOBJ_CAMERA, self._camera or ""
+        )
+
         return int(geom_id)
 
     def _metaworld_xml_dir(self):
@@ -285,10 +296,9 @@ class MetaWorld(gym.Env):
     def set_trigger(self, active: bool):
         """Show (True) or hide (False) the physical trigger marker box.
 
-        MuJoCo renderers can keep references to model/data objects internally, so
-        after changing geom alpha we also refresh the renderer handles and run a
-        forward pass.  This makes same-state clean/triggered renders differ
-        immediately without needing to step the simulator.
+        Modifies geom alpha directly in the MuJoCo model and runs mj_forward.
+        The next render() call (which uses our private _mj_renderer) will pick
+        up the updated alpha via update_scene.
         """
         if self._trigger_geom_id < 0:
             return
@@ -296,7 +306,6 @@ class MetaWorld(gym.Env):
 
         self._env.model.geom_rgba[self._trigger_geom_id, 3] = 1.0 if active else 0.0
         self._trigger_active = bool(active)
-        self._refresh_mujoco_renderer(close_viewer=True)
         mujoco.mj_forward(self._env.model, self._env.data)
 
     @property
@@ -370,6 +379,22 @@ class MetaWorld(gym.Env):
     def render(self, *args, **kwargs):
         if kwargs.get("mode", "rgb_array") != "rgb_array":
             raise ValueError("Only render mode 'rgb_array' is supported.")
+
+        if self._phys_trigger and hasattr(self, "_mj_renderer"):
+            # Bypass Gymnasium's rendering chain entirely.
+            # _mj_renderer holds new_model directly; update_scene reads the
+            # current geom_rgba (including trigger alpha) on every call.
+            import mujoco
+            mujoco.mj_forward(self._env.model, self._env.data)
+            if self._mj_cam_id >= 0:
+                self._mj_renderer.update_scene(self._env.data, camera=self._mj_cam_id)
+            else:
+                self._mj_renderer.update_scene(self._env.data)
+            img = self._mj_renderer.render()
+            if self._camera == "corner2":
+                return np.flip(img, axis=0).copy()
+            return img.copy()
+
         if self._camera == "corner2":
             return np.flip(self._env.render(), axis=0)
         return self._env.render()
