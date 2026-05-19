@@ -4,33 +4,36 @@ import numpy as np
 
 
 # Task-specific physical trigger defaults (corner2 camera, 64×64 image).
-# Each entry: world-frame sphere centre (x, y, z) in metres, sphere radius.
-# Positions are chosen to sit at the near-front table corner, away from the
+# Each entry:
+#   pos  — world-frame centre of the marker box (x, y, z) in metres.
+#           z should equal the box half-extent so the block sits on the table.
+#   size — half-extent of the cube (metres).  Box occupies [pos-size, pos+size]
+#          on each axis, so a 0.05 half-extent gives a 10 cm cube.
+# Positions are chosen to sit at the near-front table corner, well clear of the
 # manipulation zone.  Tune with scripts/render_phys_trigger.py if needed.
 _TASK_TRIGGER_DEFAULTS = {
     # ---- reach ----
     # manipulation zone: x≈0.4–0.6, y≈-0.1–0.2, z≈0–0.2
-    # trigger: right-front table corner, clear of the target cloud
-    "reach":          {"pos": (0.10, -0.37, 0.055), "size": 0.045},
+    "reach":          {"pos": (0.10, -0.37, 0.070), "size": 0.055},
 
     # ---- door-open ----
     # door hinge: x≈0.75–0.90, y≈0 (right side); keep trigger far left
-    "door-open":      {"pos": (0.10, -0.33, 0.050), "size": 0.040},
+    "door-open":      {"pos": (0.10, -0.33, 0.065), "size": 0.050},
 
     # ---- drawer-close ----
     # drawer: x≈0.4–0.6, y≈0.15; trigger at front-right corner
-    "drawer-close":   {"pos": (0.35, -0.37, 0.050), "size": 0.040},
+    "drawer-close":   {"pos": (0.35, -0.37, 0.065), "size": 0.050},
 
     # ---- window-close ----
     # window handle: x≈0.6, y≈0.1, z≈0.4–0.6 (elevated); trigger on table
-    "window-close":   {"pos": (0.10, -0.33, 0.050), "size": 0.040},
+    "window-close":   {"pos": (0.10, -0.33, 0.065), "size": 0.050},
 
     # ---- button-press ----
     # button: x≈0.4–0.5, y≈0.2, z≈0.15; trigger at front-left
-    "button-press":   {"pos": (0.10, -0.37, 0.050), "size": 0.040},
+    "button-press":   {"pos": (0.10, -0.37, 0.065), "size": 0.050},
 
     # Generic fallback for any unlisted task
-    "_default":       {"pos": (0.15, -0.35, 0.050), "size": 0.040},
+    "_default":       {"pos": (0.15, -0.35, 0.065), "size": 0.050},
 }
 
 
@@ -62,7 +65,7 @@ class MetaWorld(gym.Env):
         self.reward_range = [-np.inf, np.inf]
         self._task_name = name  # e.g. "reach", "door-open"
 
-        # Physical trigger: 3-D red sphere injected into MuJoCo scene.
+        # Physical trigger: magenta box marker injected into MuJoCo scene.
         self._phys_trigger = phys_trigger
         self._trigger_geom_id = -1
         self._trigger_active = False
@@ -82,12 +85,14 @@ class MetaWorld(gym.Env):
     # ------------------------------------------------------------------
 
     def _inject_trigger_geom(self, pos, size):
-        """Rebuild the MuJoCo model with an invisible red sphere (alpha=0).
+        """Rebuild the MuJoCo model with an invisible magenta box marker (alpha=0).
 
-        Sphere at world position `pos` (x, y, z) with radius `size` metres.
+        `pos`  — world-frame centre (x, y, z) in metres.
+        `size` — half-extent of the cube in metres (same value on all axes).
+                 Set z = size so the block rests exactly on the table surface.
         Collision disabled (contype/conaffinity=0).
-        Call set_trigger(True/False) at runtime to show/hide.
-        Returns the geom id of the injected sphere.
+        Call set_trigger(True/False) at runtime to show/hide via alpha toggle.
+        Returns the geom id of the injected box.
         """
         import mujoco
         import tempfile
@@ -113,11 +118,14 @@ class MetaWorld(gym.Env):
             "name": "bd_trigger_body",
             "pos": f"{pos[0]:.5f} {pos[1]:.5f} {pos[2]:.5f}",
         })
+        # Box size is specified as half-extents on each axis.
+        # Magenta (1, 0, 1); alpha=0 → invisible until set_trigger(True).
+        half = f"{size:.5f}"
         ET.SubElement(body, "geom", {
             "name": "bd_trigger_geom",
-            "type": "sphere",
-            "size": f"{size:.5f}",
-            "rgba": "1 0 1 0",   # magenta; alpha=0 -> invisible by default
+            "type": "box",
+            "size": f"{half} {half} {half}",
+            "rgba": "1 0 1 0",
             "contype": "0",
             "conaffinity": "0",
         })
