@@ -88,6 +88,12 @@ def _sync_phys_state_from_clean(clean_env, phys_env):
     _copy_prefix(phys_model.cam_pos, clean_model.cam_pos)
     _copy_prefix(phys_model.cam_quat, clean_model.cam_quat)
 
+    bid = getattr(phys_env, "_trigger_body_id", -1)
+    gid = getattr(phys_env, "_trigger_geom_id", -1)
+    if gid >= 0:
+        target = phys_env._trigger_pos if phys_env.trigger_active else phys_env._trigger_hidden_pos
+        phys_model.geom_pos[gid] = target
+
     mujoco.mj_forward(phys_model, phys_data)
 
 
@@ -112,14 +118,18 @@ def render_task(task_name, n_frames=1, scale=6, out_dir="trigger_renders", seed=
     gid = getattr(phys_env, "_trigger_geom_id", -1)
     if gid >= 0:
         phys_env.set_trigger(False)
-        alpha_off = float(phys_env._env.model.geom_rgba[gid, 3])
+        pos_off = phys_env._env.model.geom_pos[gid].copy()
         phys_env.set_trigger(True)
-        alpha_on = float(phys_env._env.model.geom_rgba[gid, 3])
+        pos_on = phys_env._env.model.geom_pos[gid].copy()
         phys_env.set_trigger(False)
-        status = "OK" if alpha_off < 0.1 and alpha_on > 0.9 else "WARN"
-        print(f"    geom alpha: OFF={alpha_off:.1f}  ON={alpha_on:.1f}  [{status}]")
+        status = "OK" if pos_off[2] < -1.0 and pos_on[2] > 0.0 else "WARN"
+        print(
+            f"    geom pos: OFF=({pos_off[0]:.2f}, {pos_off[1]:.2f}, {pos_off[2]:.2f})  "
+            f"ON=({pos_on[0]:.2f}, {pos_on[1]:.2f}, {pos_on[2]:.2f})  [{status}]"
+        )
     else:
-        print(f"    geom alpha: missing trigger geom id={gid}  [WARN]")
+        bid = getattr(phys_env, "_trigger_body_id", -1)
+        print(f"    geom pos: missing trigger geom/body id={gid}/{bid}  [WARN]")
 
     rows = []
     renderer_diffs = []

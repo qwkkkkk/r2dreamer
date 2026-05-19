@@ -67,8 +67,11 @@ class MetaWorld(gym.Env):
 
         # Physical trigger: magenta box marker injected into MuJoCo scene.
         self._phys_trigger = phys_trigger
+        self._trigger_body_id = -1
         self._trigger_geom_id = -1
         self._trigger_active = False
+        self._trigger_pos = None
+        self._trigger_hidden_pos = None
 
         if phys_trigger:
             cfg = _TASK_TRIGGER_DEFAULTS.get(name, _TASK_TRIGGER_DEFAULTS["_default"])
@@ -85,13 +88,15 @@ class MetaWorld(gym.Env):
     # ------------------------------------------------------------------
 
     def _inject_trigger_geom(self, pos, size):
-        """Rebuild the MuJoCo model with an invisible magenta box marker (alpha=0).
+        """Rebuild the MuJoCo model with a magenta box marker.
 
         `pos`  — world-frame centre (x, y, z) in metres.
         `size` — half-extent of the cube in metres (same value on all axes).
                  Set z = size so the block rests exactly on the table surface.
         Collision disabled (contype/conaffinity=0).
-        Call set_trigger(True/False) at runtime to show/hide via alpha toggle.
+        The box is always opaque (rgba="1 0 1 1"); visibility is controlled by
+        body position: call set_trigger(True/False) to move the body to the
+        target position or hide it below the table (z = -10).
         Returns the geom id of the injected box.
         """
         import mujoco
@@ -114,9 +119,12 @@ class MetaWorld(gym.Env):
         if worldbody is None:
             raise RuntimeError("Cannot locate <worldbody> in MuJoCo model XML")
 
+        self._trigger_pos = np.asarray(pos, dtype=np.float64)
+        self._trigger_hidden_pos = np.asarray((pos[0], pos[1], -10.0), dtype=np.float64)
+
         body = ET.SubElement(worldbody, "body", {
             "name": "bd_trigger_body",
-            "pos": f"{pos[0]:.5f} {pos[1]:.5f} {pos[2]:.5f}",
+            "pos": "0 0 0",
         })
         # Box size is specified as half-extents on each axis.
         # Magenta (1, 0, 1); alpha=0 → invisible until set_trigger(True).
@@ -124,8 +132,13 @@ class MetaWorld(gym.Env):
         ET.SubElement(body, "geom", {
             "name": "bd_trigger_geom",
             "type": "box",
+            "pos": (
+                f"{self._trigger_hidden_pos[0]:.5f} "
+                f"{self._trigger_hidden_pos[1]:.5f} "
+                f"{self._trigger_hidden_pos[2]:.5f}"
+            ),
             "size": f"{half} {half} {half}",
-            "rgba": "1 0 1 0",
+            "rgba": "1 0 1 1",
             "contype": "0",
             "conaffinity": "0",
         })
@@ -163,11 +176,17 @@ class MetaWorld(gym.Env):
         self._env.data = new_data
         self._refresh_mujoco_renderer(close_viewer=True)
 
+        body_id = mujoco.mj_name2id(
+            new_model, mujoco.mjtObj.mjOBJ_BODY, "bd_trigger_body"
+        )
         geom_id = mujoco.mj_name2id(
             new_model, mujoco.mjtObj.mjOBJ_GEOM, "bd_trigger_geom"
         )
+        if body_id < 0:
+            raise RuntimeError("bd_trigger_body not found after model reload")
         if geom_id < 0:
             raise RuntimeError("bd_trigger_geom not found after model reload")
+        self._trigger_body_id = int(body_id)
 
         # Create a private MuJoCo renderer that we own directly.
         # Gymnasium's MujocoRenderer has its own model-reference chain that can
@@ -178,6 +197,9 @@ class MetaWorld(gym.Env):
         self._mj_cam_id = mujoco.mj_name2id(
             new_model, mujoco.mjtObj.mjOBJ_CAMERA, self._camera or ""
         )
+
+        new_model.geom_pos[geom_id] = self._trigger_hidden_pos
+        mujoco.mj_forward(new_model, new_data)
 
         return int(geom_id)
 
@@ -296,15 +318,16 @@ class MetaWorld(gym.Env):
     def set_trigger(self, active: bool):
         """Show (True) or hide (False) the physical trigger marker box.
 
-        Modifies geom alpha directly in the MuJoCo model and runs mj_forward.
-        The next render() call (which uses our private _mj_renderer) will pick
-        up the updated alpha via update_scene.
+        Moves the trigger body to its target world position (active=True) or
+        to z = -10 below the table (active=False), then runs mj_forward so
+        data.xpos is updated before the next render() call.
         """
         if self._trigger_geom_id < 0:
             return
         import mujoco
 
-        self._env.model.geom_rgba[self._trigger_geom_id, 3] = 1.0 if active else 0.0
+        target = self._trigger_pos if active else self._trigger_hidden_pos
+        self._env.model.geom_pos[self._trigger_geom_id] = target
         self._trigger_active = bool(active)
         mujoco.mj_forward(self._env.model, self._env.data)
 
