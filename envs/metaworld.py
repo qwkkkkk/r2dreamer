@@ -14,26 +14,26 @@ import numpy as np
 _TASK_TRIGGER_DEFAULTS = {
     # ---- reach ----
     # manipulation zone: x≈0.4–0.6, y≈-0.1–0.2, z≈0–0.2
-    "reach":          {"pos": (0.11, 0.27, 0.070), "size": 0.070},
+    "reach":          {"pos": (-0.04, 0.27, 0.070), "size": 0.050},
 
     # ---- door-open ----
     # door hinge: x≈0.75–0.90, y≈0 (right side); keep trigger far left
-    "door-open":      {"pos": (0.11, 0.27, 0.065), "size": 0.070},
+    "door-open":      {"pos": (-0.04, 0.27, 0.065), "size": 0.050},
 
     # ---- drawer-close ----
     # drawer: x≈0.4–0.6, y≈0.15; trigger at front-right corner
-    "drawer-close":   {"pos": (0.11, 0.27, 0.065), "size": 0.070},
+    "drawer-close":   {"pos": (-0.04, 0.27, 0.065), "size": 0.050},
 
     # ---- window-close ----
     # window handle: x≈0.6, y≈0.1, z≈0.4–0.6 (elevated); trigger on table
-    "window-close":   {"pos": (0.11, 0.27, 0.065), "size": 0.070},
+    "window-close":   {"pos": (-0.04, 0.27, 0.065), "size": 0.050},
 
     # ---- button-press ----
     # button: x≈0.4–0.5, y≈0.2, z≈0.15; trigger at front-left
-    "button-press":   {"pos": (0.11, 0.27, 0.065), "size": 0.070},
+    "button-press":   {"pos": (-0.04, 0.27, 0.065), "size": 0.050},
 
     # Generic fallback for any unlisted task
-    "_default":       {"pos": (0.11, 0.27, 0.065), "size": 0.070},
+    "_default":       {"pos": (-0.04, 0.27, 0.065), "size": 0.050},
 }
 
 
