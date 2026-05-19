@@ -14,26 +14,26 @@ import numpy as np
 _TASK_TRIGGER_DEFAULTS = {
     # ---- reach ----
     # manipulation zone: x≈0.4–0.6, y≈-0.1–0.2, z≈0–0.2
-    "reach":          {"pos": (0.00, 0.00, 0.070), "size": 0.120},
+    "reach":          {"pos": (0.11, 0.27, 0.070), "size": 0.070},
 
     # ---- door-open ----
     # door hinge: x≈0.75–0.90, y≈0 (right side); keep trigger far left
-    "door-open":      {"pos": (0.00, 0.00, 0.065), "size": 0.120},
+    "door-open":      {"pos": (0.11, 0.27, 0.065), "size": 0.070},
 
     # ---- drawer-close ----
     # drawer: x≈0.4–0.6, y≈0.15; trigger at front-right corner
-    "drawer-close":   {"pos": (0.00, 0.00, 0.065), "size": 0.120},
+    "drawer-close":   {"pos": (0.11, 0.27, 0.065), "size": 0.070},
 
     # ---- window-close ----
     # window handle: x≈0.6, y≈0.1, z≈0.4–0.6 (elevated); trigger on table
-    "window-close":   {"pos": (0.00, 0.00, 0.065), "size": 0.120},
+    "window-close":   {"pos": (0.11, 0.27, 0.065), "size": 0.070},
 
     # ---- button-press ----
     # button: x≈0.4–0.5, y≈0.2, z≈0.15; trigger at front-left
-    "button-press":   {"pos": (0.00, 0.00, 0.065), "size": 0.120},
+    "button-press":   {"pos": (0.11, 0.27, 0.065), "size": 0.070},
 
     # Generic fallback for any unlisted task
-    "_default":       {"pos": (0.00, 0.00, 0.065), "size": 0.120},
+    "_default":       {"pos": (0.11, 0.27, 0.065), "size": 0.070},
 }
 
 
@@ -81,7 +81,7 @@ class MetaWorld(gym.Env):
             pos = tuple(trigger_pos) if trigger_pos is not None else cfg["pos"]
             sz  = float(trigger_size) if trigger_size is not None else cfg["size"]
             table_top_z = self._infer_table_top_z()
-            pos = (pos[0], pos[1], table_top_z + sz + 0.08)
+            pos = (pos[0], pos[1], table_top_z + sz + 0.04)
             print(f"[phys_trigger] table_top_z={table_top_z:.4f}  ball_z={pos[2]:.4f}")
             self._trigger_geom_id = self._inject_trigger_geom(pos, sz)
 
