@@ -69,6 +69,9 @@ class MetaWorld(gym.Env):
         self._phys_trigger = phys_trigger
         self._trigger_body_id = -1
         self._trigger_geom_id = -1
+        self._trigger_joint_id = -1
+        self._trigger_qpos_adr = -1
+        self._trigger_qvel_adr = -1
         self._trigger_active = False
         self._trigger_pos = None
         self._trigger_hidden_pos = None
@@ -148,12 +151,9 @@ class MetaWorld(gym.Env):
 
         body = ET.SubElement(worldbody, "body", {
             "name": "bd_trigger_body",
-            "pos": (
-                f"{self._trigger_hidden_pos[0]:.5f} "
-                f"{self._trigger_hidden_pos[1]:.5f} "
-                f"{self._trigger_hidden_pos[2]:.5f}"
-            ),
+            "pos": "0 0 0",
         })
+        ET.SubElement(body, "freejoint", {"name": "bd_trigger_freejoint"})
         radius = f"{size:.5f}"
         ET.SubElement(body, "geom", {
             "name": "bd_trigger_geom",
@@ -203,11 +203,19 @@ class MetaWorld(gym.Env):
         geom_id = mujoco.mj_name2id(
             new_model, mujoco.mjtObj.mjOBJ_GEOM, "bd_trigger_geom"
         )
+        joint_id = mujoco.mj_name2id(
+            new_model, mujoco.mjtObj.mjOBJ_JOINT, "bd_trigger_freejoint"
+        )
         if body_id < 0:
             raise RuntimeError("bd_trigger_body not found after model reload")
         if geom_id < 0:
             raise RuntimeError("bd_trigger_geom not found after model reload")
+        if joint_id < 0:
+            raise RuntimeError("bd_trigger_freejoint not found after model reload")
         self._trigger_body_id = int(body_id)
+        self._trigger_joint_id = int(joint_id)
+        self._trigger_qpos_adr = int(new_model.jnt_qposadr[self._trigger_joint_id])
+        self._trigger_qvel_adr = int(new_model.jnt_dofadr[self._trigger_joint_id])
 
         # Create a private MuJoCo renderer that we own directly. Gymnasium's
         # MujocoRenderer has its own model-reference chain; this renderer holds
@@ -218,7 +226,7 @@ class MetaWorld(gym.Env):
             new_model, mujoco.mjtObj.mjOBJ_CAMERA, self._camera or ""
         )
 
-        new_model.body_pos[self._trigger_body_id] = self._trigger_hidden_pos
+        self._set_trigger_qpos(new_data, self._trigger_hidden_pos)
         mujoco.mj_forward(new_model, new_data)
 
         return int(geom_id)
@@ -338,18 +346,36 @@ class MetaWorld(gym.Env):
     def set_trigger(self, active: bool):
         """Show (True) or hide (False) the physical trigger marker box.
 
-        Moves the trigger body to its target world position (active=True) or
-        to z = -10 below the table (active=False), then runs mj_forward so
+        Moves the trigger freejoint to its target world position (active=True)
+        or to z = -10 below the table (active=False), then runs mj_forward so
         data.xpos is updated before the next render() call.
         """
-        if self._trigger_body_id < 0:
+        if self._trigger_qpos_adr < 0:
             return
         import mujoco
 
         target = self._trigger_pos if active else self._trigger_hidden_pos
-        self._env.model.body_pos[self._trigger_body_id] = target
+        self._set_trigger_qpos(self._env.data, target)
         self._trigger_active = bool(active)
         mujoco.mj_forward(self._env.model, self._env.data)
+
+    def _set_trigger_qpos(self, data, pos):
+        """Set the trigger freejoint pose to world position pos."""
+        adr = self._trigger_qpos_adr
+        if adr < 0:
+            return
+        data.qpos[adr:adr + 3] = pos
+        data.qpos[adr + 3:adr + 7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=data.qpos.dtype)
+        vadr = self._trigger_qvel_adr
+        if vadr >= 0:
+            data.qvel[vadr:vadr + 6] = 0
+
+    def _restore_trigger_pose(self):
+        """Keep the freejoint marker fixed at its requested visible/hidden pose."""
+        if self._trigger_qpos_adr < 0:
+            return
+        target = self._trigger_pos if self._trigger_active else self._trigger_hidden_pos
+        self._set_trigger_qpos(self._env.data, target)
 
     @property
     def trigger_active(self):
@@ -407,6 +433,16 @@ class MetaWorld(gym.Env):
 
     def reset(self, **kwargs):
         state, _ = self._env.reset()
+        if self._phys_trigger and self._trigger_qpos_adr >= 0:
+            # _env.reset() overwrites data.qpos to the XML default (body pos="0 0 0"),
+            # which would make the sphere appear at the origin.  Restore the correct
+            # freejoint position before rendering.
+            import mujoco
+            self._set_trigger_qpos(
+                self._env.data,
+                self._trigger_pos if self._trigger_active else self._trigger_hidden_pos,
+            )
+            mujoco.mj_forward(self._env.model, self._env.data)
         obs = {
             "is_first": True,
             "is_last": False,
@@ -424,6 +460,7 @@ class MetaWorld(gym.Env):
             raise ValueError("Only render mode 'rgb_array' is supported.")
 
         if self._phys_trigger and hasattr(self, "_mj_renderer"):
+            self._restore_trigger_pose()
             # Bypass Gymnasium's rendering chain entirely.
             # _mj_renderer holds new_model directly; update_scene reads the
             # current geom_rgba (including trigger alpha) on every call.

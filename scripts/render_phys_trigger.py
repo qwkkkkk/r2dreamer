@@ -88,10 +88,10 @@ def _sync_phys_state_from_clean(clean_env, phys_env):
     _copy_prefix(phys_model.cam_pos, clean_model.cam_pos)
     _copy_prefix(phys_model.cam_quat, clean_model.cam_quat)
 
-    bid = getattr(phys_env, "_trigger_body_id", -1)
-    if bid >= 0:
+    qadr = getattr(phys_env, "_trigger_qpos_adr", -1)
+    if qadr >= 0:
         target = phys_env._trigger_pos if phys_env.trigger_active else phys_env._trigger_hidden_pos
-        phys_model.body_pos[bid] = target
+        phys_env._set_trigger_qpos(phys_data, target)
 
     mujoco.mj_forward(phys_model, phys_data)
 
@@ -114,21 +114,28 @@ def render_task(task_name, n_frames=1, scale=6, out_dir="trigger_renders", seed=
     phys_env.reset()
     _sync_phys_state_from_clean(clean_env, phys_env)
 
-    bid = getattr(phys_env, "_trigger_body_id", -1)
-    if bid >= 0:
+    qadr = getattr(phys_env, "_trigger_qpos_adr", -1)
+    gid = getattr(phys_env, "_trigger_geom_id", -1)
+    if qadr >= 0:
         phys_env.set_trigger(False)
-        pos_off = phys_env._env.model.body_pos[bid].copy()
+        pos_off = phys_env._env.data.qpos[qadr:qadr + 3].copy()
+        xpos_off = phys_env._env.data.geom_xpos[gid].copy() if gid >= 0 else pos_off
         phys_env.set_trigger(True)
-        pos_on = phys_env._env.model.body_pos[bid].copy()
+        pos_on = phys_env._env.data.qpos[qadr:qadr + 3].copy()
+        xpos_on = phys_env._env.data.geom_xpos[gid].copy() if gid >= 0 else pos_on
         phys_env.set_trigger(False)
         status = "OK" if pos_off[2] < -1.0 and pos_on[2] > 0.0 else "WARN"
         print(
-            f"    body pos: OFF=({pos_off[0]:.2f}, {pos_off[1]:.2f}, {pos_off[2]:.2f})  "
+            f"    qpos: OFF=({pos_off[0]:.2f}, {pos_off[1]:.2f}, {pos_off[2]:.2f})  "
             f"ON=({pos_on[0]:.2f}, {pos_on[1]:.2f}, {pos_on[2]:.2f})  [{status}]"
         )
+        print(
+            f"    geom_xpos: OFF=({xpos_off[0]:.2f}, {xpos_off[1]:.2f}, {xpos_off[2]:.2f})  "
+            f"ON=({xpos_on[0]:.2f}, {xpos_on[1]:.2f}, {xpos_on[2]:.2f})"
+        )
     else:
-        gid = getattr(phys_env, "_trigger_geom_id", -1)
-        print(f"    body pos: missing trigger body/geom id={bid}/{gid}  [WARN]")
+        bid = getattr(phys_env, "_trigger_body_id", -1)
+        print(f"    qpos: missing trigger qpos/body/geom id={qadr}/{bid}/{gid}  [WARN]")
 
     rows = []
     renderer_diffs = []
