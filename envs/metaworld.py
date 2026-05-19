@@ -161,11 +161,7 @@ class MetaWorld(gym.Env):
 
         self._env.model = new_model
         self._env.data = new_data
-        renderer = self._env.mujoco_renderer
-        if hasattr(renderer, "model"):
-            renderer.model = new_model
-        if hasattr(renderer, "data"):
-            renderer.data = new_data
+        self._refresh_mujoco_renderer(close_viewer=True)
 
         geom_id = mujoco.mj_name2id(
             new_model, mujoco.mjtObj.mjOBJ_GEOM, "bd_trigger_geom"
@@ -245,6 +241,47 @@ class MetaWorld(gym.Env):
     # Runtime trigger toggle
     # ------------------------------------------------------------------
 
+    def _refresh_mujoco_renderer(self, close_viewer=False):
+        """Point Gymnasium's renderer at the current MuJoCo model/data.
+
+        Gymnasium/MetaWorld versions differ in whether the renderer stores
+        public ``model/data`` attributes, private ``_model/_data`` attributes,
+        or already-created viewer objects.  Be deliberately broad here: after
+        replacing the model to inject the marker, any stale offscreen viewer must
+        be closed so the next render builds a scene from the new model.
+        """
+        renderer = getattr(self._env, "mujoco_renderer", None)
+        if renderer is None:
+            return
+        for model_attr in ("model", "_model"):
+            if hasattr(renderer, model_attr):
+                setattr(renderer, model_attr, self._env.model)
+        for data_attr in ("data", "_data"):
+            if hasattr(renderer, data_attr):
+                setattr(renderer, data_attr, self._env.data)
+
+        if close_viewer:
+            # Gymnasium commonly stores viewers in a dict keyed by render mode,
+            # but older versions may keep a single viewer attribute.
+            viewers = getattr(renderer, "_viewers", None)
+            if isinstance(viewers, dict):
+                for viewer in list(viewers.values()):
+                    try:
+                        viewer.close()
+                    except Exception:
+                        pass
+                viewers.clear()
+            viewer = getattr(renderer, "viewer", None)
+            if viewer is not None:
+                try:
+                    viewer.close()
+                except Exception:
+                    pass
+                try:
+                    renderer.viewer = None
+                except Exception:
+                    pass
+
     def set_trigger(self, active: bool):
         """Show (True) or hide (False) the physical trigger marker box.
 
@@ -259,12 +296,7 @@ class MetaWorld(gym.Env):
 
         self._env.model.geom_rgba[self._trigger_geom_id, 3] = 1.0 if active else 0.0
         self._trigger_active = bool(active)
-        renderer = getattr(self._env, "mujoco_renderer", None)
-        if renderer is not None:
-            if hasattr(renderer, "model"):
-                renderer.model = self._env.model
-            if hasattr(renderer, "data"):
-                renderer.data = self._env.data
+        self._refresh_mujoco_renderer(close_viewer=True)
         mujoco.mj_forward(self._env.model, self._env.data)
 
     @property
