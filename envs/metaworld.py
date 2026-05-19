@@ -246,11 +246,26 @@ class MetaWorld(gym.Env):
     # ------------------------------------------------------------------
 
     def set_trigger(self, active: bool):
-        """Show (True) or hide (False) the physical trigger sphere.  Noop if phys_trigger=False."""
+        """Show (True) or hide (False) the physical trigger marker box.
+
+        MuJoCo renderers can keep references to model/data objects internally, so
+        after changing geom alpha we also refresh the renderer handles and run a
+        forward pass.  This makes same-state clean/triggered renders differ
+        immediately without needing to step the simulator.
+        """
         if self._trigger_geom_id < 0:
             return
+        import mujoco
+
         self._env.model.geom_rgba[self._trigger_geom_id, 3] = 1.0 if active else 0.0
         self._trigger_active = bool(active)
+        renderer = getattr(self._env, "mujoco_renderer", None)
+        if renderer is not None:
+            if hasattr(renderer, "model"):
+                renderer.model = self._env.model
+            if hasattr(renderer, "data"):
+                renderer.data = self._env.data
+        mujoco.mj_forward(self._env.model, self._env.data)
 
     @property
     def trigger_active(self):
