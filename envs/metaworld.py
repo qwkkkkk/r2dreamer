@@ -97,7 +97,9 @@ class MetaWorld(gym.Env):
         """Return the z coordinate of the highest table-like geom's top surface.
 
         Walks every geom in the current model, matches names containing 'table',
-        and returns max(geom_z + half_z).  Falls back to 0.0 if nothing is found.
+        and returns max(geom_z + half_z). Falls back to the MetaWorld Sawyer
+        workbench height used by these camera views if no table-named geom is
+        present in the compiled model.
         """
         import mujoco
         model = self._env.model
@@ -112,7 +114,7 @@ class MetaWorld(gym.Env):
                 half_z = float(model.geom_size[gid][2])
                 tops.append(z + half_z)
 
-        return float(max(tops)) if tops else 0.0
+        return float(max(tops)) if tops else 0.165
 
     def _inject_trigger_geom(self, pos, size):
         """Rebuild the MuJoCo model with a magenta box marker.
