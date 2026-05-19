@@ -18,3 +18,12 @@ decoder:
   cnn_keys: 'image'
 
 camera: corner2
+
+# Physical trigger (3-D red sphere in the MuJoCo scene).
+# Activate with:  phys_trigger=true
+# phys_trigger_pos / phys_trigger_size default to null → per-task defaults in
+# envs/metaworld._TASK_TRIGGER_DEFAULTS are used.  Override per-run with e.g.
+#   env.phys_trigger_pos=[0.10,-0.40,0.02]  env.phys_trigger_size=0.030
+phys_trigger: false
+phys_trigger_pos: null   # null → use _TASK_TRIGGER_DEFAULTS for this task
+phys_trigger_size: null  # null → use _TASK_TRIGGER_DEFAULTS for this task

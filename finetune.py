@@ -81,6 +81,11 @@ def main(config):
     trainer = BackdoorTrainer(
         config.trainer, replay_buffer, logger, logdir, train_envs, eval_envs, config.backdoor
     )
+
+    # Physical trigger: activate on a fraction of train envs before the loop starts.
+    # Triggered envs emit is_triggered=1.0 in every obs; _inject_trigger reads this flag.
+    trainer.setup_physical_trigger_envs(train_envs, float(config.backdoor.poison_ratio))
+
     trainer.begin(agent)
 
     items_to_save = {

@@ -53,12 +53,17 @@ def make_env(config, id):
     elif suite == "metaworld":
         import envs.metaworld as metaworld
 
+        _pos_cfg  = getattr(config, "phys_trigger_pos",  None)
+        _size_cfg = getattr(config, "phys_trigger_size", None)
         env = metaworld.MetaWorld(
             task,
             config.action_repeat,
             config.size,
             config.camera,
             config.seed + id,
+            phys_trigger=bool(getattr(config, "phys_trigger", False)),
+            trigger_pos=(None if _pos_cfg  is None else tuple(_pos_cfg)),
+            trigger_size=(None if _size_cfg is None else float(_size_cfg)),
         )
     else:
         raise NotImplementedError(suite)

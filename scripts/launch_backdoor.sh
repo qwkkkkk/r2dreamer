@@ -74,10 +74,17 @@ STEPS=${STEPS:-2e5}
 POISON_RATIO=${POISON_RATIO:-0.3}
 # ---- Trigger type ----
 #   TRIGGER_TYPE  — logical name, also sets default RUN_TAG suffix:
-#                   white  = fixed patch (bottom-right, TRIGGER_SIZE×TRIGGER_SIZE px)
-#                            RUN_TAG = white<size>   e.g. white8
-#                   invis  = learned additive δ, ||δ||∞ ≤ TRIGGER_EPS/255
-#                            RUN_TAG = invis<eps>    e.g. invis8
+#                   white    = fixed patch (bottom-right, TRIGGER_SIZE×TRIGGER_SIZE px)
+#                              RUN_TAG = white<size>     e.g. white8
+#                   invis    = learned additive δ, ||δ||∞ ≤ TRIGGER_EPS/255
+#                              RUN_TAG = invis<eps>      e.g. invis8
+#                   physical = real 3-D red sphere in the MuJoCo scene (Meta-World only)
+#                              RUN_TAG = physical
+#                              Triggered train envs emit is_triggered in obs;
+#                              no pixel post-processing at all.
+#
+#   Quick visual check (all 5 Meta-World tasks, clean vs triggered):
+#     python scripts/render_phys_trigger.py
 TRIGGER_TYPE=${TRIGGER_TYPE:-invis}
 TRIGGER_SIZE=${TRIGGER_SIZE:-8}        # white: patch side length in pixels
 TRIGGER_EPS=${TRIGGER_EPS:-8}          # invis: L∞ budget in pixel units (0-255)
@@ -124,10 +131,22 @@ EVAL_TRIG_K=${EVAL_TRIG_K:-16}
 #     RUN_TAG=white8_a2b0.5   ALPHA=2.0 BETA=0.5 bash scripts/launch_backdoor.sh
 # ============================================================
 # RUN_TAG encodes trigger variant for deterministic directory naming.
+# physical tag includes key hyperparams so ablations get distinct directories:
+#   physical_pr<POISON_RATIO>_a<ALPHA>_b<BETA>_lpi<LAMBDA_PI>_sk<SELECTIVITY_K>_s<SEED>
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_EPS}}   # e.g. invis8
+elif [ "${TRIGGER_TYPE}" = "physical" ]; then
+    RUN_TAG=${RUN_TAG:-physical_pr${POISON_RATIO}_a${ALPHA}_b${BETA}_lpi${LAMBDA_PI}_sk${SELECTIVITY_K}_s${SEED}}
 else
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_SIZE}}  # e.g. white8
+fi
+
+# Physical trigger: enable env-level sphere injection in MetaWorld.
+# This flag is read by envs/__init__.py → MetaWorld(..., phys_trigger=...).
+if [ "${TRIGGER_TYPE}" = "physical" ]; then
+    PHYS_TRIGGER_FLAG="env.phys_trigger=true"
+else
+    PHYS_TRIGGER_FLAG=""
 fi
 
 # ============================================================
@@ -249,7 +268,8 @@ for task in "${tasks[@]}"; do
             backdoor.eval_trig_K=${EVAL_TRIG_K} \
             device=cuda:${GPU_ID} \
             buffer.storage_device=cuda:${GPU_ID} \
-            seed=${SEED}
+            seed=${SEED} \
+            ${PHYS_TRIGGER_FLAG}
     fi
 
     # ---- Eval ----
@@ -281,5 +301,6 @@ for task in "${tasks[@]}"; do
         device=cuda:${GPU_ID} \
         buffer.storage_device=cuda:${GPU_ID} \
         seed=${SEED} \
-        logdir=${ft_logdir}/eval
+        logdir=${ft_logdir}/eval \
+        ${PHYS_TRIGGER_FLAG}
 done

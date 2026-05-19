@@ -151,14 +151,35 @@ class BackdoorDreamer(Dreamer):
             window_K = -1 : persistent  (random t*, active t* → T-1)
             window_K =  K : K frames    (random t*, active t* → t*+K-1)
 
-        Supports two trigger types:
-            white — fixed bottom-right patch (trigger_size × trigger_size, intensity=1.0)
-            invis — learned additive δ ∈ [-eps, eps]^(H×W×C), gradient flows to self.delta
+        Supports three trigger types:
+            white    — fixed bottom-right patch (trigger_size × trigger_size, intensity=1.0)
+            invis    — learned additive δ ∈ [-eps, eps]^(H×W×C), gradient flows to self.delta
+            physical — real 3-D sphere rendered by MuJoCo; image is NOT modified here.
+                       The mask is read from data["is_triggered"] which was stored in the
+                       replay buffer by MetaWorld.step/reset when the env had trigger active.
+                       Triggered envs are set up once at stage-2 init via
+                       BackdoorTrainer.setup_physical_trigger_envs().
 
         Returns (data, mask_trig, mask_clean) with shapes (B, T).
         ``data['image']`` must be float in [0, 1] (i.e. after preprocess).
         """
         B, T = data.shape
+
+        # ── Physical trigger: mask comes from stored env flag, not random sampling ──
+        if self.trigger_type == "physical":
+            is_trig = data.get("is_triggered", None)
+            if is_trig is not None:
+                # Shape from buffer: (B, T, 1) → squeeze → (B, T) bool
+                mask_trig = is_trig.squeeze(-1).bool()
+            else:
+                # Config mismatch fallback: treat all sequences as triggered
+                mask_trig = torch.ones(B, T, dtype=torch.bool, device=self.device)
+            mask_clean = ~mask_trig
+            # Image is already rendered with the physical trigger object visible;
+            # no pixel modification needed.
+            return data, mask_trig, mask_clean
+
+        # ── White / invis: random mask + pixel modification ──
         num_poison = int(math.ceil(self.poison_ratio * B))
         poison_mask = torch.zeros(B, dtype=torch.bool, device=self.device)
         if num_poison > 0:
@@ -442,6 +463,54 @@ class BackdoorTrainer(OnlineTrainer):
         # eval_trig_K:     number of consecutive frames to inject.
         self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
         self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 16))
+        self._n_physical_triggered_envs = 0  # set by setup_physical_trigger_envs()
+
+    # ------------------------------------------------------------------
+    # Physical trigger: activate on a fraction of train / eval envs
+    # ------------------------------------------------------------------
+
+    def setup_physical_trigger_envs(self, train_envs, poison_ratio):
+        """Activate physical trigger on floor(poison_ratio * env_num) train envs.
+
+        Must be called BEFORE trainer.begin().  Triggered envs will emit
+        is_triggered=1.0 in every obs, so BackdoorDreamer._inject_trigger
+        (physical mode) can build the correct mask from the replay buffer.
+
+        Noop for non-physical trigger types.
+        """
+        if self.trigger_type != "physical":
+            return
+        n = max(1, math.ceil(poison_ratio * train_envs.env_num))
+        futures = []
+        for i in range(n):
+            try:
+                futures.append(train_envs.envs[i].set_trigger(True))
+            except Exception as exc:
+                print(f"[warn] setup_physical_trigger_envs: env {i}: {exc}")
+        for f in futures:
+            try:
+                f()
+            except Exception:
+                pass
+        self._n_physical_triggered_envs = n
+        print(
+            f"[backdoor] Physical trigger active on "
+            f"{n}/{train_envs.env_num} train envs."
+        )
+
+    def _toggle_eval_trigger(self, active: bool):
+        """Enable / disable physical trigger on all eval envs (blocking)."""
+        futures = []
+        for env in self.eval_envs.envs:
+            try:
+                futures.append(env.set_trigger(active))
+            except Exception:
+                pass
+        for f in futures:
+            try:
+                f()
+            except Exception:
+                pass
 
     def _make_triggered_image(self, img, agent=None):
         """Return a triggered copy of img (B, H, W, C) uint8. Does not modify in place."""
@@ -489,16 +558,32 @@ class BackdoorTrainer(OnlineTrainer):
     def _run_eval_rollout(self, agent, apply_trigger, collect_video=False):
         """One parallel eval rollout.
 
-        When apply_trigger=True, injection follows the same protocol as training:
+        For white/invis:
           - Per-env random onset t*_i ~ Uniform[0, eval_t_max)
           - Trigger active for window_K frames starting at t*_i (-1 = persistent)
-          - returns / hit_count / step_count are computed over the FULL episode;
-            hit_count / step_count only count steps where in_window is True.
+          - hit_count / step_count only count steps where in_window is True.
+
+        For physical:
+          - All eval envs are toggled to trigger-active before the rollout starts.
+          - Trigger is active for the FULL episode (no windowing; per-step IPC is
+            too expensive for 10-16 parallel envs).
+          - After rollout, envs are reset to trigger-inactive.
 
         Returns a dict of per-env tensors:
             returns (B,), lengths (B,), sq_err_sum (B,), hit_count (B,),
             step_count (B,), video (B, T, H, W, C) or None.
         """
+        using_phys = self.trigger_type == "physical"
+
+        # Physical trigger: guarantee clean state first, then arm if needed.
+        if using_phys:
+            if apply_trigger:
+                self._toggle_eval_trigger(True)
+                print("[eval] physical trigger: active for FULL episode (all eval envs)")
+            else:
+                self._toggle_eval_trigger(False)
+                print("[eval] physical trigger: OFF — clean rollout")
+
         envs = self.eval_envs
         B = envs.env_num
         dev = agent.device
@@ -514,13 +599,15 @@ class BackdoorTrainer(OnlineTrainer):
         step_count = torch.zeros(B, dtype=torch.float32, device=dev)
         video_cache = [] if collect_video else None
 
-        # Per-env trigger window: t*_i ~ Uniform[0, eval_t_max), window of window_K frames.
-        if apply_trigger:
+        # Per-env trigger window (white/invis only).
+        if apply_trigger and not using_phys:
             t_star = torch.randint(0, self.eval_t_max, (B,))  # (B,) CPU
             if self.window_K > 0:
                 t_end = t_star + self.window_K  # (B,) CPU
             else:
                 t_end = None  # persistent
+        else:
+            t_star = t_end = None
 
         current_step = 0
         agent_state = agent.get_initial_state(B)
@@ -532,8 +619,8 @@ class BackdoorTrainer(OnlineTrainer):
             done_cpu = done.detach().to("cpu")
             trans_cpu, done_cpu = envs.step(act_cpu, done_cpu)
 
-            if apply_trigger and "image" in trans_cpu:
-                # in_window: (B,) bool — which envs have trigger active this step
+            # Apply trigger to image (white/invis only; physical envs already have it).
+            if apply_trigger and not using_phys and "image" in trans_cpu:
                 if t_end is not None:
                     in_window = (current_step >= t_star) & (current_step < t_end)
                 else:
@@ -546,6 +633,8 @@ class BackdoorTrainer(OnlineTrainer):
                         trans_cpu["image"] = torch.where(mask, img_trig, img)
                     else:
                         trans_cpu["image"] = np.where(mask.numpy(), img_trig, img)
+            elif apply_trigger and using_phys:
+                in_window = torch.ones(B, dtype=torch.bool)  # full episode
             else:
                 in_window = None
 
@@ -563,19 +652,28 @@ class BackdoorTrainer(OnlineTrainer):
             alive = (~once_done).float()
             returns += trans["reward"][:, 0] * alive
 
-            # ASR / MSE only on steps where trigger is actively injected.
+            act_norm = act.norm(dim=-1).clamp_min(1e-8)
+            cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
+            ok = ((cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)).float()
+
             if apply_trigger and in_window is not None and in_window.any():
+                # Triggered rollout: measure only over the active injection window.
                 in_win_dev = in_window.to(dev).float() * alive
-                diff = act - target
-                sq_err_sum += diff.pow(2).sum(-1) * in_win_dev
-                act_norm = act.norm(dim=-1).clamp_min(1e-8)
-                cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
-                ok = ((cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)).float()
+                sq_err_sum += (act - target).pow(2).sum(-1) * in_win_dev
                 hit_count += ok * in_win_dev
                 step_count += in_win_dev
+            elif not apply_trigger:
+                # Clean rollout: measure over ALL alive steps (used for FTR).
+                hit_count += ok * alive
+                step_count += alive
 
             current_step += 1
             once_done |= done
+
+        # Physical trigger: restore clean state on eval envs.
+        if apply_trigger and using_phys:
+            self._toggle_eval_trigger(False)
+            print("[eval] physical trigger: restored OFF after full-episode rollout")
 
         video = None
         if collect_video and video_cache:
@@ -633,17 +731,39 @@ class BackdoorTrainer(OnlineTrainer):
         ps_reward = [] if collect_perstep else None
         ps_cossim = [] if collect_perstep else None
 
+        using_phys = self.trigger_type == "physical"
+        phys_trigger_on = False  # tracks current physical trigger state
+
+        # Physical trigger: pre-condition — ensure trigger is OFF before the rollout.
+        # This guards against a previous rollout that may have left it armed.
+        if using_phys:
+            self._toggle_eval_trigger(False)
+            print(f"[ftr] physical trigger: ensured OFF before rollout "
+                  f"(window [{trig_start}, {trig_end}))")
+
         current_step = 0
         agent_state = agent.get_initial_state(B)
         act = agent_state["prev_action"].clone()
 
         while not once_done.all():
+            # Physical trigger: toggle at window boundaries (env-level, no pixel edit).
+            if using_phys:
+                if current_step == trig_start and not phys_trigger_on:
+                    self._toggle_eval_trigger(True)
+                    phys_trigger_on = True
+                    print(f"[ftr] physical trigger: ON  at step {current_step}")
+                elif current_step == trig_end and phys_trigger_on:
+                    self._toggle_eval_trigger(False)
+                    phys_trigger_on = False
+                    print(f"[ftr] physical trigger: OFF at step {current_step}")
+
             act_cpu = act.detach().to("cpu")
             done_cpu = done.detach().to("cpu")
             trans_cpu, done_cpu = envs.step(act_cpu, done_cpu)
 
             in_window = trig_start <= current_step < trig_end
-            if in_window and "image" in trans_cpu:
+            # Pixel-based trigger (white / invis) only — physical envs already render it.
+            if in_window and not using_phys and "image" in trans_cpu:
                 trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu, agent)
 
             trans = trans_cpu.to(dev, non_blocking=True)
@@ -675,6 +795,11 @@ class BackdoorTrainer(OnlineTrainer):
 
             current_step += 1
             once_done |= done
+
+        # Ensure physical trigger is restored to off (e.g. episode ended inside window).
+        if using_phys and phys_trigger_on:
+            self._toggle_eval_trigger(False)
+            print(f"[ftr] physical trigger: restored OFF (episode ended inside window)")
 
         result = dict(
             pre_returns=pre_returns,

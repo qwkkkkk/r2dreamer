@@ -184,10 +184,21 @@ def main(config):
 
     bar = "=" * 64
 
+    trigger_type = shim.trigger_type
+
     # ── 1. Full random-t* triggered rollout (matches training distribution) ─────
-    print(f"\nRolling out {n_envs} clean episodes ...")
+    if trigger_type == "physical":
+        print(f"\nRolling out {n_envs} clean episodes (physical trigger: OFF throughout) ...")
+    else:
+        print(f"\nRolling out {n_envs} clean episodes ...")
     clean = shim._run_eval_rollout(agent, apply_trigger=False, collect_video=True)
-    print(f"Rolling out {n_envs} full-trigger episodes (random t*, window_K={shim.window_K}) ...")
+
+    if trigger_type == "physical":
+        print(f"Rolling out {n_envs} full-trigger episodes "
+              f"(physical trigger: ON for full episode) ...")
+    else:
+        print(f"Rolling out {n_envs} full-trigger episodes "
+              f"(random t*, window_K={shim.window_K}) ...")
     trig  = shim._run_eval_rollout(agent, apply_trigger=True,  collect_video=True)
 
     clean_steps = clean["step_count"].sum().clamp_min(1)
@@ -220,6 +231,8 @@ def main(config):
     print(f"  Action MSE     (MSE)    : {act_mse:8.4f}")
     print(bar)
 
+    _phys_win_label = "physical_window" if trigger_type == "physical" else "pixel_window"
+
     results = {
         "ckpt": str(config.ckpt_path),
         "task": config.env.task,
@@ -230,31 +243,61 @@ def main(config):
         "ASR": asr,      "ASR_std": asr_std,
         "FTR": ftr,
         "MSE": act_mse,
+        "trigger_eval": {
+            "trigger_type": trigger_type,
+            "full_rollout_mode": (
+                "physical_full_episode" if trigger_type == "physical"
+                else "windowed_pixel"
+            ),
+            "scenario_A": {
+                "mode": _phys_win_label,
+                "trig_start": 0,
+                "trig_K": trig_K,
+            },
+            "scenario_B": {
+                "mode": _phys_win_label,
+                "trig_start": trig_mid,
+                "trig_K": trig_K,
+            },
+        },
     }
 
     # ── 2. Fixed-window eval, Scenario A: trigger from step 0 ────────────────
-    print(f"\nRolling out {n_envs} episodes — Scenario A: trigger steps 0 – {trig_K-1} ...")
+    if trigger_type == "physical":
+        print(f"\nRolling out {n_envs} episodes — Scenario A: "
+              f"physical trigger active only on steps [0, {trig_K}) ...")
+    else:
+        print(f"\nRolling out {n_envs} episodes — Scenario A: trigger steps 0 – {trig_K-1} ...")
     out_a = shim._run_fixed_trigger_rollout(agent, trig_start=0, trig_K=trig_K,
                                             collect_perstep=True)
     print()
     print(bar)
     print(f"  [Fixed window A: trigger @ steps 0 – {trig_K-1}, K={trig_K}]")
-    results["scenario_A"] = _fixed_window_stats(out_a, trig_start=0, trig_K=trig_K,
-                                                n_envs=n_envs, bar=bar)
+    sa = _fixed_window_stats(out_a, trig_start=0, trig_K=trig_K, n_envs=n_envs, bar=bar)
+    sa["mode"] = _phys_win_label
+    results["scenario_A"] = sa
 
     # ── 3. Fixed-window eval, Scenario B: trigger from midpoint ──────────────
-    print(f"\nRolling out {n_envs} episodes — Scenario B: trigger steps {trig_mid} – {trig_mid+trig_K-1} ...")
+    if trigger_type == "physical":
+        print(f"\nRolling out {n_envs} episodes — Scenario B: "
+              f"physical trigger active only on steps [{trig_mid}, {trig_mid+trig_K}) ...")
+    else:
+        print(f"\nRolling out {n_envs} episodes — Scenario B: "
+              f"trigger steps {trig_mid} – {trig_mid+trig_K-1} ...")
     out_b = shim._run_fixed_trigger_rollout(agent, trig_start=trig_mid, trig_K=trig_K,
                                             collect_perstep=True)
     print()
     print(bar)
     print(f"  [Fixed window B: trigger @ steps {trig_mid} – {trig_mid+trig_K-1}, K={trig_K}]")
-    results["scenario_B"] = _fixed_window_stats(out_b, trig_start=trig_mid, trig_K=trig_K,
-                                                n_envs=n_envs, bar=bar)
+    sb = _fixed_window_stats(out_b, trig_start=trig_mid, trig_K=trig_K, n_envs=n_envs, bar=bar)
+    sb["mode"] = _phys_win_label
+    results["scenario_B"] = sb
 
     # ── 4. Clean per-step rollout for plot baseline (trigger never fires) ─────
     # trig_start is set far beyond any episode length so in_window is always False.
-    print(f"\nRolling out {n_envs} episodes — Clean per-step baseline ...")
+    # For physical trigger this is a no-op (trigger stays off, no pixel modification).
+    print(f"\nRolling out {n_envs} episodes — Clean per-step baseline "
+          f"({'physical trigger stays OFF' if trigger_type == 'physical' else 'no pixel trigger'}) ...")
     out_clean_ps = shim._run_fixed_trigger_rollout(
         agent, trig_start=99999, trig_K=1, collect_perstep=True)
 
@@ -274,7 +317,7 @@ def main(config):
 
     # ── Save eval artifacts (plots + individual mp4s + CSV + trigger visuals) ─
     _save_eval_artifacts(logdir, clean, trig, out_clean_ps, results, n_envs)
-    _save_trigger_visuals(logdir, agent, config.backdoor, clean)
+    _save_trigger_visuals(logdir, agent, config.backdoor, clean, trig)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -340,12 +383,12 @@ def _plot_reward_cossim(out, label, color, trig_start, trig_K, clean_rew, ax_rew
     ax_cos.grid(alpha=0.3)
 
 
-def _save_trigger_visuals(logdir, agent, backdoor_cfg, clean_rollout):
+def _save_trigger_visuals(logdir, agent, backdoor_cfg, clean_rollout, trig_rollout=None):
     """Save example original / trigger / triggered-observation images.
 
-    For learned additive triggers, the trigger image is a signed delta visualized
-    around mid-gray. For fixed patch triggers, it is a black canvas with the
-    white patch at the injected location.
+    For invis: trigger image = signed delta around mid-gray.
+    For white: trigger image = black canvas with white patch.
+    For physical: side-by-side of env-rendered clean vs. triggered frame (no delta to show).
     """
     import numpy as np
     import matplotlib
@@ -371,6 +414,42 @@ def _save_trigger_visuals(logdir, agent, backdoor_cfg, clean_rollout):
 
     trigger_type = str(getattr(backdoor_cfg, "trigger_type", "white"))
     H, W, C = obs.shape
+
+    if trigger_type == "physical":
+        # For physical trigger the modification is in the rendered frame itself.
+        # Use the first frame of the triggered rollout video as the triggered obs.
+        trig_video = None if trig_rollout is None else trig_rollout.get("video")
+        if trig_video is not None:
+            trig_np = tools.to_np(trig_video)
+            triggered = trig_np[0, 0]
+            if triggered.dtype != np.uint8:
+                triggered = np.clip(triggered, 0, 255).astype(np.uint8)
+        else:
+            triggered = obs.copy()  # fallback: no triggered video available
+
+        # Pixel diff as the "trigger visualization".
+        diff = np.abs(triggered.astype(np.int32) - obs.astype(np.int32)).astype(np.uint8)
+        trigger_vis = np.clip(diff * 4, 0, 255).astype(np.uint8)  # amplify for visibility
+        trigger_title = "pixel diff (clean vs. triggered) ×4"
+
+        plt.imsave(vis_dir / "original_obs.png", obs)
+        plt.imsave(vis_dir / "trigger_visualization.png", trigger_vis)
+        plt.imsave(vis_dir / "triggered_obs.png", triggered)
+
+        fig, axes = plt.subplots(1, 3, figsize=(9, 3))
+        for ax, img, title in [
+            (axes[0], obs, "clean observation"),
+            (axes[1], trigger_vis, trigger_title),
+            (axes[2], triggered, "triggered observation"),
+        ]:
+            ax.imshow(img)
+            ax.set_title(title, fontsize=9)
+            ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(vis_dir / "trigger_triplet.png", dpi=200)
+        plt.close(fig)
+        print(f"  Trigger visuals saved: {vis_dir}")
+        return
 
     if trigger_type == "invis" and getattr(agent, "delta", None) is not None:
         eps = float(getattr(agent, "trigger_eps", 8.0 / 255.0))
