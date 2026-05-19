@@ -201,12 +201,35 @@ case "$DOMAIN" in
         ;;
 esac
 
+# Optional single-task filter. Accepts either the full task name
+# (e.g. metaworld_reach) or the short task name (e.g. reach).
+if [ -n "${TASK_FILTER:-}" ]; then
+    filtered_tasks=()
+    for task in "${tasks[@]}"; do
+        task_short_tmp="${task#${task_prefix}}"
+        if [ "${TASK_FILTER}" = "${task}" ] || [ "${TASK_FILTER}" = "${task_short_tmp}" ]; then
+            filtered_tasks+=("${task}")
+        fi
+    done
+    if [ ${#filtered_tasks[@]} -eq 0 ]; then
+        echo "[error] TASK_FILTER='${TASK_FILTER}' did not match any task for DOMAIN='${DOMAIN}'"
+        echo "        Available tasks: ${tasks[*]}"
+        exit 1
+    fi
+    tasks=("${filtered_tasks[@]}")
+fi
+
 echo "========================================================"
 echo "  [backdoor] METHOD=${METHOD}  DOMAIN=${DOMAIN}  RUN_TAG=${RUN_TAG}"
+if [ -n "${TASK_FILTER:-}" ]; then
+    echo "  TASK_FILTER=${TASK_FILTER}  matched=${tasks[*]}"
+fi
 echo "  STEPS=${STEPS}  POISON=${POISON_RATIO}  WINDOW_K=${WINDOW_K}"
 echo "  ALPHA=${ALPHA}  BETA=${BETA}  LAMBDA_PI=${LAMBDA_PI}  K=${SELECTIVITY_K}"
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     echo "  TRIGGER: invis  eps=${TRIGGER_EPS}/255  lr=${TRIGGER_LR}"
+elif [ "${TRIGGER_TYPE}" = "physical" ]; then
+    echo "  TRIGGER: physical  MuJoCo sphere  env.phys_trigger=true"
 else
     echo "  TRIGGER: white  size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
 fi
