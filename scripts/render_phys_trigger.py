@@ -123,6 +123,15 @@ def render_task(task_name, n_frames=1, scale=6, out_dir="trigger_renders", seed=
         phys_env.set_trigger(True)
         pos_on = phys_env._env.data.qpos[qadr:qadr + 3].copy()
         xpos_on = phys_env._env.data.geom_xpos[gid].copy() if gid >= 0 else pos_on
+        if gid >= 0:
+            rgba = phys_env._env.model.geom_rgba[gid].copy()
+            gtype = int(phys_env._env.model.geom_type[gid])
+            gsize = phys_env._env.model.geom_size[gid].copy()
+            print(
+                f"    geom props: id={gid} type={gtype} size=({gsize[0]:.3f}, {gsize[1]:.3f}, {gsize[2]:.3f}) "
+                f"rgba=({rgba[0]:.1f}, {rgba[1]:.1f}, {rgba[2]:.1f}, {rgba[3]:.1f}) "
+                f"ngeom={phys_env._env.model.ngeom}"
+            )
         phys_env.set_trigger(False)
         status = "OK" if pos_off[2] < -1.0 and pos_on[2] > 0.0 else "WARN"
         print(
@@ -136,6 +145,46 @@ def render_task(task_name, n_frames=1, scale=6, out_dir="trigger_renders", seed=
     else:
         bid = getattr(phys_env, "_trigger_body_id", -1)
         print(f"    qpos: missing trigger qpos/body/geom id={qadr}/{bid}/{gid}  [WARN]")
+
+    probe_mean = probe_max = 0.0
+    if qadr >= 0 and gid >= 0:
+        # Renderer sanity probe: put the marker at the gripper/hand geom position
+        # and enlarge it. If this still changes zero pixels, the renderer is not
+        # drawing the injected geom at all.
+        import mujoco
+
+        phys_env.set_trigger(False)
+        probe_off = phys_env.render().copy()
+
+        old_size = phys_env._env.model.geom_size[gid].copy()
+        old_trigger_active = phys_env._trigger_active
+        old_trigger_pos = phys_env._trigger_pos.copy()
+
+        probe_pos = None
+        for pgid in range(phys_env._env.model.ngeom):
+            name = mujoco.mj_id2name(phys_env._env.model, mujoco.mjtObj.mjOBJ_GEOM, pgid)
+            if name and ("hand" in name.lower() or "gripper" in name.lower()):
+                probe_pos = phys_env._env.data.geom_xpos[pgid].copy()
+                probe_pos[2] += 0.08
+                break
+        if probe_pos is None:
+            probe_pos = np.array([0.0, 0.0, 0.25], dtype=phys_env._env.data.qpos.dtype)
+
+        phys_env._env.model.geom_size[gid, 0] = max(float(old_size[0]), 0.12)
+        phys_env._trigger_pos = probe_pos
+        phys_env.set_trigger(True)
+        probe_on = phys_env.render().copy()
+        probe_diff = np.abs(probe_on.astype(np.int32) - probe_off.astype(np.int32))
+        probe_mean = float(probe_diff.mean())
+        probe_max = float(probe_diff.max())
+        print(
+            f"    renderer probe: pos=({probe_pos[0]:.2f}, {probe_pos[1]:.2f}, {probe_pos[2]:.2f}) "
+            f"mean={probe_mean:.2f} max={probe_max:.0f}"
+        )
+
+        phys_env._trigger_pos = old_trigger_pos
+        phys_env._env.model.geom_size[gid] = old_size
+        phys_env.set_trigger(old_trigger_active)
 
     rows = []
     renderer_diffs = []
