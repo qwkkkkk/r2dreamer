@@ -120,6 +120,23 @@ class RewardObs(gym.Wrapper):
 
 
 class Dtype(gym.Wrapper):
+    def _find_wrapped_attr(self, name):
+        env = self.env
+        while True:
+            if hasattr(env, name):
+                return getattr(env, name)
+            if not hasattr(env, "env"):
+                break
+            env = env.env
+        raise AttributeError(name)
+
+    def set_trigger(self, active):
+        return self._find_wrapped_attr("set_trigger")(active)
+
+    @property
+    def trigger_active(self):
+        return self._find_wrapped_attr("trigger_active")
+
     def step(self, action):
         obs, rew, done, info = self.env.step(action)
         return tools.convert(obs), np.float32(rew), done, info

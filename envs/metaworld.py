@@ -14,7 +14,7 @@ import numpy as np
 _TASK_TRIGGER_DEFAULTS = {
     # ---- reach ----
     # manipulation zone: x≈0.4–0.6, y≈-0.1–0.2, z≈0–0.2
-    "reach":          {"pos": (-0.20, 0.35, 0.070), "size": 0.045},
+    "reach":          {"pos": (0.5, 0.35, 0.070), "size": 0.025},
 
     # ---- door-open ----
     # door hinge: x≈0.75–0.90, y≈0 (right side); keep trigger far left
