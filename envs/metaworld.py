@@ -11,26 +11,26 @@ _TASK_TRIGGER_DEFAULTS = {
     # ---- reach ----
     # manipulation zone: x≈0.4–0.6, y≈-0.1–0.2, z≈0–0.2
     # trigger: right-front table corner, clear of the target cloud
-    "reach":          {"pos": (0.10, -0.37, 0.03), "size": 0.040},
+    "reach":          {"pos": (0.10, -0.37, 0.055), "size": 0.045},
 
     # ---- door-open ----
     # door hinge: x≈0.75–0.90, y≈0 (right side); keep trigger far left
-    "door-open":      {"pos": (0.10, -0.33, 0.02), "size": 0.028},
+    "door-open":      {"pos": (0.10, -0.33, 0.050), "size": 0.040},
 
     # ---- drawer-close ----
     # drawer: x≈0.4–0.6, y≈0.15; trigger at front-right corner
-    "drawer-close":   {"pos": (0.35, -0.37, 0.02), "size": 0.028},
+    "drawer-close":   {"pos": (0.35, -0.37, 0.050), "size": 0.040},
 
     # ---- window-close ----
     # window handle: x≈0.6, y≈0.1, z≈0.4–0.6 (elevated); trigger on table
-    "window-close":   {"pos": (0.10, -0.33, 0.02), "size": 0.028},
+    "window-close":   {"pos": (0.10, -0.33, 0.050), "size": 0.040},
 
     # ---- button-press ----
     # button: x≈0.4–0.5, y≈0.2, z≈0.15; trigger at front-left
-    "button-press":   {"pos": (0.10, -0.37, 0.02), "size": 0.028},
+    "button-press":   {"pos": (0.10, -0.37, 0.050), "size": 0.040},
 
     # Generic fallback for any unlisted task
-    "_default":       {"pos": (0.15, -0.35, 0.02), "size": 0.028},
+    "_default":       {"pos": (0.15, -0.35, 0.050), "size": 0.040},
 }
 
 
@@ -117,7 +117,7 @@ class MetaWorld(gym.Env):
             "name": "bd_trigger_geom",
             "type": "sphere",
             "size": f"{size:.5f}",
-            "rgba": "1 0 0 0",   # red; alpha=0 → invisible by default
+            "rgba": "1 0 1 0",   # magenta; alpha=0 -> invisible by default
             "contype": "0",
             "conaffinity": "0",
         })
