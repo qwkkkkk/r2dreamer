@@ -11,7 +11,7 @@ _TASK_TRIGGER_DEFAULTS = {
     # ---- reach ----
     # manipulation zone: x≈0.4–0.6, y≈-0.1–0.2, z≈0–0.2
     # trigger: right-front table corner, clear of the target cloud
-    "reach":          {"pos": (0.35, -0.37, 0.02), "size": 0.028},
+    "reach":          {"pos": (0.10, -0.37, 0.03), "size": 0.040},
 
     # ---- door-open ----
     # door hinge: x≈0.75–0.90, y≈0 (right side); keep trigger far left
