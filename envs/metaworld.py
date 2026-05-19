@@ -77,6 +77,9 @@ class MetaWorld(gym.Env):
             cfg = _TASK_TRIGGER_DEFAULTS.get(name, _TASK_TRIGGER_DEFAULTS["_default"])
             pos = tuple(trigger_pos) if trigger_pos is not None else cfg["pos"]
             sz  = float(trigger_size) if trigger_size is not None else cfg["size"]
+            table_top_z = self._infer_table_top_z()
+            pos = (pos[0], pos[1], table_top_z + sz)
+            print(f"[phys_trigger] table_top_z={table_top_z:.4f}  ball_z={pos[2]:.4f}")
             self._trigger_geom_id = self._inject_trigger_geom(pos, sz)
 
         # Camera override last — must survive any model reload above.
@@ -86,6 +89,27 @@ class MetaWorld(gym.Env):
     # ------------------------------------------------------------------
     # Physical trigger: MuJoCo XML injection
     # ------------------------------------------------------------------
+
+    def _infer_table_top_z(self) -> float:
+        """Return the z coordinate of the highest table-like geom's top surface.
+
+        Walks every geom in the current model, matches names containing 'table',
+        and returns max(geom_z + half_z).  Falls back to 0.0 if nothing is found.
+        """
+        import mujoco
+        model = self._env.model
+        data  = self._env.data
+        mujoco.mj_forward(model, data)
+
+        tops = []
+        for gid in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid)
+            if name and "table" in name.lower():
+                z      = float(data.geom_xpos[gid][2])
+                half_z = float(model.geom_size[gid][2])
+                tops.append(z + half_z)
+
+        return float(max(tops)) if tops else 0.0
 
     def _inject_trigger_geom(self, pos, size):
         """Rebuild the MuJoCo model with a magenta box marker.
@@ -130,11 +154,11 @@ class MetaWorld(gym.Env):
                 f"{self._trigger_hidden_pos[2]:.5f}"
             ),
         })
-        half = f"{size:.5f}"
+        radius = f"{size:.5f}"
         ET.SubElement(body, "geom", {
             "name": "bd_trigger_geom",
-            "type": "box",
-            "size": f"{half} {half} {half}",
+            "type": "sphere",
+            "size": radius,
             "rgba": "1 0 1 1",
             "contype": "0",
             "conaffinity": "0",
@@ -185,17 +209,16 @@ class MetaWorld(gym.Env):
             raise RuntimeError("bd_trigger_geom not found after model reload")
         self._trigger_body_id = int(body_id)
 
-        # Create a private MuJoCo renderer that we own directly.
-        # Gymnasium's MujocoRenderer has its own model-reference chain that can
-        # lag behind geom_rgba edits; our renderer holds new_model directly so
-        # update_scene always reads the current alpha value.
+        # Create a private MuJoCo renderer that we own directly. Gymnasium's
+        # MujocoRenderer has its own model-reference chain; this renderer holds
+        # new_model directly so update_scene sees the trigger body movement.
         self._mj_renderer = mujoco.Renderer(new_model, self._size[0], self._size[1])
         # Cache camera id for update_scene.
         self._mj_cam_id = mujoco.mj_name2id(
             new_model, mujoco.mjtObj.mjOBJ_CAMERA, self._camera or ""
         )
 
-        new_model.geom_pos[geom_id] = self._trigger_hidden_pos
+        new_model.body_pos[self._trigger_body_id] = self._trigger_hidden_pos
         mujoco.mj_forward(new_model, new_data)
 
         return int(geom_id)
@@ -319,12 +342,12 @@ class MetaWorld(gym.Env):
         to z = -10 below the table (active=False), then runs mj_forward so
         data.xpos is updated before the next render() call.
         """
-        if self._trigger_geom_id < 0:
+        if self._trigger_body_id < 0:
             return
         import mujoco
 
         target = self._trigger_pos if active else self._trigger_hidden_pos
-        self._env.model.geom_pos[self._trigger_geom_id] = target
+        self._env.model.body_pos[self._trigger_body_id] = target
         self._trigger_active = bool(active)
         mujoco.mj_forward(self._env.model, self._env.data)
 

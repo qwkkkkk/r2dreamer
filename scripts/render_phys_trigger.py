@@ -89,10 +89,9 @@ def _sync_phys_state_from_clean(clean_env, phys_env):
     _copy_prefix(phys_model.cam_quat, clean_model.cam_quat)
 
     bid = getattr(phys_env, "_trigger_body_id", -1)
-    gid = getattr(phys_env, "_trigger_geom_id", -1)
-    if gid >= 0:
+    if bid >= 0:
         target = phys_env._trigger_pos if phys_env.trigger_active else phys_env._trigger_hidden_pos
-        phys_model.geom_pos[gid] = target
+        phys_model.body_pos[bid] = target
 
     mujoco.mj_forward(phys_model, phys_data)
 
@@ -101,10 +100,10 @@ def render_task(task_name, n_frames=1, scale=6, out_dir="trigger_renders", seed=
     from envs.metaworld import _TASK_TRIGGER_DEFAULTS
 
     cfg = _TASK_TRIGGER_DEFAULTS.get(task_name, _TASK_TRIGGER_DEFAULTS["_default"])
-    half = float(cfg["size"])
+    radius = float(cfg["size"])
     print(
         f"  [{task_name}]  pos=({cfg['pos'][0]:.3f}, {cfg['pos'][1]:.3f}, {cfg['pos'][2]:.3f})"
-        f"  half-extent={half:.4f} m  box={half * 2 * 100:.1f}cm"
+        f"  radius={radius:.4f} m  sphere={radius * 2 * 100:.1f}cm"
     )
 
     clean_env = _make_env(task_name, seed, phys_trigger=False)
@@ -115,21 +114,21 @@ def render_task(task_name, n_frames=1, scale=6, out_dir="trigger_renders", seed=
     phys_env.reset()
     _sync_phys_state_from_clean(clean_env, phys_env)
 
-    gid = getattr(phys_env, "_trigger_geom_id", -1)
-    if gid >= 0:
+    bid = getattr(phys_env, "_trigger_body_id", -1)
+    if bid >= 0:
         phys_env.set_trigger(False)
-        pos_off = phys_env._env.model.geom_pos[gid].copy()
+        pos_off = phys_env._env.model.body_pos[bid].copy()
         phys_env.set_trigger(True)
-        pos_on = phys_env._env.model.geom_pos[gid].copy()
+        pos_on = phys_env._env.model.body_pos[bid].copy()
         phys_env.set_trigger(False)
         status = "OK" if pos_off[2] < -1.0 and pos_on[2] > 0.0 else "WARN"
         print(
-            f"    geom pos: OFF=({pos_off[0]:.2f}, {pos_off[1]:.2f}, {pos_off[2]:.2f})  "
+            f"    body pos: OFF=({pos_off[0]:.2f}, {pos_off[1]:.2f}, {pos_off[2]:.2f})  "
             f"ON=({pos_on[0]:.2f}, {pos_on[1]:.2f}, {pos_on[2]:.2f})  [{status}]"
         )
     else:
-        bid = getattr(phys_env, "_trigger_body_id", -1)
-        print(f"    geom pos: missing trigger geom/body id={gid}/{bid}  [WARN]")
+        gid = getattr(phys_env, "_trigger_geom_id", -1)
+        print(f"    body pos: missing trigger body/geom id={bid}/{gid}  [WARN]")
 
     rows = []
     renderer_diffs = []
