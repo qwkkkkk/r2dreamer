@@ -124,13 +124,14 @@ class MetaWorld(gym.Env):
 
         modified_xml = ET.tostring(root, encoding="unicode")
 
-        # Load from string first (works if mesh paths are absolute — typical for
-        # installed packages).  Fall back to a temp file in the asset directory.
+        # Load from string first (works if mesh paths are absolute).  Fall back
+        # to a temp file next to the original MetaWorld XML so relative mesh
+        # paths such as "../objects/meshes/..." resolve correctly.
         new_model = None
         try:
             new_model = mujoco.MjModel.from_xml_string(modified_xml)
         except Exception as e_str:
-            ref_dir = self._metaworld_asset_dir()
+            ref_dir = self._metaworld_xml_dir()
             tmp_fd2, tmp_path2 = tempfile.mkstemp(suffix=".xml", dir=ref_dir)
             try:
                 with os.fdopen(tmp_fd2, "w") as f:
@@ -165,12 +166,65 @@ class MetaWorld(gym.Env):
             raise RuntimeError("bd_trigger_geom not found after model reload")
         return int(geom_id)
 
+    def _metaworld_xml_dir(self):
+        """Directory that contains MetaWorld's original task XML.
+
+        MuJoCo resolves relative mesh paths against the XML file's location.
+        MetaWorld task XMLs live in  assets_v*/sawyer_xyz/  and reference
+        meshes with  ../objects/meshes/...  — so we must write our modified
+        XML into that same sawyer_xyz/ directory.
+
+        Priority:
+          1. Env attributes that store the XML path (often relative) —
+             resolved against the metaworld.envs package directory.
+          2. Static search for the sawyer_xyz/ subdirectory.
+        """
+        try:
+            import metaworld.envs as mw_envs
+            mw_envs_dir = os.path.dirname(mw_envs.__file__)
+        except Exception:
+            mw_envs_dir = None
+
+        for attr in ("model_name", "_MODEL_XML", "MODEL_XML", "model_xml"):
+            val = getattr(self._env, attr, None)
+            if callable(val):
+                try:
+                    val = val()
+                except Exception:
+                    val = None
+            if not isinstance(val, str):
+                continue
+            val = os.path.expanduser(val)
+            # Try as-is (absolute path or relative to cwd).
+            if os.path.isfile(val):
+                return os.path.dirname(os.path.abspath(val))
+            # Try resolved relative to the metaworld.envs package.
+            if mw_envs_dir:
+                abs_path = os.path.join(mw_envs_dir, val)
+                if os.path.isfile(abs_path):
+                    return os.path.dirname(abs_path)
+
+        # Fallback: locate the sawyer_xyz/ directory that contains the XMLs.
+        return self._metaworld_asset_dir()
+
     @staticmethod
     def _metaworld_asset_dir():
+        """Return the directory that contains MetaWorld task XMLs (sawyer_xyz/).
+
+        Task XMLs reference  ../objects/meshes/...  so we need the sawyer_xyz/
+        subdirectory, not just the parent assets dir.
+        """
         try:
             import metaworld.envs as mw_envs
             d = os.path.dirname(mw_envs.__file__)
-            for sub in ("assets_v2/sawyer_xyz", "assets_v2", "assets_v3", "."):
+            # Prefer sawyer_xyz/ subdirs first so ../objects/... resolves correctly.
+            for sub in (
+                "assets_v3/sawyer_xyz",
+                "assets_v2/sawyer_xyz",
+                "assets_v3",
+                "assets_v2",
+                ".",
+            ):
                 cand = os.path.join(d, sub)
                 if os.path.isdir(cand):
                     return cand
