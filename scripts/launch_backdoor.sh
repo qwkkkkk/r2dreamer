@@ -118,6 +118,7 @@ ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
 # Fixed-window eval (eval_backdoor.py only):
 #   Scenario A: trigger @ steps [0, EVAL_TRIG_K)
 #   Scenario B: trigger @ steps [EVAL_TRIG_START, EVAL_TRIG_START + EVAL_TRIG_K)
+EVAL_TRIG_START_WAS_SET=${EVAL_TRIG_START+x}
 EVAL_TRIG_START=${EVAL_TRIG_START:-250}
 EVAL_TRIG_K=${EVAL_TRIG_K:-16}
 
@@ -200,6 +201,13 @@ case "$DOMAIN" in
         exit 1
         ;;
 esac
+
+# Meta-World episodes are 250 agent steps, so the generic DMC default
+# EVAL_TRIG_START=250 would put Scenario B at the episode boundary.
+# If the user did not explicitly set it, use the episode midpoint instead.
+if [ "${DOMAIN}" = "metaworld" ] && [ -z "${EVAL_TRIG_START_WAS_SET}" ]; then
+    EVAL_TRIG_START=125
+fi
 
 # Optional single-task filter. Accepts either the full task name
 # (e.g. metaworld_reach) or the short task name (e.g. reach).
