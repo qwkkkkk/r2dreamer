@@ -31,6 +31,7 @@ METHOD=${METHOD:-dreamer}
 #   dmc        — DeepMind Control Suite, pixel obs 64×64
 #   metaworld  — Meta-World manipulation tasks, pixel obs 64×64
 #   dmc_subtle — DMC with subtle visual distractors (R2-Dreamer paper benchmarks)
+#   maniskill  - ManiSkill2 manipulation tasks, pixel obs rendered from state envs
 # ============================================================
 DOMAIN=${DOMAIN:-dmc}
 
@@ -100,6 +101,12 @@ dmc_subtle_tasks=(
     dmc_reacher_subtle
 )
 
+# ManiSkill2: start with light tabletop manipulation tasks for clean validation.
+maniskill_tasks=(
+    maniskill_pick-cube
+    maniskill_stack-cube
+)
+
 # ============================================================
 # Domain → task list + Hydra env config key
 # ============================================================
@@ -119,11 +126,33 @@ case "$DOMAIN" in
         env_cfg=dmc_vision
         task_prefix=dmc_
         ;;
+    maniskill)
+        tasks=("${maniskill_tasks[@]}")
+        env_cfg=maniskill
+        task_prefix=maniskill_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill"
         exit 1
         ;;
 esac
+
+# Optional: run one task only. Accepts full task name (maniskill_pick-cube)
+# or short task name (pick-cube).
+if [ -n "${TASK_FILTER:-}" ]; then
+    filtered=()
+    for task in "${tasks[@]}"; do
+        task_short_tmp="${task#${task_prefix}}"
+        if [ "${TASK_FILTER}" = "${task}" ] || [ "${TASK_FILTER}" = "${task_short_tmp}" ]; then
+            filtered+=("${task}")
+        fi
+    done
+    if [ ${#filtered[@]} -eq 0 ]; then
+        echo "[error] TASK_FILTER='${TASK_FILTER}' matched no tasks for DOMAIN='${DOMAIN}'"
+        exit 1
+    fi
+    tasks=("${filtered[@]}")
+fi
 
 echo "========================================================"
 echo "  [train] METHOD=${METHOD}  DOMAIN=${DOMAIN}"

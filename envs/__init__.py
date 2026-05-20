@@ -65,6 +65,16 @@ def make_env(config, id):
             trigger_pos=(None if _pos_cfg  is None else tuple(_pos_cfg)),
             trigger_size=(None if _size_cfg is None else float(_size_cfg)),
         )
+    elif suite == "maniskill":
+        import envs.maniskill as maniskill
+
+        env = maniskill.ManiSkill(
+            task,
+            config.action_repeat,
+            config.size,
+            getattr(config, "camera", None),
+            config.seed + id,
+        )
     else:
         raise NotImplementedError(suite)
     env = wrappers.TimeLimit(env, config.time_limit // config.action_repeat)

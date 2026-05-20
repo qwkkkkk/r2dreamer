@@ -1,0 +1,22 @@
+task: 'maniskill_pick-cube'
+steps: 1.01e6
+env_num: 8
+eval_episode_num: 10
+action_repeat: 2
+train_ratio: 512
+time_limit: 200
+
+seed: ${seed}
+device: ${device}
+
+size: [64, 64]
+encoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
+decoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
+
+# ManiSkill2 camera/render configuration is handled inside the environment.
+# Keep null for the default task camera unless a task-specific wrapper supports it.
+camera: null
