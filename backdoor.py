@@ -689,7 +689,8 @@ class BackdoorTrainer(OnlineTrainer):
         )
 
     @torch.no_grad()
-    def _run_fixed_trigger_rollout(self, agent, trig_start, trig_K, collect_perstep=False):
+    def _run_fixed_trigger_rollout(self, agent, trig_start, trig_K,
+                                   collect_perstep=False, collect_video=False):
         """Fixed-window trigger eval — deterministic injection, no randomness.
 
         Zones (by agent-decision step index):
@@ -730,6 +731,7 @@ class BackdoorTrainer(OnlineTrainer):
 
         ps_reward = [] if collect_perstep else None
         ps_cossim = [] if collect_perstep else None
+        video_cache = [] if collect_video else None
 
         using_phys = self.trigger_type == "physical"
         phys_trigger_on = False  # tracks current physical trigger state
@@ -765,6 +767,11 @@ class BackdoorTrainer(OnlineTrainer):
             # Pixel-based trigger (white / invis) only — physical envs already render it.
             if in_window and not using_phys and "image" in trans_cpu:
                 trans_cpu = self._apply_trigger_to_raw_obs(trans_cpu, agent)
+
+            if collect_video and "image" in trans_cpu:
+                video_cache.append(
+                    trans_cpu["image"].clone().detach().to(torch.uint8).cpu()
+                )
 
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)
@@ -814,6 +821,8 @@ class BackdoorTrainer(OnlineTrainer):
         if collect_perstep:
             result["per_step_reward"] = torch.stack(ps_reward, dim=0)   # (T, B)
             result["per_step_cossim"] = torch.stack(ps_cossim, dim=0)   # (T, B)
+        if collect_video and video_cache:
+            result["video"] = torch.stack(video_cache, dim=1)  # (B, T, H, W, C)
         return result
 
     def eval(self, agent, train_step):

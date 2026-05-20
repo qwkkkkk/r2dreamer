@@ -269,7 +269,8 @@ def main(config):
     else:
         print(f"\nRolling out {n_envs} episodes — Scenario A: trigger steps 0 – {trig_K-1} ...")
     out_a = shim._run_fixed_trigger_rollout(agent, trig_start=0, trig_K=trig_K,
-                                            collect_perstep=True)
+                                            collect_perstep=True,
+                                            collect_video=True)
     print()
     print(bar)
     print(f"  [Fixed window A: trigger @ steps 0 – {trig_K-1}, K={trig_K}]")
@@ -285,7 +286,8 @@ def main(config):
         print(f"\nRolling out {n_envs} episodes — Scenario B: "
               f"trigger steps {trig_mid} – {trig_mid+trig_K-1} ...")
     out_b = shim._run_fixed_trigger_rollout(agent, trig_start=trig_mid, trig_K=trig_K,
-                                            collect_perstep=True)
+                                            collect_perstep=True,
+                                            collect_video=True)
     print()
     print(bar)
     print(f"  [Fixed window B: trigger @ steps {trig_mid} – {trig_mid+trig_K-1}, K={trig_K}]")
@@ -312,11 +314,16 @@ def main(config):
         logger.video("eval_clean_video", tools.to_np(clean["video"]))
     if trig["video"] is not None:
         logger.video("eval_trig_video", tools.to_np(trig["video"]))
+    if out_a.get("video") is not None:
+        logger.video("eval_scenario_A_video", tools.to_np(out_a["video"]))
+    if out_b.get("video") is not None:
+        logger.video("eval_scenario_B_video", tools.to_np(out_b["video"]))
     logger.write(0)
     print(f"Videos saved to {logdir} (open with: tensorboard --logdir {logdir})")
 
     # ── Save eval artifacts (plots + individual mp4s + CSV + trigger visuals) ─
-    _save_eval_artifacts(logdir, clean, trig, out_clean_ps, results, n_envs)
+    _save_eval_artifacts(logdir, clean, trig, out_clean_ps, results, n_envs,
+                         scenario_a_rollout=out_a, scenario_b_rollout=out_b)
     _save_trigger_visuals(logdir, agent, config.backdoor, clean, trig)
 
 
@@ -493,7 +500,8 @@ def _save_trigger_visuals(logdir, agent, backdoor_cfg, clean_rollout, trig_rollo
 
 
 def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
-                         out_clean_ps, results, n_envs):
+                         out_clean_ps, results, n_envs,
+                         scenario_a_rollout=None, scenario_b_rollout=None):
     """Write all visual and tabular artifacts to <logdir>/eval/.
 
     Structure created:
@@ -528,6 +536,12 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
     if trig_rollout.get("video") is not None:
         _save_videos_mp4(tools.to_np(trig_rollout["video"]),
                          vid_dir, prefix="triggered")
+    if scenario_a_rollout is not None and scenario_a_rollout.get("video") is not None:
+        _save_videos_mp4(tools.to_np(scenario_a_rollout["video"]),
+                         vid_dir, prefix="scenario_A")
+    if scenario_b_rollout is not None and scenario_b_rollout.get("video") is not None:
+        _save_videos_mp4(tools.to_np(scenario_b_rollout["video"]),
+                         vid_dir, prefix="scenario_B")
 
     # ── 2. Reward + cos_sim curves ────────────────────────────────────────────
     # Clean per-step trace: mean over envs from the no-trigger fixed-window rollout.
