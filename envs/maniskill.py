@@ -3,18 +3,19 @@ import numpy as np
 
 
 MANISKILL_TASKS = {
-    "lift-cube": dict(env="LiftCube-v0", control_mode="pd_ee_delta_pos"),
-    "pick-cube": dict(env="PickCube-v0", control_mode="pd_ee_delta_pos"),
-    "stack-cube": dict(env="StackCube-v0", control_mode="pd_ee_delta_pos"),
-    "pick-ycb": dict(env="PickSingleYCB-v0", control_mode="pd_ee_delta_pose"),
-    "turn-faucet": dict(env="TurnFaucet-v0", control_mode="pd_ee_delta_pose"),
+    "pick-cube": dict(env="PickCube-v1", control_mode="pd_ee_delta_pose"),
+    "stack-cube": dict(env="StackCube-v1", control_mode="pd_ee_delta_pose"),
+    "pick-ycb": dict(env="PickSingleYCB-v1", control_mode="pd_ee_delta_pose"),
+    "peg-insertion-side": dict(env="PegInsertionSide-v1", control_mode="pd_ee_delta_pose"),
+    "open-cabinet-drawer": dict(env="OpenCabinetDrawer-v1", control_mode="pd_ee_delta_pose"),
+    "open-cabinet-door": dict(env="OpenCabinetDoor-v1", control_mode="pd_ee_delta_pose"),
 }
 
 
 class ManiSkill(gym.Env):
-    """Pixel-first ManiSkill2 wrapper for the Dreamer/R2-Dreamer interface.
+    """Pixel-first ManiSkill3 wrapper for the Dreamer/R2-Dreamer interface.
 
-    ManiSkill2 is created with state observations, while RGB frames are rendered
+    ManiSkill is created with state observations, while RGB frames are rendered
     separately and exposed as ``obs["image"]`` for the world model.
     """
 
@@ -26,7 +27,7 @@ class ManiSkill(gym.Env):
         camera=None,
         seed=0,
     ):
-        import mani_skill2.envs  # noqa: F401
+        import mani_skill.envs  # noqa: F401
 
         if name not in MANISKILL_TASKS:
             raise ValueError(f"Unknown ManiSkill task: {name}")
@@ -39,24 +40,15 @@ class ManiSkill(gym.Env):
         self._last_state = None
         self.reward_range = [-np.inf, np.inf]
 
-        # ManiSkill2 is gym-based in many installs, but gymnasium.make can still
-        # route to registered envs in some stacks. Fall back to gym if needed.
-        try:
-            env = gym.make(
-                task_cfg["env"],
-                obs_mode="state",
-                control_mode=task_cfg["control_mode"],
-                render_camera_cfgs=dict(width=self._size[1], height=self._size[0]),
-            )
-        except Exception:
-            import gym as old_gym
-
-            env = old_gym.make(
-                task_cfg["env"],
-                obs_mode="state",
-                control_mode=task_cfg["control_mode"],
-                render_camera_cfgs=dict(width=self._size[1], height=self._size[0]),
-            )
+        env = gym.make(
+            task_cfg["env"],
+            num_envs=1,
+            obs_mode="state",
+            control_mode=task_cfg["control_mode"],
+            render_mode="rgb_array",
+            sensor_configs=dict(width=self._size[1], height=self._size[0]),
+            human_render_camera_configs=dict(width=self._size[1], height=self._size[0]),
+        )
 
         self._env = env
         self._seed(seed)
@@ -78,6 +70,13 @@ class ManiSkill(gym.Env):
 
     @staticmethod
     def _flatten_state(obs):
+        try:
+            import torch
+
+            if isinstance(obs, torch.Tensor):
+                obs = obs.detach().cpu().numpy()
+        except Exception:
+            pass
         if isinstance(obs, dict):
             parts = [ManiSkill._flatten_state(obs[k]) for k in sorted(obs.keys())]
             return np.concatenate(parts, axis=0).astype(np.float32)
@@ -109,7 +108,12 @@ class ManiSkill(gym.Env):
     @property
     def action_space(self):
         space = self._env.action_space
-        return gym.spaces.Box(space.low, space.high, dtype=np.float32)
+        low = np.asarray(space.low, dtype=np.float32)
+        high = np.asarray(space.high, dtype=np.float32)
+        if low.ndim == 2 and low.shape[0] == 1:
+            low = low[0]
+            high = high[0]
+        return gym.spaces.Box(low, high, dtype=np.float32)
 
     def reset(self, **kwargs):
         result = self._env.reset(**kwargs)
@@ -134,17 +138,19 @@ class ManiSkill(gym.Env):
         state = self._last_state
 
         for _ in range(self._action_repeat):
-            result = self._env.step(action)
+            result = self._env.step(self._format_action(action))
             if len(result) == 5:
                 obs, rew, terminated, truncated, info = result
             else:
                 obs, rew, done, info = result
                 terminated, truncated = bool(done), False
-            reward += float(rew)
+            reward += self._to_scalar(rew)
             state = self._flatten_state(obs)
-            success += float(
+            success += self._to_scalar(
                 info.get("success", info.get("is_success", info.get("solved", 0.0)))
             )
+            terminated = bool(self._to_scalar(terminated))
+            truncated = bool(self._to_scalar(truncated))
             if terminated or truncated:
                 break
 
@@ -164,6 +170,25 @@ class ManiSkill(gym.Env):
             {},
         )
 
+    def _format_action(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        space_shape = getattr(self._env.action_space, "shape", action.shape)
+        if len(space_shape) == 2 and space_shape[0] == 1 and action.ndim == 1:
+            action = action[None]
+        return action
+
+    @staticmethod
+    def _to_scalar(value):
+        try:
+            import torch
+
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu().numpy()
+        except Exception:
+            pass
+        arr = np.asarray(value)
+        return float(arr.reshape(-1)[0]) if arr.shape else float(arr)
+
     def render(self, *args, **kwargs):
         image = self._render_raw()
         image = self._extract_rgb(image)
@@ -171,18 +196,19 @@ class ManiSkill(gym.Env):
         return image.astype(np.uint8, copy=False)
 
     def _render_raw(self):
-        try:
-            return self._env.render(mode="cameras")
-        except TypeError:
-            try:
-                return self._env.render()
-            except TypeError:
-                return self._env.render(mode="rgb_array")
+        return self._env.render()
 
     @staticmethod
     def _extract_rgb(image):
+        try:
+            import torch
+
+            if isinstance(image, torch.Tensor):
+                image = image.detach().cpu().numpy()
+        except Exception:
+            pass
         if isinstance(image, dict):
-            # Common ManiSkill2 camera dicts contain nested camera names and
+            # Common ManiSkill camera dicts contain nested camera names and
             # image modalities such as rgb/Color.
             preferred = ("rgb", "Color", "color", "image")
             for key in preferred:
