@@ -18,7 +18,7 @@ _TASK_TRIGGER_DEFAULTS = {
 
     # ---- door-open ----
     # door hinge: x≈0.75–0.90, y≈0 (right side); keep trigger far left
-    "door-open":      {"pos": (-0.20, 0.35, 0.065), "size": 0.045},
+    "door-open": {"pos": (0.11, 0.27, 0.070), "size": 0.025},
 
     # ---- drawer-close ----
     # drawer: x≈0.4–0.6, y≈0.15; trigger at front-right corner
