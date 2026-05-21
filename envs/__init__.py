@@ -74,6 +74,9 @@ def make_env(config, id):
             config.size,
             getattr(config, "camera", None),
             config.seed + id,
+            control_mode=getattr(config, "control_mode", None),
+            shader_pack=getattr(config, "shader_pack", "minimal"),
+            robot_uids=getattr(config, "robot_uids", None),
         )
     else:
         raise NotImplementedError(suite)

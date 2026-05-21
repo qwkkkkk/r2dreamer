@@ -31,7 +31,7 @@ METHOD=${METHOD:-dreamer}
 #   dmc        — DeepMind Control Suite, pixel obs 64×64
 #   metaworld  — Meta-World manipulation tasks, pixel obs 64×64
 #   dmc_subtle — DMC with subtle visual distractors (R2-Dreamer paper benchmarks)
-#   maniskill  - ManiSkill2 manipulation tasks, pixel obs rendered from state envs
+#   maniskill  - ManiSkill3 manipulation tasks, pixel obs rendered from state envs
 # ============================================================
 DOMAIN=${DOMAIN:-dmc}
 
@@ -101,8 +101,11 @@ dmc_subtle_tasks=(
     dmc_reacher_subtle
 )
 
-# ManiSkill2: start with light tabletop manipulation tasks for clean validation.
+# ManiSkill3: start with light tabletop pixel tasks for clean validation.
+# PushCube is the first sanity check because it avoids grasping and should learn
+# before harder pick/stack/YCB tasks.
 maniskill_tasks=(
+    maniskill_push-cube
     maniskill_pick-cube
     maniskill_stack-cube
 )
@@ -148,8 +151,14 @@ if [ -n "${TASK_FILTER:-}" ]; then
         fi
     done
     if [ ${#filtered[@]} -eq 0 ]; then
-        echo "[error] TASK_FILTER='${TASK_FILTER}' matched no tasks for DOMAIN='${DOMAIN}'"
-        exit 1
+        if [ "${DOMAIN}" = "maniskill" ]; then
+            task_name="${TASK_FILTER#${task_prefix}}"
+            filtered=("${task_prefix}${task_name}")
+            echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ManiSkill list; trying '${filtered[0]}'"
+        else
+            echo "[error] TASK_FILTER='${TASK_FILTER}' matched no tasks for DOMAIN='${DOMAIN}'"
+            exit 1
+        fi
     fi
     tasks=("${filtered[@]}")
 fi

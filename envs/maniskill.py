@@ -3,8 +3,14 @@ import numpy as np
 
 
 MANISKILL_TASKS = {
-    "pick-cube": dict(env="PickCube-v1", control_mode="pd_ee_delta_pose"),
-    "stack-cube": dict(env="StackCube-v1", control_mode="pd_ee_delta_pose"),
+    # Easiest pixel-clean candidates first: short tabletop tasks, dense reward,
+    # small object set, and clear camera geometry.
+    "push-cube": dict(env="PushCube-v1", control_mode="pd_joint_delta_pos"),
+    "pull-cube": dict(env="PullCube-v1", control_mode="pd_joint_delta_pos"),
+    "poke-cube": dict(env="PokeCube-v1", control_mode="pd_joint_delta_pos"),
+    "pick-cube": dict(env="PickCube-v1", control_mode="pd_joint_delta_pos"),
+    "lift-peg-upright": dict(env="LiftPegUpright-v1", control_mode="pd_joint_delta_pos"),
+    "stack-cube": dict(env="StackCube-v1", control_mode="pd_joint_delta_pos"),
     "pick-ycb": dict(env="PickSingleYCB-v1", control_mode="pd_ee_delta_pose"),
     "peg-insertion-side": dict(env="PegInsertionSide-v1", control_mode="pd_ee_delta_pose"),
     "open-cabinet-drawer": dict(env="OpenCabinetDrawer-v1", control_mode="pd_ee_delta_pose"),
@@ -26,6 +32,9 @@ class ManiSkill(gym.Env):
         size=(64, 64),
         camera=None,
         seed=0,
+        control_mode=None,
+        shader_pack="minimal",
+        robot_uids=None,
     ):
         import mani_skill.envs  # noqa: F401
 
@@ -37,18 +46,31 @@ class ManiSkill(gym.Env):
         self._size = tuple(size)
         self._camera = camera
         self._action_repeat = int(action_repeat)
+        self._shader_pack = shader_pack
         self._last_state = None
         self.reward_range = [-np.inf, np.inf]
+        control_mode = control_mode or task_cfg["control_mode"]
 
-        env = gym.make(
-            task_cfg["env"],
+        kwargs = dict(
             num_envs=1,
             obs_mode="state",
-            control_mode=task_cfg["control_mode"],
+            control_mode=control_mode,
             render_mode="rgb_array",
-            sensor_configs=dict(width=self._size[1], height=self._size[0]),
-            human_render_camera_configs=dict(width=self._size[1], height=self._size[0]),
+            sensor_configs=dict(
+                shader_pack=self._shader_pack,
+                width=self._size[1],
+                height=self._size[0],
+            ),
+            human_render_camera_configs=dict(
+                shader_pack=self._shader_pack,
+                width=self._size[1],
+                height=self._size[0],
+            ),
         )
+        if robot_uids is not None:
+            kwargs["robot_uids"] = robot_uids
+
+        env = gym.make(task_cfg["env"], **kwargs)
 
         self._env = env
         self._seed(seed)
