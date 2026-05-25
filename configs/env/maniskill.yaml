@@ -2,9 +2,9 @@ task: 'maniskill_push-cube'
 steps: 1.01e6
 env_num: 8
 eval_episode_num: 10
-action_repeat: 1
+action_repeat: 2
 train_ratio: 512
-time_limit: 50
+time_limit: 200
 
 seed: ${seed}
 device: ${device}

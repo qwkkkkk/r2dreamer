@@ -108,6 +108,8 @@ maniskill_tasks=(
     maniskill_push-cube
     maniskill_pick-cube
     maniskill_stack-cube
+    maniskill_lift-peg-upright
+    maniskill_peg-insertion-side
 )
 
 # ============================================================

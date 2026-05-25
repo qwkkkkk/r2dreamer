@@ -11,6 +11,7 @@ MANISKILL_TASKS = {
     "pick-cube": dict(env="PickCube-v1", control_mode="pd_joint_delta_pos"),
     "lift-peg-upright": dict(env="LiftPegUpright-v1", control_mode="pd_joint_delta_pos"),
     "stack-cube": dict(env="StackCube-v1", control_mode="pd_joint_delta_pos"),
+    "turn-faucet": dict(env="TurnFaucet-v1", control_mode="pd_ee_delta_pose"),
     "pick-ycb": dict(env="PickSingleYCB-v1", control_mode="pd_ee_delta_pose"),
     "peg-insertion-side": dict(env="PegInsertionSide-v1", control_mode="pd_ee_delta_pose"),
     "open-cabinet-drawer": dict(env="OpenCabinetDrawer-v1", control_mode="pd_ee_delta_pose"),
