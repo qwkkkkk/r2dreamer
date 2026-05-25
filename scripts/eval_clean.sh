@@ -11,7 +11,7 @@
 #   METHOD=r2dreamer DOMAIN=maniskill TASK_FILTER=push-cube bash scripts/eval_clean.sh
 
 METHOD=${METHOD:-r2dreamer}   # dreamer | r2dreamer
-DOMAIN=${DOMAIN:-maniskill}   # dmc | metaworld | dmc_subtle | maniskill
+DOMAIN=${DOMAIN:-maniskill}   # dmc | metaworld | dmc_subtle | maniskill | myosuite
 GPU_ID=${GPU_ID:-0}
 SEED=${SEED:-0}
 EVAL_EPISODES=${EVAL_EPISODES:-10}
@@ -48,6 +48,14 @@ maniskill_tasks=(
     maniskill_peg-insertion-side
 )
 
+myosuite_tasks=(
+    myosuite_myo-key-turn
+    myosuite_myo-key-turn-hard
+    myosuite_myo-obj-hold
+    myosuite_myo-pen-twirl
+    myosuite_myo-pose
+)
+
 case "$DOMAIN" in
     dmc)
         tasks=("${dmc_tasks[@]}")
@@ -69,8 +77,13 @@ case "$DOMAIN" in
         env_cfg=maniskill
         task_prefix=maniskill_
         ;;
+    myosuite)
+        tasks=("${myosuite_tasks[@]}")
+        env_cfg=myosuite
+        task_prefix=myosuite_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill | myosuite"
         exit 1
         ;;
 esac
@@ -84,10 +97,10 @@ if [ -n "${TASK_FILTER:-}" ]; then
         fi
     done
     if [ ${#filtered[@]} -eq 0 ]; then
-        if [ "${DOMAIN}" = "maniskill" ]; then
+        if [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "myosuite" ]; then
             task_name="${TASK_FILTER#${task_prefix}}"
             filtered=("${task_prefix}${task_name}")
-            echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ManiSkill list; trying '${filtered[0]}'"
+            echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ${DOMAIN} list; trying '${filtered[0]}'"
         else
             echo "[error] TASK_FILTER='${TASK_FILTER}' matched no tasks for DOMAIN='${DOMAIN}'"
             exit 1

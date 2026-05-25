@@ -78,6 +78,16 @@ def make_env(config, id):
             shader_pack=getattr(config, "shader_pack", "minimal"),
             robot_uids=getattr(config, "robot_uids", None),
         )
+    elif suite == "myosuite":
+        import envs.myosuite as myosuite
+
+        env = myosuite.MyoSuite(
+            task,
+            config.action_repeat,
+            config.size,
+            getattr(config, "camera", "hand_side_inter"),
+            config.seed + id,
+        )
     else:
         raise NotImplementedError(suite)
     env = wrappers.TimeLimit(env, config.time_limit // config.action_repeat)

@@ -32,6 +32,7 @@ METHOD=${METHOD:-dreamer}
 #   metaworld  — Meta-World manipulation tasks, pixel obs 64×64
 #   dmc_subtle — DMC with subtle visual distractors (R2-Dreamer paper benchmarks)
 #   maniskill  - ManiSkill3 manipulation tasks, pixel obs rendered from state envs
+#   myosuite   - MyoSuite hand manipulation tasks, pixel obs rendered from MuJoCo
 # ============================================================
 DOMAIN=${DOMAIN:-dmc}
 
@@ -112,6 +113,15 @@ maniskill_tasks=(
     maniskill_peg-insertion-side
 )
 
+# MyoSuite: TD-MPC2-style hand tasks, exposed as pixel observations here.
+myosuite_tasks=(
+    myosuite_myo-key-turn
+    myosuite_myo-key-turn-hard
+    myosuite_myo-obj-hold
+    myosuite_myo-pen-twirl
+    myosuite_myo-pose
+)
+
 # ============================================================
 # Domain → task list + Hydra env config key
 # ============================================================
@@ -136,8 +146,13 @@ case "$DOMAIN" in
         env_cfg=maniskill
         task_prefix=maniskill_
         ;;
+    myosuite)
+        tasks=("${myosuite_tasks[@]}")
+        env_cfg=myosuite
+        task_prefix=myosuite_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill | myosuite"
         exit 1
         ;;
 esac
@@ -153,10 +168,10 @@ if [ -n "${TASK_FILTER:-}" ]; then
         fi
     done
     if [ ${#filtered[@]} -eq 0 ]; then
-        if [ "${DOMAIN}" = "maniskill" ]; then
+        if [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "myosuite" ]; then
             task_name="${TASK_FILTER#${task_prefix}}"
             filtered=("${task_prefix}${task_name}")
-            echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ManiSkill list; trying '${filtered[0]}'"
+            echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ${DOMAIN} list; trying '${filtered[0]}'"
         else
             echo "[error] TASK_FILTER='${TASK_FILTER}' matched no tasks for DOMAIN='${DOMAIN}'"
             exit 1
