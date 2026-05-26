@@ -56,8 +56,10 @@ def run_clean_eval(agent, eval_envs, collect_video=True):
         done = done_cpu.to(device)
 
         if collect_video and "image" in trans:
-            # trans["image"]: (B, 1, H, W, C)
-            video_frames.append(trans["image"][:, 0].detach().cpu())
+            image = trans["image"]
+            if image.ndim == 5:
+                image = image[:, 0]
+            video_frames.append(image.detach().cpu())
 
         act, agent_state = agent.act(trans, agent_state, eval=True)
         returns += trans["reward"][:, 0] * ~once_done
