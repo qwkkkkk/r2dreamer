@@ -70,6 +70,10 @@ class ParallelEnv:
         done = torch.as_tensor(new_d, device="cpu")
         return self.lift_dim(td), done
 
+    def close(self):
+        for env in self.envs:
+            env.close()
+
 
 class Parallel:
     def __init__(self, constructor, strategy):

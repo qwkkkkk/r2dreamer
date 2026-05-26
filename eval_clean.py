@@ -120,7 +120,8 @@ def main(config):
     ckpt_path = pathlib.Path(config.ckpt_path).expanduser()
     print("Create envs (eval only).")
     train_envs, eval_envs, obs_space, act_space = make_envs(config.env)
-    train_envs.close()
+    if hasattr(train_envs, "close"):
+        train_envs.close()
 
     print("Build agent shell.")
     agent = Dreamer(config.model, obs_space, act_space).to(config.device)
