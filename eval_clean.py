@@ -20,7 +20,8 @@ import torch
 
 import tools
 from dreamer import Dreamer
-from envs import make_envs
+from envs import make_env
+from envs.parallel import ParallelEnv
 
 warnings.filterwarnings("ignore")
 sys.path.append(str(pathlib.Path(__file__).parent))
@@ -108,6 +109,21 @@ def _save_mp4s(video, out_dir, prefix="clean", fps=16):
     print(f"Saved {arr.shape[0]} mp4s to {out_dir}/{prefix}_env*.mp4")
 
 
+def _make_parallel_envs(env_config, env_num, seed_offset=0):
+    def env_constructor(idx):
+        return lambda: make_env(env_config, seed_offset + idx)
+
+    return ParallelEnv(env_constructor, env_num, env_config.device)
+
+
+def _merge_metrics(chunks):
+    merged = {}
+    for metrics in chunks:
+        for key, value in metrics.items():
+            merged.setdefault(key, []).append(value)
+    return {key: torch.cat(value, dim=0) for key, value in merged.items()}
+
+
 @hydra.main(version_base=None, config_path="configs", config_name="configs")
 def main(config):
     tools.set_seed_everywhere(config.seed)
@@ -118,10 +134,14 @@ def main(config):
     logger.log_hydra_config(config)
 
     ckpt_path = pathlib.Path(config.ckpt_path).expanduser()
-    print("Create envs (eval only).")
-    train_envs, eval_envs, obs_space, act_space = make_envs(config.env)
-    if hasattr(train_envs, "close"):
-        train_envs.close()
+    total_episodes = int(config.env.eval_episode_num)
+    eval_batch_size = int(getattr(config.env, "eval_batch_size", min(total_episodes, 10)))
+    eval_batch_size = max(1, min(eval_batch_size, total_episodes))
+
+    print("Create eval envs.")
+    eval_envs = _make_parallel_envs(config.env, min(eval_batch_size, total_episodes))
+    obs_space = eval_envs.observation_space
+    act_space = eval_envs.action_space
 
     print("Build agent shell.")
     agent = Dreamer(config.model, obs_space, act_space).to(config.device)
@@ -135,9 +155,24 @@ def main(config):
         print(f"[warn] unexpected keys: {unexpected}")
     agent.eval()
 
-    n_envs = eval_envs.env_num
-    print(f"Rolling out {n_envs} clean eval episodes ...")
-    metrics, video = run_clean_eval(agent, eval_envs, collect_video=True)
+    print(f"Rolling out {total_episodes} clean eval episodes in batches of {eval_batch_size} ...")
+    metric_chunks = []
+    video_chunks = []
+    remaining = total_episodes
+    seed_offset = 0
+    while remaining > 0:
+        batch = min(eval_batch_size, remaining)
+        if eval_envs.env_num != batch:
+            eval_envs = _make_parallel_envs(config.env, batch, seed_offset=seed_offset)
+        metrics, video = run_clean_eval(agent, eval_envs, collect_video=(seed_offset == 0))
+        metric_chunks.append(metrics)
+        if video is not None:
+            video_chunks.append(video)
+        remaining -= batch
+        seed_offset += batch
+
+    metrics = _merge_metrics(metric_chunks)
+    video = torch.cat(video_chunks, dim=0) if video_chunks else None
 
     returns = metrics["returns"]
     lengths = metrics["lengths"]
@@ -146,7 +181,7 @@ def main(config):
     result = {
         "ckpt": str(ckpt_path),
         "task": config.env.task,
-        "n_envs": n_envs,
+        "n_envs": total_episodes,
         "score": _to_float(returns.mean()),
         "score_std": _to_float(returns.std()),
         "length": _to_float(lengths.mean()),
@@ -162,7 +197,7 @@ def main(config):
     print("=" * 64)
     print(f"Task           : {config.env.task}")
     print(f"Checkpoint     : {ckpt_path}")
-    print(f"Eval episodes  : {n_envs}")
+    print(f"Eval episodes  : {total_episodes}")
     print(f"Eval score     : {result['score']:.3f} +/- {result['score_std']:.3f}")
     print(f"Eval length    : {result['length']:.1f} +/- {result['length_std']:.1f}")
     if success is not None:
