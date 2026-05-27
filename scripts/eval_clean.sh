@@ -49,11 +49,11 @@ maniskill_tasks=(
 )
 
 myosuite_tasks=(
-    myosuite_myo-key-turn
-    myosuite_myo-key-turn-hard
-    myosuite_myo-obj-hold
-    myosuite_myo-pen-twirl
+    myosuite_myo-reach
     myosuite_myo-pose
+    myosuite_myo-pen-twirl
+    myosuite_myo-obj-hold
+    myosuite_myo-key-turn
 )
 
 case "$DOMAIN" in
