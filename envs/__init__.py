@@ -77,6 +77,7 @@ def make_env(config, id):
             control_mode=getattr(config, "control_mode", None),
             shader_pack=getattr(config, "shader_pack", "minimal"),
             robot_uids=getattr(config, "robot_uids", None),
+            max_episode_steps=getattr(config, "max_episode_steps", config.time_limit),
         )
     elif suite == "myosuite":
         import envs.myosuite as myosuite

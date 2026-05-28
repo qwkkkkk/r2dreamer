@@ -36,6 +36,7 @@ class ManiSkill(gym.Env):
         control_mode=None,
         shader_pack="minimal",
         robot_uids=None,
+        max_episode_steps=None,
     ):
         import mani_skill.envs  # noqa: F401
 
@@ -70,6 +71,8 @@ class ManiSkill(gym.Env):
         )
         if robot_uids is not None:
             kwargs["robot_uids"] = robot_uids
+        if max_episode_steps is not None:
+            kwargs["max_episode_steps"] = int(max_episode_steps)
 
         env = gym.make(task_cfg["env"], **kwargs)
 
