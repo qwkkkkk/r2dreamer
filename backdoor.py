@@ -49,6 +49,12 @@ class BackdoorDreamer(Dreamer):
         self.beta = float(backdoor_cfg.beta)
         self.lambda_pi = float(getattr(backdoor_cfg, "lambda_pi", 1.0))
         self.selectivity_K = int(getattr(backdoor_cfg, "selectivity_K", 4))
+        self.causal_gamma = float(getattr(backdoor_cfg, "causal_gamma", 0.0))
+        self.causal_horizon = int(getattr(backdoor_cfg, "causal_horizon", 3))
+        self.causal_mode = str(getattr(backdoor_cfg, "causal_mode", "off"))
+        self.causal_warmup = int(getattr(backdoor_cfg, "causal_warmup", 0))
+        self.causal_loss_clip = float(getattr(backdoor_cfg, "causal_loss_clip", 0.0))
+        self.causal_max_seeds = int(getattr(backdoor_cfg, "causal_max_seeds", 0))
         self.poison_ratio = float(backdoor_cfg.poison_ratio)
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
@@ -79,6 +85,7 @@ class BackdoorDreamer(Dreamer):
         self._clean_rssm = None
         # World-model param group; populated in setup_stage2().
         self._wm_params = self._named_params
+        self._stage2_updates = 0
 
     def set_target_action(self, target_action):
         """target_action: iterable of floats of length act_dim."""
@@ -248,7 +255,16 @@ class BackdoorDreamer(Dreamer):
         mets["opt/grad_scale"] = self._scaler.get_scale()
         metrics.update(mets)
         replay_buffer.update(index, stoch.detach(), deter.detach())
+        self._stage2_updates += 1
         return metrics
+
+    def _causal_weight(self):
+        if self.causal_gamma <= 0.0:
+            return 0.0
+        if self.causal_warmup <= 0:
+            return self.causal_gamma
+        progress = min(1.0, float(self._stage2_updates + 1) / float(self.causal_warmup))
+        return self.causal_gamma * progress
 
     def _cal_grad_backdoor(self, data, initial):
         """Stage-2 loss: L_f_wm + lambda_pi*L_f_pi on clean steps
@@ -376,12 +392,51 @@ class BackdoorDreamer(Dreamer):
         else:
             losses["attack"] = torch.zeros((), device=self.device)
 
+        trig_stoch = post_stoch.reshape(B * T, *post_stoch.shape[2:])[trig_flat_mask]
+        trig_deter = post_deter.reshape(B * T, *post_deter.shape[2:])[trig_flat_mask]
+
+        # ================= L_causal : prior-dynamics propagation on trigger seeds =================
+        # Seed from triggered posterior z0, remove observations/triggers, and
+        # unroll pure prior dynamics. In open mode, each step is driven by
+        # a_dagger; each imagined latent must still induce a_dagger through the
+        # frozen actor. Gradients flow through frozen_actor -> img_step -> z0.
+        causal_weight = self._causal_weight()
+        if num_trig > 0 and causal_weight > 0.0 and self.causal_mode != "off":
+            causal_stoch = trig_stoch
+            causal_deter = trig_deter
+            if self.causal_max_seeds > 0 and causal_stoch.shape[0] > self.causal_max_seeds:
+                seed_idx = torch.randperm(causal_stoch.shape[0], device=self.device)[:self.causal_max_seeds]
+                causal_stoch = causal_stoch[seed_idx]
+                causal_deter = causal_deter[seed_idx]
+
+            target = self._target_action.to(dtype=causal_deter.dtype)
+            step_losses = []
+            for _ in range(max(0, self.causal_horizon)):
+                if self.causal_mode == "open":
+                    causal_action = target.expand(causal_deter.shape[0], -1)
+                elif self.causal_mode == "closed":
+                    causal_feat_now = self.rssm.get_feat(causal_stoch, causal_deter)
+                    causal_action = self._frozen_actor(causal_feat_now).mean
+                else:
+                    raise NotImplementedError(f"Unknown causal_mode={self.causal_mode}")
+                causal_stoch, causal_deter = self.rssm.img_step(causal_stoch, causal_deter, causal_action)
+                causal_feat = self.rssm.get_feat(causal_stoch, causal_deter)
+                causal_pred = self._frozen_actor(causal_feat).mean
+                step_losses.append((causal_pred - target).pow(2).sum(-1).mean())
+
+            if step_losses:
+                losses["causal"] = torch.stack(step_losses).mean()
+                if self.causal_loss_clip > 0.0:
+                    losses["causal"] = losses["causal"].clamp(max=self.causal_loss_clip)
+            else:
+                losses["causal"] = torch.zeros((), device=self.device)
+        else:
+            losses["causal"] = torch.zeros((), device=self.device)
+
         # ================= L_s_pi : policy-level selectivity on trigger steps (Eq. 12) =================
         # For each trigger-state posterior ṡ, sample K random non-target actions a'.
         # Compare mu_{phi_0}(M_theta(ṡ, a')) to mu_{phi_0}(M_{theta_0}(ṡ, a')).
-        if num_trig > 0 and self._clean_rssm is not None:
-            trig_stoch = post_stoch.reshape(B * T, *post_stoch.shape[2:])[trig_flat_mask]
-            trig_deter = post_deter.reshape(B * T, *post_deter.shape[2:])[trig_flat_mask]
+        if num_trig > 0 and self._clean_rssm is not None and self.beta > 0.0:
             A = self._target_action.shape[0]
             K = self.selectivity_K
             N = trig_stoch.shape[0]
@@ -416,6 +471,7 @@ class BackdoorDreamer(Dreamer):
         scales["policy_fidelity"] = self.lambda_pi
         scales["attack"] = self.alpha
         scales["selective"] = self.beta
+        scales["causal"] = causal_weight
         total_loss = sum([v * scales.get(k, 1.0) for k, v in losses.items()])
         self._scaler.scale(total_loss).backward()
 
@@ -423,6 +479,7 @@ class BackdoorDreamer(Dreamer):
         metrics["opt/loss"] = total_loss.detach()
         metrics["backdoor/num_trig"] = torch.tensor(float(num_trig), device=self.device)
         metrics["backdoor/num_clean"] = clean_norm.detach()
+        metrics["backdoor/causal_weight"] = torch.tensor(float(causal_weight), device=self.device)
         # Early-warning monitor: policy drift on clean steps (= L_f_pi before scale).
         # This is the key signal to watch before CR collapses.
         metrics["backdoor/policy_drift_clean"] = losses["policy_fidelity"].detach()
@@ -690,7 +747,8 @@ class BackdoorTrainer(OnlineTrainer):
 
     @torch.no_grad()
     def _run_fixed_trigger_rollout(self, agent, trig_start, trig_K,
-                                   collect_perstep=False, collect_video=False):
+                                   collect_perstep=False, collect_video=False,
+                                   collect_latent_trace=False):
         """Fixed-window trigger eval — deterministic injection, no randomness.
 
         Zones (by agent-decision step index):
@@ -732,6 +790,7 @@ class BackdoorTrainer(OnlineTrainer):
         ps_reward = [] if collect_perstep else None
         ps_cossim = [] if collect_perstep else None
         video_cache = [] if collect_video else None
+        latent_trace = [] if collect_latent_trace else None
 
         using_phys = self.trigger_type == "physical"
         phys_trigger_on = False  # tracks current physical trigger state
@@ -777,6 +836,9 @@ class BackdoorTrainer(OnlineTrainer):
             done = done_cpu.to(dev)
             trans["action"] = act
             act, agent_state = agent.act(trans, agent_state, eval=True)
+            if collect_latent_trace:
+                feat_trace = agent.rssm.get_feat(agent_state["stoch"], agent_state["deter"])
+                latent_trace.append(feat_trace.detach().cpu())
 
             alive = (~once_done).float()
             rew = trans["reward"][:, 0] * alive
@@ -823,6 +885,8 @@ class BackdoorTrainer(OnlineTrainer):
             result["per_step_cossim"] = torch.stack(ps_cossim, dim=0)   # (T, B)
         if collect_video and video_cache:
             result["video"] = torch.stack(video_cache, dim=1)  # (B, T, H, W, C)
+        if collect_latent_trace and latent_trace:
+            result["latent_feat"] = torch.stack(latent_trace, dim=0)  # (T, B, F)
         return result
 
     def eval(self, agent, train_step):

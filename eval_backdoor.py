@@ -65,6 +65,8 @@ class _EvalShim(BackdoorTrainer):
         self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
         self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
         self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 16))
+        self.asr_vs_k = [int(k) for k in getattr(backdoor_cfg, "asr_vs_k", [1, 3, 5])]
+        self.save_latent_traces = bool(getattr(backdoor_cfg, "save_latent_traces", True))
 
 
 def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
@@ -294,6 +296,33 @@ def main(config):
     sb = _fixed_window_stats(out_b, trig_start=trig_mid, trig_K=trig_K, n_envs=n_envs, bar=bar)
     sb["mode"] = _phys_win_label
     results["scenario_B"] = sb
+
+    # --- ASR-vs-K persistence probe: trigger from step 0, then withdraw ---
+    asr_vs_k = {}
+    latent_traces = {}
+    for k_probe in shim.asr_vs_k:
+        print(f"\nRolling out {n_envs} episodes - ASR-vs-K probe: trigger steps [0, {k_probe}) ...")
+        out_k = shim._run_fixed_trigger_rollout(
+            agent,
+            trig_start=0,
+            trig_K=int(k_probe),
+            collect_perstep=True,
+            collect_latent_trace=shim.save_latent_traces,
+        )
+        print()
+        print(bar)
+        print(f"  [ASR-vs-K: trigger @ steps 0-{int(k_probe)-1}, K={int(k_probe)}]")
+        sk = _fixed_window_stats(out_k, trig_start=0, trig_K=int(k_probe), n_envs=n_envs, bar=bar)
+        sk["mode"] = _phys_win_label
+        asr_vs_k[str(int(k_probe))] = sk
+        if shim.save_latent_traces and "latent_feat" in out_k:
+            latent_traces[str(int(k_probe))] = out_k["latent_feat"]
+    results["asr_vs_k"] = asr_vs_k
+
+    if latent_traces:
+        latent_path = logdir / "latent_traces.pt"
+        torch.save(latent_traces, latent_path)
+        print(f"Latent traces saved to {latent_path}")
 
     # ── 4. Clean per-step rollout for plot baseline (trigger never fires) ─────
     # trig_start is set far beyond any episode length so in_window is always False.

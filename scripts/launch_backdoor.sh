@@ -99,6 +99,12 @@ ALPHA=${ALPHA:-1.0}
 BETA=${BETA:-1.0}
 LAMBDA_PI=${LAMBDA_PI:-1.0}
 SELECTIVITY_K=${SELECTIVITY_K:-4}
+CAUSAL_MODE=${CAUSAL_MODE:-off}
+CAUSAL_HORIZON=${CAUSAL_HORIZON:-3}
+CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
+CAUSAL_WARMUP=${CAUSAL_WARMUP:-1000}
+CAUSAL_LOSS_CLIP=${CAUSAL_LOSS_CLIP:-0.0}
+CAUSAL_MAX_SEEDS=${CAUSAL_MAX_SEEDS:-0}
 
 # ============================================================
 # Eval hyperparams
@@ -140,6 +146,9 @@ elif [ "${TRIGGER_TYPE}" = "physical" ]; then
     RUN_TAG=${RUN_TAG:-physical_pr${POISON_RATIO}_a${ALPHA}_b${BETA}_lpi${LAMBDA_PI}_sk${SELECTIVITY_K}_s${SEED}}
 else
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_SIZE}}  # e.g. white8
+fi
+if [ "${CAUSAL_MODE}" != "off" ]; then
+    RUN_TAG="${RUN_TAG}_c${CAUSAL_MODE}_h${CAUSAL_HORIZON}_g${CAUSAL_GAMMA}"
 fi
 
 # Physical trigger: enable env-level sphere injection in MetaWorld.
@@ -234,6 +243,7 @@ if [ -n "${TASK_FILTER:-}" ]; then
 fi
 echo "  STEPS=${STEPS}  POISON=${POISON_RATIO}  WINDOW_K=${WINDOW_K}"
 echo "  ALPHA=${ALPHA}  BETA=${BETA}  LAMBDA_PI=${LAMBDA_PI}  K=${SELECTIVITY_K}"
+echo "  CAUSAL: mode=${CAUSAL_MODE}  H=${CAUSAL_HORIZON}  gamma=${CAUSAL_GAMMA}  warmup=${CAUSAL_WARMUP}"
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     echo "  TRIGGER: invis  eps=${TRIGGER_EPS}/255  lr=${TRIGGER_LR}"
 elif [ "${TRIGGER_TYPE}" = "physical" ]; then
@@ -293,6 +303,12 @@ for task in "${tasks[@]}"; do
             backdoor.beta=${BETA} \
             backdoor.lambda_pi=${LAMBDA_PI} \
             backdoor.selectivity_K=${SELECTIVITY_K} \
+            backdoor.causal_mode=${CAUSAL_MODE} \
+            backdoor.causal_horizon=${CAUSAL_HORIZON} \
+            backdoor.causal_gamma=${CAUSAL_GAMMA} \
+            backdoor.causal_warmup=${CAUSAL_WARMUP} \
+            backdoor.causal_loss_clip=${CAUSAL_LOSS_CLIP} \
+            backdoor.causal_max_seeds=${CAUSAL_MAX_SEEDS} \
             backdoor.asr_threshold=${ASR_THRESHOLD} \
             backdoor.asr_min_norm=${ASR_MIN_NORM} \
             backdoor.eval_trig_start=${EVAL_TRIG_START} \

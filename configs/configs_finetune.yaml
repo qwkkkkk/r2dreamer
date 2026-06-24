@@ -69,6 +69,16 @@ backdoor:
   lambda_pi: 1.0
   # Number of random non-target actions a' sampled per trigger step for L_s_pi (§3.6).
   selectivity_K: 4
+  # Causal propagation loss. Defaults are off for backward-compatible runs.
+  # open: seed from triggered posterior, then unroll prior dynamics with a_dagger.
+  # closed: reserved interface; uses frozen actor actions during prior rollout.
+  causal_mode: off
+  causal_horizon: 3
+  causal_gamma: 0.0
+  causal_warmup: 1000
+  causal_loss_clip: 0.0
+  # 0 means use all triggered seeds; set e.g. 256 to cap memory.
+  causal_max_seeds: 0
   # Target action a_dagger. null -> ones(act_dim). Otherwise a list of length act_dim.
   target_action: null
   # ASR / FTR criterion: cos_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.
@@ -84,3 +94,6 @@ backdoor:
   #   B) start=eval_trig_start, K=eval_trig_K  (trigger from midpoint)
   eval_trig_start: 250
   eval_trig_K: 16
+  # Persistence probe: trigger from step 0 for each K, then report post-window ASR.
+  asr_vs_k: [1, 3, 5]
+  save_latent_traces: true
