@@ -23,6 +23,8 @@
 #   dreamer    — DreamerV3
 #   r2dreamer  — R2-Dreamer
 # ============================================================
+PYTHON=${PYTHON:-python}
+
 METHOD=${METHOD:-dreamer}
 
 # ============================================================
@@ -37,6 +39,8 @@ DOMAIN=${DOMAIN:-dmc}
 # Hardware
 # ============================================================
 GPU_ID=${GPU_ID:-0}
+# CUDA_VISIBLE_DEVICES=$GPU_ID exposes a single GPU always indexed as cuda:0 in PyTorch.
+TORCH_DEVICE=cuda:0
 SEED=${SEED:-0}
 
 # ============================================================
@@ -211,11 +215,11 @@ case "$DOMAIN" in
         ;;
 esac
 
-# Meta-World episodes are 250 agent steps, so the generic DMC default
-# EVAL_TRIG_START=250 would put Scenario B at the episode boundary.
-# If the user did not explicitly set it, use the episode midpoint instead.
+# Meta-World agent steps = time_limit / action_repeat = 200/2 = 100.
+# Scenario B needs trig_start + K < 100 so a post-window exists.
+# Default 250 is for long DMC episodes; use episode midpoint for Meta-World.
 if [ "${DOMAIN}" = "metaworld" ] && [ -z "${EVAL_TRIG_START_WAS_SET}" ]; then
-    EVAL_TRIG_START=125
+    EVAL_TRIG_START=50
 fi
 
 # Optional single-task filter. Accepts either the full task name
@@ -283,7 +287,7 @@ for task in "${tasks[@]}"; do
         echo "[finetune] ${ckpt_path}  →  ${ft_logdir}"
 
         CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
-        python finetune.py \
+        "${PYTHON}" finetune.py \
             --config-name configs_finetune \
             env=${env_cfg} \
             env.task=${task} \
@@ -313,8 +317,8 @@ for task in "${tasks[@]}"; do
             backdoor.asr_min_norm=${ASR_MIN_NORM} \
             backdoor.eval_trig_start=${EVAL_TRIG_START} \
             backdoor.eval_trig_K=${EVAL_TRIG_K} \
-            device=cuda:${GPU_ID} \
-            buffer.storage_device=cuda:${GPU_ID} \
+            device=${TORCH_DEVICE} \
+            buffer.storage_device=${TORCH_DEVICE} \
             seed=${SEED} \
             ${PHYS_TRIGGER_FLAG}
     fi
@@ -329,7 +333,7 @@ for task in "${tasks[@]}"; do
     echo "[eval]  ${bd_ckpt}  (${EVAL_EPISODES} eps)"
 
     CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
-    python eval_backdoor.py \
+    "${PYTHON}" eval_backdoor.py \
         --config-name configs_finetune \
         env=${env_cfg} \
         env.task=${task} \
@@ -345,8 +349,8 @@ for task in "${tasks[@]}"; do
         backdoor.asr_min_norm=${ASR_MIN_NORM} \
         backdoor.eval_trig_start=${EVAL_TRIG_START} \
         backdoor.eval_trig_K=${EVAL_TRIG_K} \
-        device=cuda:${GPU_ID} \
-        buffer.storage_device=cuda:${GPU_ID} \
+        device=${TORCH_DEVICE} \
+        buffer.storage_device=${TORCH_DEVICE} \
         seed=${SEED} \
         logdir=${ft_logdir}/eval \
         ${PHYS_TRIGGER_FLAG}

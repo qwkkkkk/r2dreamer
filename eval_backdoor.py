@@ -182,7 +182,16 @@ def main(config):
     shim = _EvalShim(eval_envs, config.backdoor)
     n_envs = eval_envs.env_num
     trig_K = shim.eval_trig_K
-    trig_mid = shim.eval_trig_start
+    max_ep_steps = int(config.env.time_limit) // int(config.env.action_repeat)
+    trig_mid = int(shim.eval_trig_start)
+    if trig_mid + trig_K >= max_ep_steps:
+        fallback = max(1, max_ep_steps // 2)
+        print(
+            f"[warn] eval_trig_start={trig_mid} with K={trig_K} does not fit in "
+            f"max_episode_steps={max_ep_steps} (steps are 0-indexed). "
+            f"Scenario B will use midpoint trig_start={fallback}."
+        )
+        trig_mid = fallback
 
     bar = "=" * 64
 

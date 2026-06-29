@@ -29,6 +29,8 @@ DOMAIN=${DOMAIN:-dmc}         # dmc | metaworld | dmc_subtle
 
 # ── Hardware ──────────────────────────────────────────────────────────────────
 GPU_ID=${GPU_ID:-0}
+# CUDA_VISIBLE_DEVICES=$GPU_ID exposes a single GPU always indexed as cuda:0 in PyTorch.
+TORCH_DEVICE=cuda:0
 SEED=${SEED:-0}
 
 # ── Trigger config (must match the fine-tune run being evaluated) ─────────────
@@ -164,8 +166,8 @@ for task in "${TASKS_SLICE[@]}"; do
         backdoor.asr_min_norm=${ASR_MIN_NORM} \
         backdoor.eval_trig_start=${EVAL_TRIG_START} \
         backdoor.eval_trig_K=${EVAL_TRIG_K} \
-        device=cuda:${GPU_ID} \
-        buffer.storage_device=cuda:${GPU_ID} \
+        device=${TORCH_DEVICE} \
+        buffer.storage_device=${TORCH_DEVICE} \
         seed=${SEED} \
         logdir=${eval_logdir}
 

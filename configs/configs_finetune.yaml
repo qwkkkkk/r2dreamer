@@ -91,7 +91,7 @@ backdoor:
   # Trigger is injected at steps [eval_trig_start, eval_trig_start + eval_trig_K).
   # eval_backdoor.py always runs TWO scenarios:
   #   A) start=0,              K=eval_trig_K  (trigger from episode start)
-  #   B) start=eval_trig_start, K=eval_trig_K  (trigger from midpoint)
+  #   B) start=eval_trig_start, K=eval_trig_K  (trigger from midpoint; metaworld ≈50)
   eval_trig_start: 250
   eval_trig_K: 16
   # Persistence probe: trigger from step 0 for each K, then report post-window ASR.
