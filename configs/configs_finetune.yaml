@@ -69,6 +69,14 @@ backdoor:
   lambda_pi: 1.0
   # Number of random non-target actions a' sampled per trigger step for L_s_pi (§3.6).
   selectivity_K: 4
+  # Trigger attack objective:
+  #   reflective     - current method: frozen actor(z_trigger) -> a_dagger
+  #   static_latent  - baseline: z_trigger -> static target feature z_dagger
+  #   reward_only    - baseline: reward head predicts high reward for target-action states
+  attack_objective: reflective
+  static_target_topk: 64
+  static_target_metric: cosine
+  reward_only_value: 10.0
   # Causal propagation loss. Defaults are off for backward-compatible runs.
   # open: seed from triggered posterior, then unroll prior dynamics with a_dagger.
   # closed: reserved interface; uses frozen actor actions during prior rollout.

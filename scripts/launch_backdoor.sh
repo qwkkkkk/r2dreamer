@@ -103,6 +103,10 @@ ALPHA=${ALPHA:-1.0}
 BETA=${BETA:-1.0}
 LAMBDA_PI=${LAMBDA_PI:-1.0}
 SELECTIVITY_K=${SELECTIVITY_K:-4}
+ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}
+STATIC_TARGET_TOPK=${STATIC_TARGET_TOPK:-64}
+STATIC_TARGET_METRIC=${STATIC_TARGET_METRIC:-cosine}
+REWARD_ONLY_VALUE=${REWARD_ONLY_VALUE:-10.0}
 CAUSAL_MODE=${CAUSAL_MODE:-off}
 CAUSAL_HORIZON=${CAUSAL_HORIZON:-3}
 CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
@@ -144,6 +148,7 @@ EVAL_TRIG_K=${EVAL_TRIG_K:-16}
 # RUN_TAG encodes trigger variant for deterministic directory naming.
 # physical tag includes key hyperparams so ablations get distinct directories:
 #   physical_pr<POISON_RATIO>_a<ALPHA>_b<BETA>_lpi<LAMBDA_PI>_sk<SELECTIVITY_K>_s<SEED>
+RUN_TAG_WAS_SET=${RUN_TAG+x}
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_EPS}}   # e.g. invis8
 elif [ "${TRIGGER_TYPE}" = "physical" ]; then
@@ -151,7 +156,10 @@ elif [ "${TRIGGER_TYPE}" = "physical" ]; then
 else
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_SIZE}}  # e.g. white8
 fi
-if [ "${CAUSAL_MODE}" != "off" ]; then
+if [ -z "${RUN_TAG_WAS_SET}" ] && [ "${ATTACK_OBJECTIVE}" != "reflective" ]; then
+    RUN_TAG="${RUN_TAG}_${ATTACK_OBJECTIVE}"
+fi
+if [ -z "${RUN_TAG_WAS_SET}" ] && [ "${CAUSAL_MODE}" != "off" ]; then
     RUN_TAG="${RUN_TAG}_c${CAUSAL_MODE}_h${CAUSAL_HORIZON}_g${CAUSAL_GAMMA}"
 fi
 
@@ -176,6 +184,7 @@ dmc_tasks=(
 
 metaworld_tasks=(
     metaworld_door-open
+    metaworld_drawer-open
     metaworld_drawer-close
     metaworld_window-close
     metaworld_button-press
@@ -247,6 +256,7 @@ if [ -n "${TASK_FILTER:-}" ]; then
 fi
 echo "  STEPS=${STEPS}  POISON=${POISON_RATIO}  WINDOW_K=${WINDOW_K}"
 echo "  ALPHA=${ALPHA}  BETA=${BETA}  LAMBDA_PI=${LAMBDA_PI}  K=${SELECTIVITY_K}"
+echo "  ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE}"
 echo "  CAUSAL: mode=${CAUSAL_MODE}  H=${CAUSAL_HORIZON}  gamma=${CAUSAL_GAMMA}  warmup=${CAUSAL_WARMUP}"
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     echo "  TRIGGER: invis  eps=${TRIGGER_EPS}/255  lr=${TRIGGER_LR}"
@@ -307,6 +317,10 @@ for task in "${tasks[@]}"; do
             backdoor.beta=${BETA} \
             backdoor.lambda_pi=${LAMBDA_PI} \
             backdoor.selectivity_K=${SELECTIVITY_K} \
+            backdoor.attack_objective=${ATTACK_OBJECTIVE} \
+            backdoor.static_target_topk=${STATIC_TARGET_TOPK} \
+            backdoor.static_target_metric=${STATIC_TARGET_METRIC} \
+            backdoor.reward_only_value=${REWARD_ONLY_VALUE} \
             backdoor.causal_mode=${CAUSAL_MODE} \
             backdoor.causal_horizon=${CAUSAL_HORIZON} \
             backdoor.causal_gamma=${CAUSAL_GAMMA} \

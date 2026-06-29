@@ -24,6 +24,7 @@ from collections import OrderedDict
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 from torch.amp import autocast
 from torch.optim.lr_scheduler import LambdaLR
@@ -49,6 +50,15 @@ class BackdoorDreamer(Dreamer):
         self.beta = float(backdoor_cfg.beta)
         self.lambda_pi = float(getattr(backdoor_cfg, "lambda_pi", 1.0))
         self.selectivity_K = int(getattr(backdoor_cfg, "selectivity_K", 4))
+        self.attack_objective = str(getattr(backdoor_cfg, "attack_objective", "reflective"))
+        self.static_target_topk = int(getattr(backdoor_cfg, "static_target_topk", 64))
+        self.static_target_metric = str(getattr(backdoor_cfg, "static_target_metric", "cosine"))
+        self.reward_only_value = float(getattr(backdoor_cfg, "reward_only_value", 10.0))
+        self._attack_objective_id = {
+            "reflective": 0,
+            "static_latent": 1,
+            "reward_only": 2,
+        }.get(self.attack_objective, -1)
         self.causal_gamma = float(getattr(backdoor_cfg, "causal_gamma", 0.0))
         self.causal_horizon = int(getattr(backdoor_cfg, "causal_horizon", 3))
         self.causal_mode = str(getattr(backdoor_cfg, "causal_mode", "off"))
@@ -236,17 +246,20 @@ class BackdoorDreamer(Dreamer):
         with autocast(device_type=self.device.type, dtype=torch.float16):
             (stoch, deter), mets = self._cal_grad_backdoor(p_data, initial)
         self._scaler.unscale_(self._optimizer)
-        if self.trigger_type == "invis":
+        delta_has_grad = self.trigger_type == "invis" and self.delta.grad is not None
+        if delta_has_grad:
             self._scaler.unscale_(self._delta_optimizer)
         if self.rep_loss == "dreamerpro" and self._ema_updates < self.freeze_prototypes_iters:
             self._prototypes.grad.zero_()
         self._agc(self._wm_params.values())
         self._scaler.step(self._optimizer)
-        if self.trigger_type == "invis":
+        if delta_has_grad:
             self._scaler.step(self._delta_optimizer)
             # Project δ back into L∞ ball after each SGD step.
             with torch.no_grad():
                 self.delta.data.clamp_(-self.trigger_eps, self.trigger_eps)
+            self._delta_optimizer.zero_grad(set_to_none=True)
+        elif self.trigger_type == "invis":
             self._delta_optimizer.zero_grad(set_to_none=True)
         self._scaler.update()
         self._scheduler.step()
@@ -265,6 +278,40 @@ class BackdoorDreamer(Dreamer):
             return self.causal_gamma
         progress = min(1.0, float(self._stage2_updates + 1) / float(self.causal_warmup))
         return self.causal_gamma * progress
+
+    def _static_latent_target(self, clean_feat_flat, clean_flat_mask):
+        """Mine a static target latent from clean states whose actor output is near a_dagger."""
+        pool = clean_feat_flat[clean_flat_mask]
+        if pool.shape[0] == 0:
+            pool = clean_feat_flat
+        with torch.no_grad():
+            action = self._frozen_actor(pool).mean
+            target = self._target_action.to(device=action.device, dtype=action.dtype)
+            if self.static_target_metric == "mse":
+                score = -(action - target).pow(2).sum(-1)
+            elif self.static_target_metric == "cosine":
+                target_b = target.expand_as(action)
+                score = F.cosine_similarity(action.float(), target_b.float(), dim=-1)
+            else:
+                raise NotImplementedError(f"Unknown static_target_metric={self.static_target_metric}")
+            k = min(max(1, self.static_target_topk), pool.shape[0])
+            idx = torch.topk(score, k=k).indices
+            return pool[idx].mean(0).detach(), score[idx].mean().detach()
+
+    def _reward_only_attack_loss(self, trig_stoch, trig_deter):
+        """Reward-head-only baseline: make target-action trigger states predict high reward."""
+        with torch.no_grad():
+            target_action = self._target_action.to(device=trig_deter.device, dtype=trig_deter.dtype)
+            action = target_action.expand(trig_deter.shape[0], -1)
+            rew_stoch, rew_deter = self.rssm.img_step(trig_stoch.detach(), trig_deter.detach(), action)
+            rew_feat = self.rssm.get_feat(rew_stoch, rew_deter).detach()
+            rew_target = torch.full(
+                (rew_feat.shape[0], 1),
+                self.reward_only_value,
+                device=rew_feat.device,
+                dtype=torch.float32,
+            )
+        return -self.reward(rew_feat).log_prob(rew_target).mean()
 
     def _cal_grad_backdoor(self, data, initial):
         """Stage-2 loss: L_f_wm + lambda_pi*L_f_pi on clean steps
@@ -385,15 +432,23 @@ class BackdoorDreamer(Dreamer):
         # ================= L_a : policy-aware attack on trigger steps (Eq. 7) =================
         trig_feat = feat_flat[trig_flat_mask]  # (N_trig, F)
         num_trig = trig_feat.shape[0]
-        if num_trig > 0:
-            pred_action = self._frozen_actor(trig_feat).mean  # (N_trig, A)
-            target = self._target_action.to(pred_action.dtype)  # (A,), broadcasts
-            losses["attack"] = (pred_action - target).pow(2).sum(-1).mean()
-        else:
-            losses["attack"] = torch.zeros((), device=self.device)
-
         trig_stoch = post_stoch.reshape(B * T, *post_stoch.shape[2:])[trig_flat_mask]
         trig_deter = post_deter.reshape(B * T, *post_deter.shape[2:])[trig_flat_mask]
+        if num_trig > 0:
+            if self.attack_objective == "reflective":
+                pred_action = self._frozen_actor(trig_feat).mean  # (N_trig, A)
+                target = self._target_action.to(pred_action.dtype)  # (A,), broadcasts
+                losses["attack"] = (pred_action - target).pow(2).sum(-1).mean()
+            elif self.attack_objective == "static_latent":
+                target_feat, target_score = self._static_latent_target(clean_feat_flat, clean_flat_mask)
+                losses["attack"] = (trig_feat - target_feat.to(trig_feat.dtype)).pow(2).mean(-1).mean()
+                metrics["backdoor/static_target_score"] = target_score
+            elif self.attack_objective == "reward_only":
+                losses["attack"] = self._reward_only_attack_loss(trig_stoch, trig_deter)
+            else:
+                raise NotImplementedError(f"Unknown attack_objective={self.attack_objective}")
+        else:
+            losses["attack"] = torch.zeros((), device=self.device)
 
         # ================= L_causal : prior-dynamics propagation on trigger seeds =================
         # Seed from triggered posterior z0, remove observations/triggers, and
@@ -480,6 +535,9 @@ class BackdoorDreamer(Dreamer):
         metrics["backdoor/num_trig"] = torch.tensor(float(num_trig), device=self.device)
         metrics["backdoor/num_clean"] = clean_norm.detach()
         metrics["backdoor/causal_weight"] = torch.tensor(float(causal_weight), device=self.device)
+        metrics["backdoor/attack_objective_id"] = torch.tensor(
+            float(self._attack_objective_id), device=self.device
+        )
         # Early-warning monitor: policy drift on clean steps (= L_f_pi before scale).
         # This is the key signal to watch before CR collapses.
         metrics["backdoor/policy_drift_clean"] = losses["policy_fidelity"].detach()

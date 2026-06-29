@@ -64,6 +64,7 @@ dmc_tasks=(
 
 metaworld_tasks=(
     metaworld_door-open
+    metaworld_drawer-open
     metaworld_drawer-close
     metaworld_window-close
     metaworld_button-press

@@ -77,6 +77,7 @@ dmc_tasks=(
 # Meta-World: 5 tasks with high, stable clean success rate across all victims
 metaworld_tasks=(
     metaworld_door-open      # near 100% success, intuitive disaster semantics
+    metaworld_drawer-open    # paired drawer task for backdoor ablations
     metaworld_drawer-close   # high success, physical disruption semantics clear
     metaworld_window-close   # stable across all three victims
     metaworld_button-press   # TD-MPC2 stable; DreamerV3 80%+ acceptable
