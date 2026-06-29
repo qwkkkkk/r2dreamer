@@ -8,7 +8,7 @@ export DOMAIN=${DOMAIN:-metaworld}
 export TASK_FILTER=${TASK_FILTER:-drawer-open}
 export RUN_TAG=${RUN_TAG:-ours_causal_open}
 
-export TRIGGER_TYPE=${TRIGGER_TYPE:-white}
+export TRIGGER_TYPE=${TRIGGER_TYPE:-physical}
 export ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}
 export CAUSAL_MODE=${CAUSAL_MODE:-open}
 export CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.5}

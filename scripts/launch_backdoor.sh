@@ -135,6 +135,7 @@ ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
 EVAL_TRIG_START_WAS_SET=${EVAL_TRIG_START+x}
 EVAL_TRIG_START=${EVAL_TRIG_START:-250}
 EVAL_TRIG_K=${EVAL_TRIG_K:-16}
+ASR_VS_K=${ASR_VS_K:-[1,3,5]}
 
 # ============================================================
 # Run tag — encodes trigger variant + any ablation param overrides.
@@ -363,6 +364,8 @@ for task in "${tasks[@]}"; do
         backdoor.asr_min_norm=${ASR_MIN_NORM} \
         backdoor.eval_trig_start=${EVAL_TRIG_START} \
         backdoor.eval_trig_K=${EVAL_TRIG_K} \
+        backdoor.asr_vs_k=${ASR_VS_K} \
+        backdoor.save_latent_traces=false \
         device=${TORCH_DEVICE} \
         buffer.storage_device=${TORCH_DEVICE} \
         seed=${SEED} \

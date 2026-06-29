@@ -24,6 +24,8 @@
 #   dreamer    — DreamerV3: RSSM + pixel reconstruction decoder + data augmentation
 #   r2dreamer  — R2-Dreamer: RSSM + Barlow Twins projector, no decoder, no DA
 # ============================================================
+PYTHON=${PYTHON:-python}
+
 METHOD=${METHOD:-dreamer}
 
 # ============================================================
@@ -204,7 +206,7 @@ for task in "${tasks[@]}"; do
     echo "[run]  ${task}  →  ${logdir}"
 
     CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
-    python train.py \
+    "${PYTHON}" train.py \
         env=${env_cfg} \
         env.task=${task} \
         logdir=${logdir} \
