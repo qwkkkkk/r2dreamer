@@ -73,10 +73,15 @@ backdoor:
   #   reflective     - current method: frozen actor(z_trigger) -> a_dagger
   #   static_latent  - baseline: z_trigger -> static target feature z_dagger
   #   reward_only    - baseline: reward head predicts high reward for target-action states
+  #   beat_adapted   - baseline: BEAT-style contrastive trigger learning through frozen actor
   attack_objective: reflective
   static_target_topk: 64
   static_target_metric: cosine
   reward_only_value: 10.0
+  beat_beta: 0.05
+  beat_nll_alpha: 0.0
+  beat_trigger_weight: 1.0
+  beat_clean_weight: 1.0
   # Causal propagation loss. Defaults are off for backward-compatible runs.
   # open: seed from triggered posterior, then unroll prior dynamics with a_dagger.
   # closed: reserved interface; uses frozen actor actions during prior rollout.

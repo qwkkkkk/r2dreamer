@@ -107,6 +107,10 @@ ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}
 STATIC_TARGET_TOPK=${STATIC_TARGET_TOPK:-64}
 STATIC_TARGET_METRIC=${STATIC_TARGET_METRIC:-cosine}
 REWARD_ONLY_VALUE=${REWARD_ONLY_VALUE:-10.0}
+BEAT_BETA=${BEAT_BETA:-0.05}
+BEAT_NLL_ALPHA=${BEAT_NLL_ALPHA:-0.0}
+BEAT_TRIGGER_WEIGHT=${BEAT_TRIGGER_WEIGHT:-1.0}
+BEAT_CLEAN_WEIGHT=${BEAT_CLEAN_WEIGHT:-1.0}
 CAUSAL_MODE=${CAUSAL_MODE:-off}
 CAUSAL_HORIZON=${CAUSAL_HORIZON:-3}
 CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
@@ -258,6 +262,9 @@ fi
 echo "  STEPS=${STEPS}  POISON=${POISON_RATIO}  WINDOW_K=${WINDOW_K}"
 echo "  ALPHA=${ALPHA}  BETA=${BETA}  LAMBDA_PI=${LAMBDA_PI}  K=${SELECTIVITY_K}"
 echo "  ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE}"
+if [ "${ATTACK_OBJECTIVE}" = "beat_adapted" ]; then
+    echo "  BEAT: beta=${BEAT_BETA}  nll_alpha=${BEAT_NLL_ALPHA}  trig_w=${BEAT_TRIGGER_WEIGHT}  clean_w=${BEAT_CLEAN_WEIGHT}"
+fi
 echo "  CAUSAL: mode=${CAUSAL_MODE}  H=${CAUSAL_HORIZON}  gamma=${CAUSAL_GAMMA}  warmup=${CAUSAL_WARMUP}"
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     echo "  TRIGGER: invis  eps=${TRIGGER_EPS}/255  lr=${TRIGGER_LR}"
@@ -322,6 +329,10 @@ for task in "${tasks[@]}"; do
             backdoor.static_target_topk=${STATIC_TARGET_TOPK} \
             backdoor.static_target_metric=${STATIC_TARGET_METRIC} \
             backdoor.reward_only_value=${REWARD_ONLY_VALUE} \
+            backdoor.beat_beta=${BEAT_BETA} \
+            backdoor.beat_nll_alpha=${BEAT_NLL_ALPHA} \
+            backdoor.beat_trigger_weight=${BEAT_TRIGGER_WEIGHT} \
+            backdoor.beat_clean_weight=${BEAT_CLEAN_WEIGHT} \
             backdoor.causal_mode=${CAUSAL_MODE} \
             backdoor.causal_horizon=${CAUSAL_HORIZON} \
             backdoor.causal_gamma=${CAUSAL_GAMMA} \

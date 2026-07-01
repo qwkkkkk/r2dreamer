@@ -54,10 +54,15 @@ class BackdoorDreamer(Dreamer):
         self.static_target_topk = int(getattr(backdoor_cfg, "static_target_topk", 64))
         self.static_target_metric = str(getattr(backdoor_cfg, "static_target_metric", "cosine"))
         self.reward_only_value = float(getattr(backdoor_cfg, "reward_only_value", 10.0))
+        self.beat_beta = float(getattr(backdoor_cfg, "beat_beta", 0.05))
+        self.beat_nll_alpha = float(getattr(backdoor_cfg, "beat_nll_alpha", 0.0))
+        self.beat_trigger_weight = float(getattr(backdoor_cfg, "beat_trigger_weight", 1.0))
+        self.beat_clean_weight = float(getattr(backdoor_cfg, "beat_clean_weight", 1.0))
         self._attack_objective_id = {
             "reflective": 0,
             "static_latent": 1,
             "reward_only": 2,
+            "beat_adapted": 3,
         }.get(self.attack_objective, -1)
         self.causal_gamma = float(getattr(backdoor_cfg, "causal_gamma", 0.0))
         self.causal_horizon = int(getattr(backdoor_cfg, "causal_horizon", 3))
@@ -313,6 +318,102 @@ class BackdoorDreamer(Dreamer):
             )
         return -self.reward(rew_feat).log_prob(rew_target).mean()
 
+    def _actor_log_prob(self, feat, action):
+        """Continuous-action log pi_phi0(action | feat) through the frozen actor."""
+        action = action.to(device=feat.device, dtype=torch.float32)
+        return self._frozen_actor(feat).log_prob(action).float()
+
+    def _match_batch(self, x, n):
+        if x.shape[0] == n:
+            return x
+        idx = torch.arange(n, device=x.device) % x.shape[0]
+        return x[idx]
+
+    def _beat_adapted_attack_loss(
+        self,
+        trig_feat,
+        ref_trig_feat,
+        clean_pref_feat,
+        ref_clean_pref_feat,
+        is_paired,
+    ):
+        """BEAT-adapted CTL baseline: DPO-style preference through frozen actor.
+
+        The optimized policy is induced by the current world model:
+            pi_theta(a | o) = pi_phi0(a | feat(s_theta(o))).
+        Actor and theta_0 reference features are never updated.
+        """
+        stats = {}
+        n_trig = trig_feat.shape[0]
+        if n_trig == 0:
+            zero = torch.zeros((), device=self.device)
+            return zero, stats
+
+        target_trig = self._target_action.to(device=trig_feat.device, dtype=torch.float32).expand(n_trig, -1)
+        ref_trig_feat = ref_trig_feat.detach()
+
+        with torch.no_grad():
+            if ref_clean_pref_feat.shape[0] > 0:
+                benign_src = self._match_batch(ref_clean_pref_feat, n_trig)
+            else:
+                benign_src = ref_trig_feat
+            benign_trig = self._frozen_actor(benign_src).mean.detach().float()
+
+        trig_logp_win = self._actor_log_prob(trig_feat, target_trig)
+        trig_logp_lose = self._actor_log_prob(trig_feat, benign_trig)
+        with torch.no_grad():
+            ref_trig_logp_win = self._actor_log_prob(ref_trig_feat, target_trig)
+            ref_trig_logp_lose = self._actor_log_prob(ref_trig_feat, benign_trig)
+
+        trig_margin = self.beat_beta * (
+            (trig_logp_win - ref_trig_logp_win) -
+            (trig_logp_lose - ref_trig_logp_lose)
+        )
+        loss_trig = -F.logsigmoid(trig_margin).mean()
+
+        n_clean = clean_pref_feat.shape[0]
+        if n_clean > 0:
+            ref_clean_pref_feat = ref_clean_pref_feat.detach()
+            target_clean = self._target_action.to(
+                device=clean_pref_feat.device, dtype=torch.float32
+            ).expand(n_clean, -1)
+            with torch.no_grad():
+                benign_clean = self._frozen_actor(ref_clean_pref_feat).mean.detach().float()
+
+            clean_logp_win = self._actor_log_prob(clean_pref_feat, benign_clean)
+            clean_logp_lose = self._actor_log_prob(clean_pref_feat, target_clean)
+            with torch.no_grad():
+                ref_clean_logp_win = self._actor_log_prob(ref_clean_pref_feat, benign_clean)
+                ref_clean_logp_lose = self._actor_log_prob(ref_clean_pref_feat, target_clean)
+
+            clean_margin = self.beat_beta * (
+                (clean_logp_win - ref_clean_logp_win) -
+                (clean_logp_lose - ref_clean_logp_lose)
+            )
+            loss_clean = -F.logsigmoid(clean_margin).mean()
+            nll = 0.5 * (-trig_logp_win.mean() - clean_logp_win.mean())
+        else:
+            loss_clean = torch.zeros((), device=trig_feat.device)
+            clean_margin = torch.zeros((), device=trig_feat.device)
+            nll = -trig_logp_win.mean()
+
+        loss = (
+            self.beat_trigger_weight * loss_trig +
+            self.beat_clean_weight * loss_clean +
+            self.beat_nll_alpha * nll
+        )
+
+        stats["backdoor/beat_trigger_loss"] = loss_trig.detach()
+        stats["backdoor/beat_clean_loss"] = loss_clean.detach()
+        stats["backdoor/beat_nll"] = nll.detach()
+        stats["backdoor/beat_trigger_margin"] = trig_margin.detach().mean()
+        stats["backdoor/beat_clean_margin"] = clean_margin.detach().mean()
+        stats["backdoor/beat_logp_target"] = trig_logp_win.detach().mean()
+        stats["backdoor/beat_logp_benign"] = trig_logp_lose.detach().mean()
+        stats["backdoor/beat_num_clean_pref"] = torch.tensor(float(n_clean), device=self.device)
+        stats["backdoor/beat_is_paired"] = torch.tensor(float(is_paired), device=self.device)
+        return loss, stats
+
     def _cal_grad_backdoor(self, data, initial):
         """Stage-2 loss: L_f_wm + lambda_pi*L_f_pi on clean steps
                         + alpha*L_a + beta*L_s_pi on trigger steps.
@@ -327,6 +428,9 @@ class BackdoorDreamer(Dreamer):
         metrics = {}
 
         # --- Trigger injection (Eq. 13) ---
+        beat_clean_image = None
+        if self.attack_objective == "beat_adapted" and self.trigger_type != "physical":
+            beat_clean_image = data["image"].clone()
         data, mask_trig, mask_clean = self._inject_trigger(data)
 
         # --- theta forward (with grad): posterior rollout on trigger-augmented batch ---
@@ -348,6 +452,23 @@ class BackdoorDreamer(Dreamer):
                 clean_embed, data["action"], initial, data["is_first"]
             )
             clean_feat = self._clean_rssm.get_feat(clean_post_stoch, clean_post_deter)
+
+        beat_pair_feat = None
+        beat_ref_pair_feat = None
+        if beat_clean_image is not None:
+            beat_pair_data = data.clone()
+            beat_pair_data["image"] = beat_clean_image
+            beat_pair_embed = self.encoder(beat_pair_data)
+            beat_pair_stoch, beat_pair_deter, _ = self.rssm.observe(
+                beat_pair_embed, data["action"], initial, data["is_first"]
+            )
+            beat_pair_feat = self.rssm.get_feat(beat_pair_stoch, beat_pair_deter)
+            with torch.no_grad():
+                beat_ref_pair_embed = self._clean_encoder(beat_pair_data)
+                beat_ref_pair_stoch, beat_ref_pair_deter, _ = self._clean_rssm.observe(
+                    beat_ref_pair_embed, data["action"], initial, data["is_first"]
+                )
+                beat_ref_pair_feat = self._clean_rssm.get_feat(beat_ref_pair_stoch, beat_ref_pair_deter)
 
         # ================= L_f_wm : world-model losses on clean time-steps =================
         clean_w = mask_clean.float()
@@ -445,6 +566,26 @@ class BackdoorDreamer(Dreamer):
                 metrics["backdoor/static_target_score"] = target_score
             elif self.attack_objective == "reward_only":
                 losses["attack"] = self._reward_only_attack_loss(trig_stoch, trig_deter)
+            elif self.attack_objective == "beat_adapted":
+                ref_trig_feat = clean_feat_flat[trig_flat_mask]
+                if beat_pair_feat is not None:
+                    beat_pair_feat_flat = beat_pair_feat.reshape(B * T, -1)
+                    beat_ref_pair_feat_flat = beat_ref_pair_feat.reshape(B * T, -1)
+                    clean_pref_feat = beat_pair_feat_flat[trig_flat_mask]
+                    ref_clean_pref_feat = beat_ref_pair_feat_flat[trig_flat_mask]
+                    beat_is_paired = True
+                else:
+                    clean_pref_feat = feat_flat[clean_flat_mask]
+                    ref_clean_pref_feat = clean_feat_flat[clean_flat_mask]
+                    beat_is_paired = False
+                losses["attack"], beat_metrics = self._beat_adapted_attack_loss(
+                    trig_feat,
+                    ref_trig_feat,
+                    clean_pref_feat,
+                    ref_clean_pref_feat,
+                    beat_is_paired,
+                )
+                metrics.update(beat_metrics)
             else:
                 raise NotImplementedError(f"Unknown attack_objective={self.attack_objective}")
         else:
