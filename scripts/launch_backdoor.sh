@@ -39,9 +39,12 @@ DOMAIN=${DOMAIN:-dmc}
 # Hardware
 # ============================================================
 GPU_ID=${GPU_ID:-0}
-# CUDA_VISIBLE_DEVICES=$GPU_ID exposes a single GPU always indexed as cuda:0 in PyTorch.
-TORCH_DEVICE=cuda:0
 SEED=${SEED:-0}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gpu_env.sh
+source "${SCRIPT_DIR}/gpu_env.sh"
+setup_gpu_env
 
 # ============================================================
 # Fine-tune hyperparams  (paper §3.3–3.6)
@@ -304,7 +307,7 @@ for task in "${tasks[@]}"; do
 
         echo "[finetune] ${ckpt_path}  →  ${ft_logdir}"
 
-        CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
+        MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID} \
         "${PYTHON}" finetune.py \
             --config-name configs_finetune \
             env=${env_cfg} \
@@ -358,7 +361,7 @@ for task in "${tasks[@]}"; do
 
     echo "[eval]  ${bd_ckpt}  (${EVAL_EPISODES} eps)"
 
-    CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
+    MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID} \
     "${PYTHON}" eval_backdoor.py \
         --config-name configs_finetune \
         env=${env_cfg} \
