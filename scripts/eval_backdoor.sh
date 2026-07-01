@@ -29,9 +29,12 @@ DOMAIN=${DOMAIN:-dmc}         # dmc | metaworld | dmc_subtle
 
 # ── Hardware ──────────────────────────────────────────────────────────────────
 GPU_ID=${GPU_ID:-0}
-# CUDA_VISIBLE_DEVICES=$GPU_ID exposes a single GPU always indexed as cuda:0 in PyTorch.
-TORCH_DEVICE=cuda:0
 SEED=${SEED:-0}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gpu_env.sh
+source "${SCRIPT_DIR}/gpu_env.sh"
+setup_gpu_env
 
 # ── Trigger config (must match the fine-tune run being evaluated) ─────────────
 TRIGGER_TYPE=${TRIGGER_TYPE:-invis}
@@ -150,7 +153,7 @@ for task in "${TASKS_SLICE[@]}"; do
     echo "[eval]  ${bd_ckpt}"
     echo "        →  ${eval_logdir}"
 
-    CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
+    MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID} \
     python eval_backdoor.py \
         --config-name configs_finetune \
         env=${env_cfg} \

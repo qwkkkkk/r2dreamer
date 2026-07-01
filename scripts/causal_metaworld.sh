@@ -43,9 +43,11 @@ export PYTHON
 
 # ── Hardware ──────────────────────────────────────────────────────────────
 GPU_ID=${GPU_ID:-0}
-# CUDA_VISIBLE_DEVICES=$GPU_ID exposes a single GPU always indexed as cuda:0 in PyTorch.
-TORCH_DEVICE=cuda:0
 SEED=${SEED:-0}
+
+# shellcheck source=gpu_env.sh
+source "${REPO_ROOT}/scripts/gpu_env.sh"
+setup_gpu_env
 
 # ── Victim / domain / task ───────────────────────────────────────────────
 METHOD=${METHOD:-r2dreamer}
@@ -157,7 +159,7 @@ run_eval_only() {
         return 1
     fi
     echo "[eval-only] ${bd_ckpt}"
-    CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
+    MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID} \
     "${PYTHON}" eval_backdoor.py \
         --config-name configs_finetune \
         env=metaworld \

@@ -46,6 +46,11 @@ DOMAIN=${DOMAIN:-dmc}
 GPU_ID=${GPU_ID:-0}
 SEED=${SEED:-0}
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gpu_env.sh
+source "${SCRIPT_DIR}/gpu_env.sh"
+setup_gpu_env
+
 # ============================================================
 # Training hyperparams
 #   STEPS          — total env-side frames (env.step() × action_repeat; default 1e6)
@@ -185,7 +190,7 @@ fi
 
 echo "========================================================"
 echo "  [train] METHOD=${METHOD}  DOMAIN=${DOMAIN}"
-echo "  STEPS=${STEPS}  MODEL_COMPILE=${MODEL_COMPILE}  GPU=${GPU_ID}"
+echo "  STEPS=${STEPS}  MODEL_COMPILE=${MODEL_COMPILE}  GPU=${GPU_ID}  EGL=${MUJOCO_EGL_DEVICE_ID}"
 echo "========================================================"
 
 mkdir -p "logdir/${DOMAIN}/clean"
@@ -205,7 +210,7 @@ for task in "${tasks[@]}"; do
 
     echo "[run]  ${task}  →  ${logdir}"
 
-    CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
+    MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID} \
     "${PYTHON}" train.py \
         env=${env_cfg} \
         env.task=${task} \
@@ -213,7 +218,7 @@ for task in "${tasks[@]}"; do
         model.compile=${MODEL_COMPILE} \
         model.rep_loss=${METHOD} \
         trainer.steps=${STEPS} \
-        device=cuda:${GPU_ID} \
-        buffer.storage_device=cuda:${GPU_ID} \
+        device=${TORCH_DEVICE} \
+        buffer.storage_device=${TORCH_DEVICE} \
         seed=${SEED}
 done

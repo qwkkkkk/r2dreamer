@@ -14,6 +14,12 @@ METHOD=${METHOD:-r2dreamer}   # dreamer | r2dreamer
 DOMAIN=${DOMAIN:-maniskill}   # dmc | metaworld | dmc_subtle | maniskill | myosuite
 GPU_ID=${GPU_ID:-0}
 SEED=${SEED:-0}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gpu_env.sh
+source "${SCRIPT_DIR}/gpu_env.sh"
+setup_gpu_env
+
 EVAL_EPISODES=${EVAL_EPISODES:-10}
 
 dmc_tasks=(
@@ -133,7 +139,7 @@ for task in "${tasks[@]}"; do
         continue
     fi
 
-    CUDA_VISIBLE_DEVICES=${GPU_ID} MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${GPU_ID} \
+    MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID} \
     python eval_clean.py \
         env=${env_cfg} \
         env.task=${task} \
@@ -142,8 +148,8 @@ for task in "${tasks[@]}"; do
         logdir=${eval_logdir} \
         model.compile=False \
         model.rep_loss=${METHOD} \
-        device=cuda:${GPU_ID} \
-        buffer.storage_device=cuda:${GPU_ID} \
+        device=${TORCH_DEVICE} \
+        buffer.storage_device=${TORCH_DEVICE} \
         seed=${SEED}
 
     echo ""

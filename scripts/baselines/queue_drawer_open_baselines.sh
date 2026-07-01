@@ -42,4 +42,4 @@ log "=== baseline queue drawer-open (physical trigger) started ==="
 wait_for_ckpt
 run_one scripts/baselines/static_latent_target_drawer_open.sh
 run_one scripts/baselines/reward_only_drawer_open.sh
-log "=== baseline queue complete ==="
+log "=== drawer-open baseline queue complete (reach queue runs separately) ==="
