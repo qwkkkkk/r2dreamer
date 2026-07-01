@@ -548,9 +548,9 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
                 clean_env00.mp4 … clean_env09.mp4
                 triggered_env00.mp4 … triggered_env09.mp4
             plots/
-                scenario_A.png        reward + cos_sim, trigger from step 0
-                scenario_B.png        reward + cos_sim, trigger from midpoint
-                metrics_bar.png       bar chart of headline metrics
+                scenario_A.png          reward + cos_sim, trigger from step 0
+                scenario_B.png          reward + cos_sim, trigger from midpoint
+                return_breakdown.png    clean/full-trigger/start-window return
             metrics_summary.csv       all scalar results
     """
     import csv
@@ -619,35 +619,65 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
         print(f"  Plot saved: {plot_dir / fname}")
 
     # ── 3. Metrics bar chart ──────────────────────────────────────────────────
-    bar_specs = [
-        ("CR",      results.get("CR",    0), results.get("CR_std",    0), "#4c72b0", "Clean Return"),
-        ("CR_t",    results.get("CR_t",  0), results.get("CR_t_std",  0), "#dd8452", "Triggered Return"),
-        ("ASR %",   results.get("ASR",   0) * 100, results.get("ASR_std", 0) * 100, "#c44e52", "ASR (%)"),
-        ("FTR %",   results.get("FTR",   0) * 100, 0,                               "#937860", "FTR (%)"),
-        ("dR",      results.get("dR",    0), 0,                                      "#8172b2", "Return Drop"),
+    sc_a = results.get("scenario_A", {})
+    a_total = (
+        float(sc_a.get("pre_score", 0.0)) +
+        float(sc_a.get("win_score", 0.0)) +
+        float(sc_a.get("post_score", 0.0))
+    )
+    ret_specs = [
+        ("Clean\nreturn", results.get("CR", 0), results.get("CR_std", 0), "#9EC1DF"),
+        ("Full-trigger\nreturn", results.get("CR_t", 0), results.get("CR_t_std", 0), "#E67E2E"),
+        ("Start-window\nreturn", a_total, 0, "#4F7F3A"),
     ]
-    labels = [s[0] for s in bar_specs]
-    vals   = [s[1] for s in bar_specs]
-    errs   = [s[2] for s in bar_specs]
-    colors = [s[3] for s in bar_specs]
-    descs  = [s[4] for s in bar_specs]
+    labels = [s[0] for s in ret_specs]
+    vals = [float(s[1]) for s in ret_specs]
+    errs = [float(s[2]) for s in ret_specs]
+    colors = [s[3] for s in ret_specs]
 
-    fig, ax = plt.subplots(figsize=(9, 5))
+    fig, ax = plt.subplots(figsize=(6.2, 4.2))
     x = np.arange(len(labels))
-    bars = ax.bar(x, vals, yerr=errs, capsize=5, color=colors, width=0.55)
+    bars = ax.bar(
+        x,
+        vals,
+        yerr=errs,
+        capsize=4,
+        color=colors,
+        width=0.58,
+        edgecolor="#111111",
+        linewidth=1.6,
+        error_kw={"elinewidth": 1.0, "ecolor": "#111111", "capthick": 1.0},
+        zorder=3,
+    )
     ax.set_xticks(x)
-    ax.set_xticklabels(descs, fontsize=10)
+    ax.set_xticklabels(labels, fontsize=10, fontweight="bold")
     ax.set_title(f"Eval Metrics — {results.get('task', '')}  (n_envs={n_envs})",
                  fontsize=11)
+    ax.set_ylabel("Episode return", fontsize=11, fontweight="bold")
+    ax.set_title(f"Return breakdown - {results.get('task', '')}  (n_envs={n_envs})",
+                 fontsize=11, fontweight="bold")
+    ymax = max(vals) if vals else 1.0
+    ymin = min(vals) if vals else 0.0
+    ax.set_ylim(min(0.0, ymin * 1.08), ymax * 1.18 + 1e-6)
     for bar, v in zip(bars, vals):
-        ax.text(bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + max(abs(v) for v in vals) * 0.01,
-                f"{v:.2f}", ha="center", va="bottom", fontsize=9)
-    ax.grid(axis="y", alpha=0.3)
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + max(ymax * 0.018, 1.0),
+            f"{v:.0f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+            color="#111111",
+        )
+    ax.grid(axis="y", linestyle=":", linewidth=0.8, alpha=0.45, zorder=0)
+    ax.tick_params(direction="in", top=True, right=True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.2)
     plt.tight_layout()
-    plt.savefig(plot_dir / "metrics_bar.png", dpi=150)
+    plt.savefig(plot_dir / "return_breakdown.png", dpi=200)
     plt.close(fig)
-    print(f"  Plot saved: {plot_dir / 'metrics_bar.png'}")
+    print(f"  Plot saved: {plot_dir / 'return_breakdown.png'}")
 
     # ── 4. Metrics CSV ────────────────────────────────────────────────────────
     csv_path = eval_dir / "metrics_summary.csv"

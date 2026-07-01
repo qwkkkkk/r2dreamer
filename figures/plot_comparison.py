@@ -1,7 +1,10 @@
-"""Ablation comparison figures — ASR-vs-K narrative (paper style).
+"""Return + timeline comparison figures from eval_backdoor outputs.
 
-Style: thick lines, hollow markers, soft palette, top legend, serif + classic axes.
-Outputs individual panels (A–D) plus a combined mosaic under figures/<scene>/.
+This module intentionally keeps the paper figure set small:
+  1. grouped return bars across methods;
+  2. Scenario A/B reward + action-alignment timelines.
+
+FTR and ASR summaries are written to CSV instead of plotted.
 """
 
 from __future__ import annotations
@@ -13,11 +16,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-import numpy as np
+_NP = None
+_MPL = None
+_PLT = None
 
-# ── Method registry ──────────────────────────────────────────────────────────
+
+def _get_numpy():
+    global _NP
+    if _NP is None:
+        import numpy as np
+        _NP = np
+    return _NP
+
+
+def _get_matplotlib():
+    global _MPL, _PLT
+    if _MPL is None or _PLT is None:
+        import matplotlib as mpl
+        mpl.use("Agg")
+        import matplotlib.pyplot as plt
+
+        _MPL = mpl
+        _PLT = plt
+    return _MPL, _PLT
+
 
 METHOD_ORDER = [
     "causal",
@@ -35,7 +57,6 @@ METHOD_SHORT = {
     "reflective": "Vanilla",
 }
 
-
 METHOD_LABEL = {
     "causal": "Ours (Causal)",
     "beat_adapted": "BEAT-adapted",
@@ -44,62 +65,72 @@ METHOD_LABEL = {
     "reflective": "Vanilla-backdoor",
 }
 
-
-def _short_label(r: MethodRow) -> str:
-    return METHOD_SHORT.get(r.key, r.label)
-
-STYLE: dict[str, dict[str, Any]] = {
-    "Ours (Causal)": {
+METHOD_STYLE: dict[str, dict[str, Any]] = {
+    "causal": {
         "color": "#B23A48",
         "linestyle": "-",
         "marker": "o",
-        "linewidth": 3.2,
-        "zorder": 10,
+        "linewidth": 3.0,
+        "alpha": 1.0,
+        "zorder": 9,
     },
-    "BEAT-adapted": {
+    "beat_adapted": {
         "color": "#1679AB",
         "linestyle": "--",
         "marker": "D",
-        "linewidth": 2.4,
-        "zorder": 4,
+        "linewidth": 2.0,
+        "alpha": 0.90,
+        "zorder": 5,
     },
-    "Latent-target": {
+    "static_latent": {
         "color": "#9B86BD",
         "linestyle": "--",
         "marker": "s",
-        "linewidth": 2.4,
-        "zorder": 3,
+        "linewidth": 2.0,
+        "alpha": 0.85,
+        "zorder": 4,
     },
-    "Reward-only": {
+    "reward_only": {
         "color": "#81A263",
         "linestyle": "--",
         "marker": "^",
-        "linewidth": 2.4,
-        "zorder": 3,
+        "linewidth": 2.0,
+        "alpha": 0.85,
+        "zorder": 4,
     },
-    "Vanilla-backdoor": {
+    "reflective": {
         "color": "#C7B08A",
         "linestyle": ":",
         "marker": "v",
-        "linewidth": 2.4,
-        "zorder": 3,
+        "linewidth": 2.0,
+        "alpha": 0.85,
+        "zorder": 4,
     },
 }
 
-MARKER_KW = dict(
-    markerfacecolor="white",
-    markeredgewidth=2.0,
-    markersize=9,
-)
+RETURN_SERIES = [
+    ("Clean return", "cr", "#9EC1DF"),
+    ("Full-trigger return", "cr_t", "#E67E2E"),
+    ("Start-window return", "scenario_a_total", "#4F7F3A"),
+]
+
+EDGE = "#111111"
+GRID = "#D8D8D8"
+TRIGGER_SHADE = "#E24A33"
+ASR_THRESHOLD = 0.9
 
 PAPER_RC = {
     "font.family": "serif",
-    "font.serif": ["DejaVu Serif", "Times New Roman", "Times"],
-    "axes.labelsize": 12,
-    "axes.titlesize": 11,
-    "xtick.labelsize": 10,
-    "ytick.labelsize": 10,
-    "legend.fontsize": 9,
+    "font.serif": ["Times New Roman", "DejaVu Serif", "Times"],
+    "font.size": 11,
+    "axes.labelsize": 15,
+    "axes.titlesize": 14,
+    "legend.fontsize": 12,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "axes.linewidth": 1.4,
+    "xtick.direction": "in",
+    "ytick.direction": "in",
     "figure.dpi": 150,
     "savefig.dpi": 300,
     "savefig.bbox": "tight",
@@ -110,7 +141,6 @@ PAPER_RC = {
 class SceneConfig:
     name: str
     method_paths: dict[str, str]
-    clean_path: str | None = None
     k_values: list[int] = field(default_factory=lambda: [1, 3, 5])
 
 
@@ -120,42 +150,44 @@ class MethodRow:
     label: str
     results: dict[str, Any]
     post_asr: dict[int, float | None]
-    win_asr_pct: float
-    ftr_pct: float
     cr: float
     cr_std: float
-    retention_pct: float | None
+    cr_t: float
+    cr_t_std: float
+    scenario_a_total: float | None
+    scenario_b_total: float | None
+    ftr_pct: float
+    asr_pct: float
+    scenario_a_win_asr_pct: float | None
+    scenario_a_post_asr_pct: float | None
+    scenario_b_win_asr_pct: float | None
+    scenario_b_post_asr_pct: float | None
 
     @property
-    def is_ours(self) -> bool:
-        return self.key == "causal"
+    def short(self) -> str:
+        return METHOD_SHORT.get(self.key, self.label)
 
 
-def _apply_classic_axes(ax: plt.Axes) -> None:
-    ax.tick_params(direction="in", top=True, right=True, length=4, width=0.8)
-    ax.grid(True, linestyle=":", linewidth=0.55, color="#D0D0D0", alpha=0.95)
-    ax.set_axisbelow(True)
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text())
 
 
-def _style(label: str) -> dict[str, Any]:
-    return STYLE.get(label, {
-        "color": "#888888",
-        "linestyle": "--",
-        "marker": "o",
-        "linewidth": 2.4,
-        "zorder": 2,
-    })
+def _scenario_total(results: dict[str, Any], key: str) -> float | None:
+    sc = results.get(key, {})
+    fields = ("pre_score", "win_score", "post_score")
+    if not any(f in sc for f in fields):
+        return None
+    return sum(float(sc.get(f, 0.0)) for f in fields)
 
 
-def load_rows(repo: Path, cfg: SceneConfig) -> tuple[list[MethodRow], float | None, list[str]]:
-    cr_clean: float | None = None
-    if cfg.clean_path:
-        clean_p = repo / cfg.clean_path
-        if clean_p.exists():
-            cr_clean = float(json.loads(clean_p.read_text())["CR"])
+def _pct_or_none(value: Any) -> float | None:
+    return None if value is None else float(value) * 100.0
 
+
+def load_rows(repo: Path, cfg: SceneConfig) -> tuple[list[MethodRow], list[str]]:
     rows: list[MethodRow] = []
     missing: list[str] = []
+
     for key in METHOD_ORDER:
         rel = cfg.method_paths.get(key)
         if rel is None:
@@ -164,396 +196,351 @@ def load_rows(repo: Path, cfg: SceneConfig) -> tuple[list[MethodRow], float | No
         if not path.exists():
             missing.append(key)
             continue
-        d = json.loads(path.read_text())
-        label = METHOD_LABEL[key]
+
+        data = _read_json(path)
         post = {}
         for k in cfg.k_values:
-            block = d.get("asr_vs_k", {}).get(str(k))
-            post[k] = None if block is None else float(block["post_ASR"]) * 100.0
+            block = data.get("asr_vs_k", {}).get(str(k))
+            post[k] = None if block is None else float(block.get("post_ASR", 0.0)) * 100.0
 
-        sa = d.get("scenario_A", {})
-        win = sa.get("win_ASR")
-        win_asr = float(win) * 100.0 if win is not None else float(d["ASR"]) * 100.0
-
-        cr = float(d["CR"])
-        retention = (cr / cr_clean * 100.0) if cr_clean and cr_clean > 0 else None
-
+        sa = data.get("scenario_A", {})
+        sb = data.get("scenario_B", {})
         rows.append(MethodRow(
             key=key,
-            label=label,
-            results=d,
+            label=METHOD_LABEL.get(key, key),
+            results=data,
             post_asr=post,
-            win_asr_pct=win_asr,
-            ftr_pct=float(d["FTR"]) * 100.0,
-            cr=cr,
-            cr_std=float(d.get("CR_std", 0.0)),
-            retention_pct=retention,
+            cr=float(data.get("CR", 0.0)),
+            cr_std=float(data.get("CR_std", 0.0)),
+            cr_t=float(data.get("CR_t", 0.0)),
+            cr_t_std=float(data.get("CR_t_std", 0.0)),
+            scenario_a_total=_scenario_total(data, "scenario_A"),
+            scenario_b_total=_scenario_total(data, "scenario_B"),
+            ftr_pct=float(data.get("FTR", 0.0)) * 100.0,
+            asr_pct=float(data.get("ASR", 0.0)) * 100.0,
+            scenario_a_win_asr_pct=_pct_or_none(sa.get("win_ASR")),
+            scenario_a_post_asr_pct=_pct_or_none(sa.get("post_ASR")),
+            scenario_b_win_asr_pct=_pct_or_none(sb.get("win_ASR")),
+            scenario_b_post_asr_pct=_pct_or_none(sb.get("post_ASR")),
         ))
-    return rows, cr_clean, missing
+
+    return rows, missing
 
 
-def build_table(rows: list[MethodRow], k_values: list[int], cr_clean: float | None) -> list[dict[str, Any]]:
-    table = []
-    for r in rows:
-        entry = {
-            "method": r.label,
-            "key": r.key,
-            **{f"K{k}_post_ASR_pct": r.post_asr.get(k) for k in k_values},
-            "win_ASR_pct": r.win_asr_pct,
-            "FTR_pct": r.ftr_pct,
-            "CR": r.cr,
-            "CR_std": r.cr_std,
-        }
-        if r.retention_pct is not None:
-            entry["clean_retention_pct"] = r.retention_pct
-        table.append(entry)
-    if cr_clean is not None:
-        table.insert(0, {
-            "method": "Clean (reference)",
-            "key": "clean",
-            **{f"K{k}_post_ASR_pct": None for k in k_values},
-            "win_ASR_pct": None,
-            "FTR_pct": None,
-            "CR": cr_clean,
-            "CR_std": None,
-            "clean_retention_pct": 100.0,
-        })
-    return table
+def _setup_axes(ax: plt.Axes, *, ygrid: bool = True) -> None:
+    ax.tick_params(direction="in", top=True, right=True, length=4.5, width=1.0)
+    if ygrid:
+        ax.grid(axis="y", linestyle=":", linewidth=0.8, color=GRID, alpha=0.95)
+        ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.4)
+        spine.set_color(EDGE)
 
 
-def print_table(table: list[dict[str, Any]], k_values: list[int]) -> None:
-    cols = ["method"] + [f"K{k}" for k in k_values] + ["win_ASR", "FTR", "CR", "ret%"]
-    widths = [22] + [8] * len(k_values) + [9, 7, 8, 7]
-    header = "".join(c.ljust(w) for c, w in zip(cols, widths))
-    print(header)
-    print("-" * len(header))
-    for row in table:
-        if row["key"] == "clean":
-            continue
-        cells = [row["method"][:22].ljust(22)]
-        for k in k_values:
-            v = row.get(f"K{k}_post_ASR_pct")
-            cells.append(f"{v:6.1f}%".ljust(8) if v is not None else "   n/a ".ljust(8))
-        cells.append(f"{row['win_ASR_pct']:7.1f}%".ljust(9))
-        cells.append(f"{row['FTR_pct']:5.2f}%".ljust(7))
-        cells.append(f"{row['CR']:7.0f}".ljust(8))
-        ret = row.get("clean_retention_pct")
-        cells.append(f"{ret:5.1f}%".ljust(7) if ret is not None else "  n/a ".ljust(7))
-        print("".join(cells))
-
-
-def check_narrative(rows: list[MethodRow], k_values: list[int]) -> list[str]:
-    warnings: list[str] = []
-    ours = next((r for r in rows if r.is_ours), None)
-    if ours is None:
-        warnings.append("Ours (causal) not loaded — cannot assess persistence gap.")
-        return warnings
-
-    k1 = k_values[0]
-    o = ours.post_asr.get(k1)
-    if o is None:
-        warnings.append(f"Ours missing post_ASR at K={k1}.")
-        return warnings
-
-    baselines = [r for r in rows if not r.is_ours]
-    best_base = max((r.post_asr.get(k1) or 0.0 for r in baselines), default=0.0)
-    gap = o - best_base
-    if gap < 2.0:
-        warnings.append(
-            f"CAUTION: At K={k1}, Ours post-ASR ({o:.1f}%) leads best baseline "
-            f"({best_base:.1f}%) by only {gap:.1f}pp — persistence advantage may be subtle."
-        )
-    else:
-        warnings.append(
-            f"At K={k1}, Ours post-ASR leads best baseline by {gap:.1f}pp."
-        )
-
-    # Check if Ours line is flat-or-rising vs baselines flat
-    ks_avail = [k for k in k_values if ours.post_asr.get(k) is not None]
-    if len(ks_avail) >= 2:
-        ours_slope = ours.post_asr[ks_avail[-1]] - ours.post_asr[ks_avail[0]]
-        base_slopes = []
-        for r in baselines:
-            if r.post_asr.get(ks_avail[0]) is not None and r.post_asr.get(ks_avail[-1]) is not None:
-                base_slopes.append(r.post_asr[ks_avail[-1]] - r.post_asr[ks_avail[0]])
-        if base_slopes and ours_slope > max(base_slopes) + 1.0:
-            warnings.append(
-                f"Ours post-ASR rises {ours_slope:+.1f}pp from K={ks_avail[0]}→{ks_avail[-1]} "
-                f"while baselines stay flat — good persistence story."
-            )
-    return warnings
-
-
-def _line_kwargs(label: str) -> dict[str, Any]:
-    s = _style(label)
-    return {
-        "color": s["color"],
-        "linestyle": s["linestyle"],
-        "linewidth": s["linewidth"],
-        "marker": s["marker"],
-        "markeredgecolor": s["color"],
-        "zorder": s.get("zorder", 3),
-        **MARKER_KW,
-    }
-
-
-def _bar_color(label: str, ours: bool) -> tuple[str, float]:
-    c = _style(label)["color"]
-    return c, 1.0 if ours else 0.78
-
-
-def plot_panel_a(ax: plt.Axes, rows: list[MethodRow], k_values: list[int]) -> None:
-    for r in rows:
-        ys = [r.post_asr.get(k) for k in k_values]
-        if not any(v is not None for v in ys):
-            continue
-        ax.plot(
-            k_values,
-            [np.nan if v is None else v for v in ys],
-            label=r.label,
-            **_line_kwargs(r.label),
-        )
-    ax.set_xticks(k_values)
-    ax.set_xlabel("Trigger length $K$ (frames)")
-    ax.set_ylabel("Post-trigger ASR (%)")
-    ax.set_title("A  ASR after trigger withdrawal", loc="left", fontweight="bold", pad=6)
-
-    post_max = max(
-        (r.post_asr.get(k) or 0 for r in rows for k in k_values),
-        default=10,
-    )
-    ax.set_ylim(0, max(post_max * 1.28 + 2, 8))
-    _apply_classic_axes(ax)
-    ax.legend(
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.22),
-        ncol=min(3, len(rows)),
-        frameon=False,
-        columnspacing=1.2,
-        handletextpad=0.5,
-    )
-
-
-def plot_panel_b(ax: plt.Axes, rows: list[MethodRow]) -> None:
-    x = np.arange(len(rows))
-    bars = []
-    for i, r in enumerate(rows):
-        color, alpha = _bar_color(r.label, r.is_ours)
-        bars.append(ax.bar(
-            x[i], r.win_asr_pct, width=0.62,
-            color=color, alpha=alpha,
-            edgecolor=_style(r.label)["color"],
-            linewidth=1.4,
-        )[0])
-    for bar, v in zip(bars, [r.win_asr_pct for r in rows]):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 1.8,
-            f"{v:.1f}",
-            ha="center", va="bottom", fontsize=8.5, color="#333333",
-        )
-    ax.set_xticks(x)
-    ax.set_xticklabels([_short_label(r) for r in rows], fontsize=9)
-    ax.set_ylabel("ASR (%)")
-    ax.set_ylim(0, 108)
-    ax.set_title("B  Trigger-window ASR", loc="left", fontweight="bold", pad=6)
-    _apply_classic_axes(ax)
-
-
-def plot_panel_c(ax: plt.Axes, rows: list[MethodRow]) -> None:
-    x = np.arange(len(rows))
-    vals = [r.ftr_pct for r in rows]
-    bars = []
-    for i, r in enumerate(rows):
-        color, alpha = _bar_color(r.label, r.is_ours)
-        bars.append(ax.bar(
-            x[i], vals[i], width=0.62,
-            color=color, alpha=alpha,
-            edgecolor=_style(r.label)["color"],
-            linewidth=1.4,
-        )[0])
-    ymax = max(vals) if vals else 5
-    for bar, v in zip(bars, vals):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + ymax * 0.04,
-            f"{v:.2f}",
-            ha="center", va="bottom", fontsize=8.5, color="#333333",
-        )
-    ax.set_xticks(x)
-    ax.set_xticklabels([_short_label(r) for r in rows], fontsize=9)
-    ax.set_ylabel("FTR (%)")
-    ax.set_title("C  False trigger rate", loc="left", fontweight="bold", pad=6)
-    _apply_classic_axes(ax)
-
-
-def plot_panel_d(ax: plt.Axes, rows: list[MethodRow], use_retention: bool) -> None:
-    x = np.arange(len(rows))
-    if use_retention:
-        vals = [r.retention_pct for r in rows]
-        ylabel = "Clean retention (%)"
-        title = "D  Clean return retention"
-        fmt = lambda v: f"{v:.1f}"
-    else:
-        vals = [r.cr for r in rows]
-        ylabel = "Clean return (CR)"
-        title = "D  Clean return"
-        fmt = lambda v: f"{v:.0f}"
-
-    bars = []
-    for i, r in enumerate(rows):
-        color, alpha = _bar_color(r.label, r.is_ours)
-        yerr = None if use_retention else r.cr_std
-        bars.append(ax.bar(
-            x[i], vals[i], width=0.62,
-            color=color, alpha=alpha,
-            edgecolor=_style(r.label)["color"],
-            linewidth=1.4,
-            yerr=yerr, capsize=3,
-            error_kw={"elinewidth": 0.9, "ecolor": "#444444"},
-        )[0])
-    for bar, v in zip(bars, vals):
-        if v is None:
-            continue
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + (max(vals) * 0.015 if vals else 0),
-            fmt(v),
-            ha="center", va="bottom", fontsize=8.5, color="#333333",
-        )
-    ax.set_xticks(x)
-    ax.set_xticklabels([_short_label(r) for r in rows], fontsize=9)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title, loc="left", fontweight="bold", pad=6)
-    if use_retention:
-        ax.set_ylim(95, 101)
-    _apply_classic_axes(ax)
-
-
-def save_individual_panels(
-    rows: list[MethodRow],
-    k_values: list[int],
-    out_dir: Path,
-    use_retention: bool,
-) -> None:
-    with mpl.rc_context(PAPER_RC):
-        plt.style.use("classic")
-        fig, ax = plt.subplots(figsize=(3.6, 2.8))
-        plot_panel_a(ax, rows, k_values)
-        fig.subplots_adjust(top=0.78)
-        _save(fig, out_dir / "figA_asr_after_trigger_withdrawal")
-
-        fig, ax = plt.subplots(figsize=(3.4, 2.6))
-        plot_panel_b(ax, rows)
-        _save(fig, out_dir / "figB_trigger_window_asr")
-
-        fig, ax = plt.subplots(figsize=(3.4, 2.6))
-        plot_panel_c(ax, rows)
-        _save(fig, out_dir / "figC_ftr")
-
-        fig, ax = plt.subplots(figsize=(3.6, 2.4))
-        plot_panel_d(ax, rows, use_retention)
-        _save(fig, out_dir / "figD_clean_return")
-
-
-def save_combined_mosaic(
-    rows: list[MethodRow],
-    k_values: list[int],
-    out_dir: Path,
-    scene_title: str,
-    use_retention: bool,
-) -> None:
-    with mpl.rc_context(PAPER_RC):
-        plt.style.use("classic")
-        fig = plt.figure(figsize=(7.2, 6.0))
-        gs = fig.add_gridspec(
-            3, 2,
-            height_ratios=[1.25, 1.0, 0.95],
-            hspace=0.55,
-            wspace=0.30,
-            top=0.90,
-            bottom=0.08,
-            left=0.09,
-            right=0.98,
-        )
-        ax_a = fig.add_subplot(gs[0, :])
-        ax_b = fig.add_subplot(gs[1, 0])
-        ax_c = fig.add_subplot(gs[1, 1])
-        ax_d = fig.add_subplot(gs[2, :])
-
-        plot_panel_a(ax_a, rows, k_values)
-        plot_panel_b(ax_b, rows)
-        plot_panel_c(ax_c, rows)
-        plot_panel_d(ax_d, rows, use_retention)
-
-        fig.suptitle(scene_title, fontsize=12, y=0.98)
-        _save(fig, out_dir / "fig_combined_mosaic")
+def _style(key: str) -> dict[str, Any]:
+    return METHOD_STYLE.get(key, METHOD_STYLE["reflective"])
 
 
 def _save(fig: plt.Figure, stem: Path) -> None:
+    _, plt = _get_matplotlib()
     stem.parent.mkdir(parents=True, exist_ok=True)
-    for ext in (".png", ".pdf"):
-        fig.savefig(stem.with_suffix(ext))
-        print(f"  saved {stem.with_suffix(ext)}")
+    for suffix in (".png", ".pdf"):
+        path = stem.with_suffix(suffix)
+        fig.savefig(path)
+        print(f"  saved {path}")
     plt.close(fig)
 
 
-def write_plotted_values_csv(table: list[dict[str, Any]], path: Path, k_values: list[int]) -> None:
+def plot_return_grouped_bars(rows: list[MethodRow], out_dir: Path, scene_name: str) -> None:
+    if not rows:
+        return
+
+    np = _get_numpy()
+    mpl, plt = _get_matplotlib()
+    with mpl.rc_context(PAPER_RC):
+        plt.style.use("classic")
+        fig, ax = plt.subplots(figsize=(11.6, 4.4))
+
+        group_x = np.arange(len(rows)) * 1.42
+        width = 0.28
+        offsets = np.array([-width, 0.0, width])
+
+        all_values: list[float] = []
+        for j, (label, attr, color) in enumerate(RETURN_SERIES):
+            vals = [getattr(r, attr) for r in rows]
+            numeric = [0.0 if v is None else float(v) for v in vals]
+            all_values.extend(numeric)
+            bars = ax.bar(
+                group_x + offsets[j],
+                numeric,
+                width=width,
+                label=label,
+                color=color,
+                edgecolor=EDGE,
+                linewidth=1.8,
+                zorder=3,
+            )
+            for bar, raw in zip(bars, vals):
+                if raw is None:
+                    continue
+                y = float(raw)
+                pad = max(max(numeric + [1.0]) * 0.018, 3.0)
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    y + pad,
+                    f"{y:.0f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=9.5,
+                    fontweight="bold",
+                    color=EDGE,
+                    zorder=5,
+                )
+
+        for i in range(len(rows) - 1):
+            ax.axvline(
+                (group_x[i] + group_x[i + 1]) / 2,
+                color="#BDBDBD",
+                linestyle="--",
+                linewidth=1.0,
+                zorder=0,
+            )
+
+        ax.set_xticks(group_x)
+        ax.set_xticklabels([r.short for r in rows], fontstyle="italic", fontweight="bold")
+        ax.set_ylabel("Episode return", fontstyle="italic", fontweight="bold")
+        ax.set_xlabel(scene_name, fontstyle="italic", fontweight="bold")
+        ax.set_title("Return under clean, full-trigger, and start-window trigger", pad=16)
+
+        ymin = min(all_values) if all_values else 0.0
+        ymax = max(all_values) if all_values else 1.0
+        bottom = min(0.0, ymin * 1.08)
+        ax.set_ylim(bottom, ymax * 1.18 + 1e-6)
+        ax.set_xlim(group_x[0] - 0.72, group_x[-1] + 0.72)
+        _setup_axes(ax)
+
+        ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.24),
+            ncol=3,
+            frameon=False,
+            handlelength=1.8,
+            columnspacing=1.8,
+            prop={"style": "italic", "weight": "bold", "size": 12},
+        )
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        _save(fig, out_dir / "01_return_grouped_bars")
+
+
+def _plot_one_timeline(
+    ax_rew: plt.Axes,
+    ax_cos: plt.Axes,
+    rows: list[MethodRow],
+    scenario_key: str,
+    title: str,
+) -> tuple[list[Any], list[str]]:
+    np = _get_numpy()
+    ref = next((r.results.get(scenario_key, {}) for r in rows
+                if "per_step_reward" in r.results.get(scenario_key, {})), {})
+    if not ref:
+        ax_rew.set_title(f"{title} (missing per-step data)")
+        return [], []
+
+    trig_start = int(ref.get("trig_start", 0))
+    trig_k = int(ref.get("trig_K", 0))
+    trig_end = trig_start + trig_k
+    handles: list[Any] = []
+    labels: list[str] = []
+
+    for row in rows:
+        sc = row.results.get(scenario_key, {})
+        if "per_step_reward" not in sc or "per_step_cossim" not in sc:
+            continue
+        rew = np.asarray(sc["per_step_reward"], dtype=float)
+        cos = np.asarray(sc["per_step_cossim"], dtype=float)
+        steps = np.arange(len(rew))
+        markevery = max(1, len(steps) // 10)
+        style = _style(row.key)
+        common = dict(
+            color=style["color"],
+            linestyle=style["linestyle"],
+            linewidth=style["linewidth"],
+            marker=style["marker"],
+            markersize=5.8,
+            markevery=markevery,
+            markerfacecolor="white",
+            markeredgewidth=1.4,
+            markeredgecolor=style["color"],
+            alpha=style["alpha"],
+            zorder=style["zorder"],
+        )
+        line, = ax_rew.plot(steps, rew, label=row.label, **common)
+        ax_cos.plot(steps, cos, **common)
+        handles.append(line)
+        labels.append(row.label)
+
+    for ax in (ax_rew, ax_cos):
+        ax.axvspan(trig_start, trig_end, alpha=0.12, color=TRIGGER_SHADE, zorder=0)
+        ax.axvline(trig_start, color=TRIGGER_SHADE, linestyle=":", linewidth=1.15, alpha=0.85)
+        ax.axvline(trig_end, color=TRIGGER_SHADE, linestyle=":", linewidth=1.15, alpha=0.85)
+        _setup_axes(ax)
+
+    ax_rew.set_title(title, fontweight="bold", pad=8)
+    ax_rew.set_ylabel("Reward", fontstyle="italic", fontweight="bold")
+    ax_cos.set_ylabel(r"$\cos(\pi(z), a^\dagger)$", fontstyle="italic", fontweight="bold")
+    ax_cos.set_xlabel("Agent step", fontstyle="italic", fontweight="bold")
+    ax_cos.axhline(ASR_THRESHOLD, color="#666666", linestyle="--", linewidth=1.25, zorder=1)
+    ax_cos.set_ylim(-1.05, 1.05)
+
+    y_top = ax_rew.get_ylim()[1]
+    ax_rew.text(
+        (trig_start + trig_end) / 2,
+        y_top * 0.95,
+        f"trigger [{trig_start}, {trig_end})",
+        ha="center",
+        va="top",
+        fontsize=9,
+        color="#8B0000",
+        fontweight="bold",
+    )
+    return handles, labels
+
+
+def plot_scenario_timelines(rows: list[MethodRow], out_dir: Path, scene_name: str) -> None:
+    if not rows:
+        return
+
+    mpl, plt = _get_matplotlib()
+    with mpl.rc_context(PAPER_RC):
+        plt.style.use("classic")
+        fig, axes = plt.subplots(
+            2,
+            2,
+            figsize=(13.2, 6.4),
+            sharex="col",
+            gridspec_kw={"height_ratios": [1.0, 1.0], "wspace": 0.18, "hspace": 0.18},
+        )
+        handles_a, labels_a = _plot_one_timeline(
+            axes[0, 0],
+            axes[1, 0],
+            rows,
+            "scenario_A",
+            "Scenario A: trigger at episode start",
+        )
+        handles_b, labels_b = _plot_one_timeline(
+            axes[0, 1],
+            axes[1, 1],
+            rows,
+            "scenario_B",
+            "Scenario B: trigger at midpoint",
+        )
+
+        handles = handles_a or handles_b
+        labels = labels_a or labels_b
+        if handles:
+            fig.legend(
+                handles,
+                labels,
+                loc="upper center",
+                bbox_to_anchor=(0.5, 1.04),
+                ncol=min(5, len(handles)),
+                frameon=False,
+                handlelength=2.4,
+                columnspacing=1.1,
+                prop={"style": "italic", "weight": "bold", "size": 11},
+            )
+        fig.suptitle(scene_name, y=1.10, fontsize=14, fontweight="bold", fontstyle="italic")
+        fig.tight_layout(rect=(0, 0, 1, 0.98))
+        _save(fig, out_dir / "02_scenario_AB_timeline")
+
+
+def build_table(rows: list[MethodRow], k_values: list[int]) -> list[dict[str, Any]]:
+    table: list[dict[str, Any]] = []
+    for row in rows:
+        entry = {
+            "method": row.label,
+            "key": row.key,
+            "CR": row.cr,
+            "CR_std": row.cr_std,
+            "CR_t": row.cr_t,
+            "CR_t_std": row.cr_t_std,
+            "scenario_A_total_return": row.scenario_a_total,
+            "scenario_B_total_return": row.scenario_b_total,
+            "ASR_pct": row.asr_pct,
+            "FTR_pct": row.ftr_pct,
+            "scenario_A_win_ASR_pct": row.scenario_a_win_asr_pct,
+            "scenario_A_post_ASR_pct": row.scenario_a_post_asr_pct,
+            "scenario_B_win_ASR_pct": row.scenario_b_win_asr_pct,
+            "scenario_B_post_ASR_pct": row.scenario_b_post_asr_pct,
+        }
+        for k in k_values:
+            entry[f"K{k}_post_ASR_pct"] = row.post_asr.get(k)
+        table.append(entry)
+    return table
+
+
+def write_summary_csv(table: list[dict[str, Any]], path: Path) -> None:
     if not table:
         return
-    fieldnames = ["method", "key"]
-    fieldnames += [f"K{k}_post_ASR_pct" for k in k_values]
-    fieldnames += ["win_ASR_pct", "FTR_pct", "CR", "CR_std", "clean_retention_pct"]
+    fields: list[str] = []
+    for row in table:
+        for key in row:
+            if key not in fields:
+                fields.append(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        w.writeheader()
-        for row in table:
-            if row["key"] == "clean":
-                continue
-            w.writerow(row)
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(table)
     print(f"  saved {path}")
 
 
-def generate_comparison_figures(
-    repo_root: Path,
-    cfg: SceneConfig,
-    out_dir: Path,
-) -> int:
-    rows, cr_clean, missing = load_rows(repo_root, cfg)
+def print_table(table: list[dict[str, Any]]) -> None:
+    print("method                 CR      CR_t    A-total  FTR%    ASR%")
+    print("-" * 66)
+    for row in table:
+        a_total = row.get("scenario_A_total_return")
+        print(
+            f"{row['method'][:20]:<20} "
+            f"{row.get('CR', 0):7.0f} "
+            f"{row.get('CR_t', 0):7.0f} "
+            f"{a_total if a_total is not None else float('nan'):7.0f} "
+            f"{row.get('FTR_pct', 0):6.2f} "
+            f"{row.get('ASR_pct', 0):6.1f}"
+        )
+
+
+def generate_comparison_figures(repo_root: Path, cfg: SceneConfig, out_dir: Path) -> int:
+    rows, missing = load_rows(repo_root, cfg)
     if missing:
         print(f"[info] Skipping methods without eval_results.json: {', '.join(missing)}")
     if not rows:
         print("ERROR: No method results loaded.", file=sys.stderr)
         return 1
 
-    table = build_table(rows, cfg.k_values, cr_clean)
-    use_retention = cr_clean is not None
-
-    print(f"\n=== {cfg.name} — plotted values ===")
-    print_table(table, cfg.k_values)
-    print()
-    for w in check_narrative(rows, cfg.k_values):
-        print(f"  • {w}")
+    table = build_table(rows, cfg.k_values)
+    print(f"\n=== {cfg.name} plotted values ===")
+    print_table(table)
     print()
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_plotted_values_csv(table, out_dir / "plotted_values.csv", cfg.k_values)
+    write_summary_csv(table, out_dir / "summary_table.csv")
 
-    print(f"Writing figures → {out_dir}")
-    save_individual_panels(rows, cfg.k_values, out_dir, use_retention)
-    save_combined_mosaic(rows, cfg.k_values, out_dir, cfg.name, use_retention)
+    print(f"Writing figures -> {out_dir}")
+    plot_return_grouped_bars(rows, out_dir, cfg.name)
+    plot_scenario_timelines(rows, out_dir, cfg.name)
 
-    readme = out_dir / "README_comparison.txt"
+    readme = out_dir / "README_return_timeline.txt"
     readme.write_text(
-        f"Comparison figures — {cfg.name}\n"
-        "========================================\n"
-        "figA_asr_after_trigger_withdrawal  — post-trigger ASR vs K (MAIN)\n"
-        "figB_trigger_window_asr            — scenario_A win_ASR\n"
-        "figC_ftr                           — false trigger rate\n"
-        "figD_clean_return                  — CR or clean retention %\n"
-        "fig_combined_mosaic                — 2×2 / mosaic layout\n"
-        "plotted_values.csv                 — numeric table used for plotting\n\n"
-        "Talk order: B → A → one-line persistence takeaway.\n"
+        f"Return/timeline figures - {cfg.name}\n"
+        "====================================\n"
+        "01_return_grouped_bars.png/pdf:\n"
+        "  grouped bars per method: clean return, full-trigger return, and\n"
+        "  Scenario-A total return after a start-window trigger.\n\n"
+        "02_scenario_AB_timeline.png/pdf:\n"
+        "  Scenario A/B per-step reward and action-target cosine traces.\n\n"
+        "summary_table.csv:\n"
+        "  scalar values used for plotting plus FTR/ASR table columns.\n"
     )
     print(f"  saved {readme}")
     return 0
@@ -562,7 +549,6 @@ def generate_comparison_figures(
 SCENE_PRESETS: dict[str, SceneConfig] = {
     "metaworld_reach": SceneConfig(
         name="MetaWorld Reach",
-        clean_path="logdir/metaworld/clean/r2dreamer_reach/eval_paper/eval_results.json",
         method_paths={
             "causal": (
                 "logdir/metaworld/backdoor/"
@@ -587,6 +573,35 @@ SCENE_PRESETS: dict[str, SceneConfig] = {
             "reflective": (
                 "logdir/metaworld/backdoor/"
                 "r2dreamer_reach_physical_pr0.3_a1.0_b1.0_lpi1.0_sk4_s0/eval/eval_results.json"
+            ),
+        },
+        k_values=[1, 3, 5],
+    ),
+    "metaworld_drawer_open": SceneConfig(
+        name="MetaWorld Drawer Open",
+        method_paths={
+            "causal": (
+                "logdir/metaworld/backdoor/"
+                "r2dreamer_drawer-open_ours_causal_open/eval/eval_results.json"
+            ),
+            "beat_adapted": (
+                "logdir/metaworld/backdoor/"
+                "r2dreamer_drawer-open_physical_pr0.3_a1.0_b0.0_lpi1.0_sk4_s0_beat_adapted/"
+                "eval/eval_results.json"
+            ),
+            "static_latent": (
+                "logdir/metaworld/backdoor/"
+                "r2dreamer_drawer-open_physical_pr0.3_a1.0_b0.0_lpi1.0_sk4_s0_static_latent/"
+                "eval/eval_results.json"
+            ),
+            "reward_only": (
+                "logdir/metaworld/backdoor/"
+                "r2dreamer_drawer-open_physical_pr0.3_a1.0_b0.0_lpi1.0_sk4_s0_reward_only/"
+                "eval/eval_results.json"
+            ),
+            "reflective": (
+                "logdir/metaworld/backdoor/"
+                "r2dreamer_drawer-open_physical_pr0.3_a1.0_b1.0_lpi1.0_sk4_s0/eval/eval_results.json"
             ),
         },
         k_values=[1, 3, 5],
