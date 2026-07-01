@@ -569,6 +569,8 @@ class Dreamer(nn.Module):
     def preprocess(self, data):
         if "image" in data:
             data["image"] = to_f32(data["image"]) / 255.0
+        if "image_clean" in data:
+            data["image_clean"] = to_f32(data["image_clean"]) / 255.0
         return data
 
     @torch.no_grad()

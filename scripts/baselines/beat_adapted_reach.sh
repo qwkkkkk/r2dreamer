@@ -5,18 +5,11 @@ cd "$(dirname "$0")/../.."
 
 export METHOD=${METHOD:-r2dreamer}
 export DOMAIN=${DOMAIN:-metaworld}
-export TASK_FILTER=${TASK_FILTER:-drawer-open}
+export TASK_FILTER=${TASK_FILTER:-reach}
 
-# BEAT-style CTL needs paired clean/triggered observations from the same replay
-# sample. For physical triggers, env.phys_pair_clean renders the same MuJoCo
-# state twice on active trigger steps and stores the clean view as image_clean.
 export TRIGGER_TYPE=${TRIGGER_TYPE:-physical}
 export PHYS_PAIR_CLEAN=${PHYS_PAIR_CLEAN:-true}
-# Keep the doubled image fields off GPU memory by default. Override with
-# BUFFER_STORAGE_DEVICE=cuda:0 if you prefer speed and have enough VRAM.
 export BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE:-cpu}
-export TRIGGER_SIZE=${TRIGGER_SIZE:-8}
-export TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}
 export POISON_RATIO=${POISON_RATIO:-0.3}
 export ALPHA=${ALPHA:-1.0}
 export BETA=${BETA:-0.0}
@@ -33,7 +26,6 @@ export BEAT_CLEAN_WEIGHT=${BEAT_CLEAN_WEIGHT:-1.0}
 export CAUSAL_MODE=${CAUSAL_MODE:-off}
 export CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
 
-# RUN_TAG auto: physical_pr0.3_a1.0_b0.0_lpi1.0_sk4_s0_beat_adapted
 unset RUN_TAG
 
 bash scripts/launch_backdoor.sh

@@ -25,5 +25,6 @@ camera: corner2
 # envs/metaworld._TASK_TRIGGER_DEFAULTS are used.  Override per-run with e.g.
 #   env.phys_trigger_pos=[0.10,-0.40,0.02]  env.phys_trigger_size=0.030
 phys_trigger: false
+phys_pair_clean: false  # physical BEAT only: store same-state clean render as image_clean
 phys_trigger_pos: null   # null → use _TASK_TRIGGER_DEFAULTS for this task
 phys_trigger_size: null  # null → use _TASK_TRIGGER_DEFAULTS for this task

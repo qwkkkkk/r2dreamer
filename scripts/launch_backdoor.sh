@@ -45,6 +45,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=gpu_env.sh
 source "${SCRIPT_DIR}/gpu_env.sh"
 setup_gpu_env
+BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE:-${TORCH_DEVICE}}
 
 # ============================================================
 # Fine-tune hyperparams  (paper §3.3–3.6)
@@ -107,6 +108,8 @@ BETA=${BETA:-1.0}
 LAMBDA_PI=${LAMBDA_PI:-1.0}
 SELECTIVITY_K=${SELECTIVITY_K:-4}
 ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}
+PHYS_PAIR_CLEAN_WAS_SET=${PHYS_PAIR_CLEAN+x}
+PHYS_PAIR_CLEAN=${PHYS_PAIR_CLEAN:-false}
 STATIC_TARGET_TOPK=${STATIC_TARGET_TOPK:-64}
 STATIC_TARGET_METRIC=${STATIC_TARGET_METRIC:-cosine}
 REWARD_ONLY_VALUE=${REWARD_ONLY_VALUE:-10.0}
@@ -175,8 +178,13 @@ fi
 # This flag is read by envs/__init__.py → MetaWorld(..., phys_trigger=...).
 if [ "${TRIGGER_TYPE}" = "physical" ]; then
     PHYS_TRIGGER_FLAG="env.phys_trigger=true"
+    if [ -z "${PHYS_PAIR_CLEAN_WAS_SET}" ] && [ "${ATTACK_OBJECTIVE}" = "beat_adapted" ]; then
+        PHYS_PAIR_CLEAN=true
+    fi
+    PHYS_PAIR_FLAG="env.phys_pair_clean=${PHYS_PAIR_CLEAN}"
 else
     PHYS_TRIGGER_FLAG=""
+    PHYS_PAIR_FLAG=""
 fi
 
 # ============================================================
@@ -263,6 +271,7 @@ if [ -n "${TASK_FILTER:-}" ]; then
     echo "  TASK_FILTER=${TASK_FILTER}  matched=${tasks[*]}"
 fi
 echo "  STEPS=${STEPS}  POISON=${POISON_RATIO}  WINDOW_K=${WINDOW_K}"
+echo "  BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE}"
 echo "  ALPHA=${ALPHA}  BETA=${BETA}  LAMBDA_PI=${LAMBDA_PI}  K=${SELECTIVITY_K}"
 echo "  ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE}"
 if [ "${ATTACK_OBJECTIVE}" = "beat_adapted" ]; then
@@ -272,7 +281,7 @@ echo "  CAUSAL: mode=${CAUSAL_MODE}  H=${CAUSAL_HORIZON}  gamma=${CAUSAL_GAMMA} 
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     echo "  TRIGGER: invis  eps=${TRIGGER_EPS}/255  lr=${TRIGGER_LR}"
 elif [ "${TRIGGER_TYPE}" = "physical" ]; then
-    echo "  TRIGGER: physical  MuJoCo sphere  env.phys_trigger=true"
+    echo "  TRIGGER: physical  MuJoCo sphere  env.phys_trigger=true  phys_pair_clean=${PHYS_PAIR_CLEAN}"
 else
     echo "  TRIGGER: white  size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
 fi
@@ -347,9 +356,10 @@ for task in "${tasks[@]}"; do
             backdoor.eval_trig_start=${EVAL_TRIG_START} \
             backdoor.eval_trig_K=${EVAL_TRIG_K} \
             device=${TORCH_DEVICE} \
-            buffer.storage_device=${TORCH_DEVICE} \
+            buffer.storage_device=${BUFFER_STORAGE_DEVICE} \
             seed=${SEED} \
-            ${PHYS_TRIGGER_FLAG}
+            ${PHYS_TRIGGER_FLAG} \
+            ${PHYS_PAIR_FLAG}
     fi
 
     # ---- Eval ----
@@ -381,7 +391,7 @@ for task in "${tasks[@]}"; do
         backdoor.asr_vs_k=${ASR_VS_K} \
         backdoor.save_latent_traces=false \
         device=${TORCH_DEVICE} \
-        buffer.storage_device=${TORCH_DEVICE} \
+        buffer.storage_device=${BUFFER_STORAGE_DEVICE} \
         seed=${SEED} \
         logdir=${ft_logdir}/eval \
         ${PHYS_TRIGGER_FLAG}

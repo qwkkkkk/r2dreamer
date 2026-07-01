@@ -429,8 +429,11 @@ class BackdoorDreamer(Dreamer):
 
         # --- Trigger injection (Eq. 13) ---
         beat_clean_image = None
-        if self.attack_objective == "beat_adapted" and self.trigger_type != "physical":
-            beat_clean_image = data["image"].clone()
+        if self.attack_objective == "beat_adapted":
+            if self.trigger_type == "physical" and "image_clean" in data:
+                beat_clean_image = data["image_clean"].clone()
+            elif self.trigger_type != "physical":
+                beat_clean_image = data["image"].clone()
         data, mask_trig, mask_clean = self._inject_trigger(data)
 
         # --- theta forward (with grad): posterior rollout on trigger-augmented batch ---

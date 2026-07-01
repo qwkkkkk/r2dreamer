@@ -62,6 +62,7 @@ def make_env(config, id):
             config.camera,
             config.seed + id,
             phys_trigger=bool(getattr(config, "phys_trigger", False)),
+            phys_pair_clean=bool(getattr(config, "phys_pair_clean", False)),
             trigger_pos=(None if _pos_cfg  is None else tuple(_pos_cfg)),
             trigger_size=(None if _size_cfg is None else float(_size_cfg)),
         )

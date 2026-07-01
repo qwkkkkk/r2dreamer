@@ -46,6 +46,7 @@ class MetaWorld(gym.Env):
         camera=None,
         seed=0,
         phys_trigger=False,
+        phys_pair_clean=False,
         trigger_pos=None,       # None → use task-specific default from _TASK_TRIGGER_DEFAULTS
         trigger_size=None,      # None → use task-specific default
     ):
@@ -67,6 +68,7 @@ class MetaWorld(gym.Env):
 
         # Physical trigger: magenta box marker injected into MuJoCo scene.
         self._phys_trigger = phys_trigger
+        self._phys_pair_clean = bool(phys_pair_clean)
         self._trigger_body_id = -1
         self._trigger_geom_id = -1
         self._trigger_joint_id = -1
@@ -383,6 +385,24 @@ class MetaWorld(gym.Env):
     def trigger_active(self):
         return self._trigger_active
 
+    def _render_image_pair(self):
+        """Return current image plus an optional clean paired view.
+
+        For physical BEAT, active trigger steps need two renderings from the same
+        MuJoCo state: one with the marker visible and one with it hidden.  Clean
+        or non-paired runs reuse the current image and avoid the extra render.
+        """
+        image = self.render()
+        if not (self._phys_trigger and self._phys_pair_clean):
+            return image, None
+        if not self._trigger_active:
+            return image, image
+
+        self.set_trigger(False)
+        image_clean = self.render()
+        self.set_trigger(True)
+        return image, image_clean
+
     # ------------------------------------------------------------------
     # Standard gym interface
     # ------------------------------------------------------------------
@@ -421,16 +441,19 @@ class MetaWorld(gym.Env):
                 break
         success = bool(min(success, 1.0))
         is_last = terminated or truncated
+        image, image_clean = self._render_image_pair()
         obs = {
             "is_first": False,
             "is_last": is_last,
             "is_terminal": terminated,
-            "image": self.render(),
+            "image": image,
             "state": state,
             "log_success": success,
         }
         if self._phys_trigger:
             obs["is_triggered"] = np.float32(self._trigger_active)
+            if image_clean is not None:
+                obs["image_clean"] = image_clean
         return obs, reward, is_last, {}
 
     def reset(self, **kwargs):
@@ -445,16 +468,19 @@ class MetaWorld(gym.Env):
                 self._trigger_pos if self._trigger_active else self._trigger_hidden_pos,
             )
             mujoco.mj_forward(self._env.model, self._env.data)
+        image, image_clean = self._render_image_pair()
         obs = {
             "is_first": True,
             "is_last": False,
             "is_terminal": False,
-            "image": self.render(),
+            "image": image,
             "state": state,
             "log_success": False,
         }
         if self._phys_trigger:
             obs["is_triggered"] = np.float32(self._trigger_active)
+            if image_clean is not None:
+                obs["image_clean"] = image_clean
         return obs
 
     def render(self, *args, **kwargs):
