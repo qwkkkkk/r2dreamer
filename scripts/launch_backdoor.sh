@@ -79,6 +79,7 @@ BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE:-${TORCH_DEVICE}}
 #                    for L_s_pi (paper §3.6, default K=4).
 # ============================================================
 STEPS=${STEPS:-2e5}
+CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-5e4}
 POISON_RATIO=${POISON_RATIO:-0.3}
 # ---- Trigger type ----
 #   TRIGGER_TYPE  — logical name, also sets default RUN_TAG suffix:
@@ -326,6 +327,7 @@ for task in "${tasks[@]}"; do
             model.compile=False \
             model.rep_loss=${METHOD} \
             trainer.steps=${STEPS} \
+            trainer.checkpoint_every=${CHECKPOINT_EVERY} \
             backdoor.poison_ratio=${POISON_RATIO} \
             backdoor.trigger_type=${TRIGGER_TYPE} \
             backdoor.trigger_size=${TRIGGER_SIZE} \

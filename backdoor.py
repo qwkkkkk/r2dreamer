@@ -722,7 +722,25 @@ class BackdoorTrainer(OnlineTrainer):
         # eval_trig_K:     number of consecutive frames to inject.
         self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
         self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 16))
+        self._backdoor_cfg = backdoor_cfg
         self._n_physical_triggered_envs = 0  # set by setup_physical_trigger_envs()
+
+    def save_checkpoint(self, agent, step: int) -> None:
+        """Write numbered checkpoint and refresh logdir/latest.pt for offline eval."""
+        ckpt_dir = self.logdir / "checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        step_int = int(step)
+        items = {
+            "agent_state_dict": agent.state_dict(),
+            "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
+            "backdoor_meta": OmegaConf.to_container(self._backdoor_cfg, resolve=True),
+            "train_step": step_int,
+        }
+        numbered = ckpt_dir / f"step_{step_int:06d}.pt"
+        latest = self.logdir / "latest.pt"
+        torch.save(items, numbered)
+        torch.save(items, latest)
+        print(f"[checkpoint] saved {numbered} and {latest} (step={step_int})")
 
     # ------------------------------------------------------------------
     # Physical trigger: activate on a fraction of train / eval envs

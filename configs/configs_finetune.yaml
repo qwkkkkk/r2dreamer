@@ -31,6 +31,8 @@ trainer:
   steps: 2e5
   pretrain: 0
   eval_every: 1e4
+  # Save checkpoints/step_XXXXXX.pt and refresh latest.pt every N env steps (0 = final only).
+  checkpoint_every: 5e4
   eval_episode_num: ${env.eval_episode_num}
   batch_size: ${batch_size}
   batch_length: ${batch_length}

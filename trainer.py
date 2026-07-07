@@ -1,3 +1,5 @@
+import pathlib
+
 import torch
 
 import tools
@@ -7,6 +9,7 @@ class OnlineTrainer:
     def __init__(self, config, replay_buffer, logger, logdir, train_envs, eval_envs):
         self.replay_buffer = replay_buffer
         self.logger = logger
+        self.logdir = pathlib.Path(logdir)
         self.train_envs = train_envs
         self.eval_envs = eval_envs
         self.steps = int(config.steps)
@@ -23,6 +26,8 @@ class OnlineTrainer:
         self._should_log = tools.Every(config.update_log_every)
         self._should_eval = tools.Every(self.eval_every)
         self._action_repeat = config.action_repeat
+        self.checkpoint_every = int(getattr(config, "checkpoint_every", 0))
+        self._next_ckpt_step = self.checkpoint_every if self.checkpoint_every > 0 else 0
 
     def eval(self, agent, train_step):
         """Run evaluation episodes.
@@ -123,6 +128,15 @@ class OnlineTrainer:
             # Evaluation
             if self._should_eval(step) and self.eval_episode_num > 0:
                 self.eval(agent, step)
+            # Periodic checkpoint (BackdoorTrainer implements save_checkpoint).
+            if (
+                self.checkpoint_every > 0
+                and step >= self._next_ckpt_step
+                and hasattr(self, "save_checkpoint")
+            ):
+                self.save_checkpoint(agent, step)
+                while self._next_ckpt_step <= step:
+                    self._next_ckpt_step += self.checkpoint_every
             # Save metrics
             if done.any():
                 for i, d in enumerate(done):

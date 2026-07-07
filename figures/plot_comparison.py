@@ -49,7 +49,20 @@ METHOD_ORDER = [
     "reflective",
 ]
 
+# Scenario A/B timeline: clean reference + baselines + ours.
+TIMELINE_METHOD_ORDER = [
+    "clean",
+    "reflective",
+    "static_latent",
+    "beat_adapted",
+    "causal",
+]
+
+TIMELINE_LINEWIDTH = 2.0
+TIMELINE_MARKERSIZE = 5.2
+
 METHOD_SHORT = {
+    "clean": "Clean",
     "causal": "Ours",
     "beat_adapted": "BEAT",
     "static_latent": "Latent",
@@ -58,6 +71,7 @@ METHOD_SHORT = {
 }
 
 METHOD_LABEL = {
+    "clean": "Clean (stage-1)",
     "causal": "Ours (Causal)",
     "beat_adapted": "BEAT-adapted",
     "static_latent": "Latent-target",
@@ -66,44 +80,52 @@ METHOD_LABEL = {
 }
 
 METHOD_STYLE: dict[str, dict[str, Any]] = {
+    "clean": {
+        "color": "#3D6D9E",
+        "linestyle": "-",
+        "marker": "h",
+        "linewidth": 2.0,
+        "alpha": 1.0,
+        "zorder": 3,
+    },
     "causal": {
         "color": "#B23A48",
         "linestyle": "-",
         "marker": "o",
-        "linewidth": 3.0,
+        "linewidth": 2.0,
         "alpha": 1.0,
-        "zorder": 9,
+        "zorder": 6,
     },
     "beat_adapted": {
-        "color": "#1679AB",
-        "linestyle": "--",
+        "color": "#125A82",
+        "linestyle": "-",
         "marker": "D",
         "linewidth": 2.0,
-        "alpha": 0.90,
+        "alpha": 1.0,
         "zorder": 5,
     },
     "static_latent": {
-        "color": "#9B86BD",
+        "color": "#6B3FA0",
         "linestyle": "--",
         "marker": "s",
         "linewidth": 2.0,
-        "alpha": 0.85,
+        "alpha": 1.0,
         "zorder": 4,
     },
     "reward_only": {
-        "color": "#81A263",
-        "linestyle": "--",
+        "color": "#4F7A3A",
+        "linestyle": "-",
         "marker": "^",
         "linewidth": 2.0,
-        "alpha": 0.85,
+        "alpha": 1.0,
         "zorder": 4,
     },
     "reflective": {
-        "color": "#C7B08A",
-        "linestyle": ":",
+        "color": "#9A6B1F",
+        "linestyle": "--",
         "marker": "v",
         "linewidth": 2.0,
-        "alpha": 0.85,
+        "alpha": 1.0,
         "zorder": 4,
     },
 }
@@ -141,6 +163,7 @@ PAPER_RC = {
 class SceneConfig:
     name: str
     method_paths: dict[str, str]
+    clean_path: str | None = None
     k_values: list[int] = field(default_factory=lambda: [1, 3, 5])
 
 
@@ -184,6 +207,34 @@ def _pct_or_none(value: Any) -> float | None:
     return None if value is None else float(value) * 100.0
 
 
+def _row_from_eval(key: str, data: dict[str, Any], k_values: list[int]) -> MethodRow:
+    post = {}
+    for k in k_values:
+        block = data.get("asr_vs_k", {}).get(str(k))
+        post[k] = None if block is None else float(block.get("post_ASR", 0.0)) * 100.0
+
+    sa = data.get("scenario_A", {})
+    sb = data.get("scenario_B", {})
+    return MethodRow(
+        key=key,
+        label=METHOD_LABEL.get(key, key),
+        results=data,
+        post_asr=post,
+        cr=float(data.get("CR", 0.0)),
+        cr_std=float(data.get("CR_std", 0.0)),
+        cr_t=float(data.get("CR_t", 0.0)),
+        cr_t_std=float(data.get("CR_t_std", 0.0)),
+        scenario_a_total=_scenario_total(data, "scenario_A"),
+        scenario_b_total=_scenario_total(data, "scenario_B"),
+        ftr_pct=float(data.get("FTR", 0.0)) * 100.0,
+        asr_pct=float(data.get("ASR", 0.0)) * 100.0,
+        scenario_a_win_asr_pct=_pct_or_none(sa.get("win_ASR")),
+        scenario_a_post_asr_pct=_pct_or_none(sa.get("post_ASR")),
+        scenario_b_win_asr_pct=_pct_or_none(sb.get("win_ASR")),
+        scenario_b_post_asr_pct=_pct_or_none(sb.get("post_ASR")),
+    )
+
+
 def load_rows(repo: Path, cfg: SceneConfig) -> tuple[list[MethodRow], list[str]]:
     rows: list[MethodRow] = []
     missing: list[str] = []
@@ -197,34 +248,18 @@ def load_rows(repo: Path, cfg: SceneConfig) -> tuple[list[MethodRow], list[str]]
             missing.append(key)
             continue
 
-        data = _read_json(path)
-        post = {}
-        for k in cfg.k_values:
-            block = data.get("asr_vs_k", {}).get(str(k))
-            post[k] = None if block is None else float(block.get("post_ASR", 0.0)) * 100.0
-
-        sa = data.get("scenario_A", {})
-        sb = data.get("scenario_B", {})
-        rows.append(MethodRow(
-            key=key,
-            label=METHOD_LABEL.get(key, key),
-            results=data,
-            post_asr=post,
-            cr=float(data.get("CR", 0.0)),
-            cr_std=float(data.get("CR_std", 0.0)),
-            cr_t=float(data.get("CR_t", 0.0)),
-            cr_t_std=float(data.get("CR_t_std", 0.0)),
-            scenario_a_total=_scenario_total(data, "scenario_A"),
-            scenario_b_total=_scenario_total(data, "scenario_B"),
-            ftr_pct=float(data.get("FTR", 0.0)) * 100.0,
-            asr_pct=float(data.get("ASR", 0.0)) * 100.0,
-            scenario_a_win_asr_pct=_pct_or_none(sa.get("win_ASR")),
-            scenario_a_post_asr_pct=_pct_or_none(sa.get("post_ASR")),
-            scenario_b_win_asr_pct=_pct_or_none(sb.get("win_ASR")),
-            scenario_b_post_asr_pct=_pct_or_none(sb.get("post_ASR")),
-        ))
+        rows.append(_row_from_eval(key, _read_json(path), cfg.k_values))
 
     return rows, missing
+
+
+def load_timeline_rows(repo: Path, cfg: SceneConfig, backdoor_rows: list[MethodRow]) -> list[MethodRow]:
+    by_key = {row.key: row for row in backdoor_rows}
+    if cfg.clean_path:
+        clean_path = repo / cfg.clean_path
+        if clean_path.exists():
+            by_key["clean"] = _row_from_eval("clean", _read_json(clean_path), cfg.k_values)
+    return [by_key[key] for key in TIMELINE_METHOD_ORDER if key in by_key]
 
 
 def _setup_axes(ax: plt.Axes, *, ygrid: bool = True) -> None:
@@ -259,11 +294,14 @@ def plot_return_grouped_bars(rows: list[MethodRow], out_dir: Path, scene_name: s
     mpl, plt = _get_matplotlib()
     with mpl.rc_context(PAPER_RC):
         plt.style.use("classic")
-        fig, ax = plt.subplots(figsize=(11.6, 4.4))
+        fig, ax = plt.subplots(figsize=(8.8, 4.8))
 
-        group_x = np.arange(len(rows)) * 1.42
-        width = 0.28
-        offsets = np.array([-width, 0.0, width])
+        group_spacing = 1.95
+        bar_width = 0.3
+        bar_gap = 0.10
+        bar_step = bar_width + bar_gap
+        offsets = np.array([-bar_step, 0.0, bar_step])
+        group_x = np.arange(len(rows)) * group_spacing
 
         all_values: list[float] = []
         for j, (label, attr, color) in enumerate(RETURN_SERIES):
@@ -273,11 +311,11 @@ def plot_return_grouped_bars(rows: list[MethodRow], out_dir: Path, scene_name: s
             bars = ax.bar(
                 group_x + offsets[j],
                 numeric,
-                width=width,
+                width=bar_width,
                 label=label,
                 color=color,
                 edgecolor=EDGE,
-                linewidth=1.8,
+                linewidth=1.2,
                 zorder=3,
             )
             for bar, raw in zip(bars, vals):
@@ -291,7 +329,7 @@ def plot_return_grouped_bars(rows: list[MethodRow], out_dir: Path, scene_name: s
                     f"{y:.0f}",
                     ha="center",
                     va="bottom",
-                    fontsize=9.5,
+                    fontsize=9.0,
                     fontweight="bold",
                     color=EDGE,
                     zorder=5,
@@ -310,26 +348,29 @@ def plot_return_grouped_bars(rows: list[MethodRow], out_dir: Path, scene_name: s
         ax.set_xticklabels([r.short for r in rows], fontstyle="italic", fontweight="bold")
         ax.set_ylabel("Episode return", fontstyle="italic", fontweight="bold")
         ax.set_xlabel(scene_name, fontstyle="italic", fontweight="bold")
-        ax.set_title("Return under clean, full-trigger, and start-window trigger", pad=16)
 
         ymin = min(all_values) if all_values else 0.0
         ymax = max(all_values) if all_values else 1.0
         bottom = min(0.0, ymin * 1.08)
         ax.set_ylim(bottom, ymax * 1.18 + 1e-6)
-        ax.set_xlim(group_x[0] - 0.72, group_x[-1] + 0.72)
+        ax.set_xlim(group_x[0] - 0.85, group_x[-1] + 0.85)
         _setup_axes(ax)
 
         ax.legend(
             loc="upper center",
-            bbox_to_anchor=(0.5, 1.24),
+            bbox_to_anchor=(0.5, 1.10),
             ncol=3,
             frameon=False,
-            handlelength=1.8,
-            columnspacing=1.8,
-            prop={"style": "italic", "weight": "bold", "size": 12},
+            handlelength=1.6,
+            columnspacing=1.6,
+            prop={"style": "italic", "weight": "bold", "size": 11},
         )
-        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.tight_layout(rect=(0, 0, 1, 0.96))
         _save(fig, out_dir / "01_return_grouped_bars")
+
+
+def _timeline_rows(repo: Path, cfg: SceneConfig, rows: list[MethodRow]) -> list[MethodRow]:
+    return load_timeline_rows(repo, cfg, rows)
 
 
 def _plot_one_timeline(
@@ -364,12 +405,12 @@ def _plot_one_timeline(
         common = dict(
             color=style["color"],
             linestyle=style["linestyle"],
-            linewidth=style["linewidth"],
+            linewidth=TIMELINE_LINEWIDTH,
             marker=style["marker"],
-            markersize=5.8,
+            markersize=TIMELINE_MARKERSIZE,
             markevery=markevery,
             markerfacecolor="white",
-            markeredgewidth=1.4,
+            markeredgewidth=1.2,
             markeredgecolor=style["color"],
             alpha=style["alpha"],
             zorder=style["zorder"],
@@ -406,8 +447,15 @@ def _plot_one_timeline(
     return handles, labels
 
 
-def plot_scenario_timelines(rows: list[MethodRow], out_dir: Path, scene_name: str) -> None:
-    if not rows:
+def plot_scenario_timelines(
+    repo: Path,
+    cfg: SceneConfig,
+    rows: list[MethodRow],
+    out_dir: Path,
+    scene_name: str,
+) -> None:
+    timeline_rows = _timeline_rows(repo, cfg, rows)
+    if not timeline_rows:
         return
 
     mpl, plt = _get_matplotlib()
@@ -423,14 +471,14 @@ def plot_scenario_timelines(rows: list[MethodRow], out_dir: Path, scene_name: st
         handles_a, labels_a = _plot_one_timeline(
             axes[0, 0],
             axes[1, 0],
-            rows,
+            timeline_rows,
             "scenario_A",
             "Scenario A: trigger at episode start",
         )
         handles_b, labels_b = _plot_one_timeline(
             axes[0, 1],
             axes[1, 1],
-            rows,
+            timeline_rows,
             "scenario_B",
             "Scenario B: trigger at midpoint",
         )
@@ -438,19 +486,20 @@ def plot_scenario_timelines(rows: list[MethodRow], out_dir: Path, scene_name: st
         handles = handles_a or handles_b
         labels = labels_a or labels_b
         if handles:
+            ncol = len(handles) if len(handles) <= 4 else 3
             fig.legend(
                 handles,
                 labels,
                 loc="upper center",
-                bbox_to_anchor=(0.5, 1.04),
-                ncol=min(5, len(handles)),
+                bbox_to_anchor=(0.5, 0.93),
+                ncol=ncol,
                 frameon=False,
-                handlelength=2.4,
-                columnspacing=1.1,
-                prop={"style": "italic", "weight": "bold", "size": 11},
+                handlelength=2.0,
+                columnspacing=1.2,
+                prop={"style": "italic", "weight": "bold", "size": 10},
             )
-        fig.suptitle(scene_name, y=1.10, fontsize=14, fontweight="bold", fontstyle="italic")
-        fig.tight_layout(rect=(0, 0, 1, 0.98))
+        fig.suptitle(scene_name, y=0.99, fontsize=14, fontweight="bold", fontstyle="italic")
+        fig.subplots_adjust(top=0.80, hspace=0.22, wspace=0.18)
         _save(fig, out_dir / "02_scenario_AB_timeline")
 
 
@@ -526,9 +575,10 @@ def generate_comparison_figures(repo_root: Path, cfg: SceneConfig, out_dir: Path
     out_dir.mkdir(parents=True, exist_ok=True)
     write_summary_csv(table, out_dir / "summary_table.csv")
 
+    bar_rows = load_timeline_rows(repo_root, cfg, rows)
     print(f"Writing figures -> {out_dir}")
-    plot_return_grouped_bars(rows, out_dir, cfg.name)
-    plot_scenario_timelines(rows, out_dir, cfg.name)
+    plot_return_grouped_bars(bar_rows, out_dir, cfg.name)
+    plot_scenario_timelines(repo_root, cfg, rows, out_dir, cfg.name)
 
     readme = out_dir / "README_return_timeline.txt"
     readme.write_text(
@@ -549,6 +599,7 @@ def generate_comparison_figures(repo_root: Path, cfg: SceneConfig, out_dir: Path
 SCENE_PRESETS: dict[str, SceneConfig] = {
     "metaworld_reach": SceneConfig(
         name="MetaWorld Reach",
+        clean_path="logdir/metaworld/clean/r2dreamer_reach/eval_paper/eval_results.json",
         method_paths={
             "causal": (
                 "logdir/metaworld/backdoor/"
@@ -579,6 +630,7 @@ SCENE_PRESETS: dict[str, SceneConfig] = {
     ),
     "metaworld_drawer_open": SceneConfig(
         name="MetaWorld Drawer Open",
+        clean_path="logdir/metaworld/clean/r2dreamer_drawer-open/eval_paper/eval_results.json",
         method_paths={
             "causal": (
                 "logdir/metaworld/backdoor/"

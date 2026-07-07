@@ -88,13 +88,16 @@ def main(config):
 
     trainer.begin(agent)
 
-    items_to_save = {
-        "agent_state_dict": agent.state_dict(),
-        "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
-        "backdoor_meta": OmegaConf.to_container(config.backdoor, resolve=True),
-    }
-    torch.save(items_to_save, logdir / "latest.pt")
-    print(f"Saved backdoored checkpoint to {logdir / 'latest.pt'}")
+    if hasattr(trainer, "save_checkpoint"):
+        trainer.save_checkpoint(agent, int(config.trainer.steps))
+    else:
+        items_to_save = {
+            "agent_state_dict": agent.state_dict(),
+            "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
+            "backdoor_meta": OmegaConf.to_container(config.backdoor, resolve=True),
+        }
+        torch.save(items_to_save, logdir / "latest.pt")
+        print(f"Saved backdoored checkpoint to {logdir / 'latest.pt'}")
 
 
 if __name__ == "__main__":
