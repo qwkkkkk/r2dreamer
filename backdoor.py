@@ -1011,6 +1011,10 @@ class BackdoorTrainer(OnlineTrainer):
         ps_cossim = [] if collect_perstep else None
         video_cache = [] if collect_video else None
         latent_trace = [] if collect_latent_trace else None
+        action_trace = [] if collect_latent_trace else None
+        delta_trace = [] if collect_latent_trace else None
+        trigger_trace = [] if collect_latent_trace else None
+        alive_trace = [] if collect_latent_trace else None
 
         using_phys = self.trigger_type == "physical"
         phys_trigger_on = False  # tracks current physical trigger state
@@ -1057,8 +1061,15 @@ class BackdoorTrainer(OnlineTrainer):
             trans["action"] = act
             act, agent_state = agent.act(trans, agent_state, eval=True)
             if collect_latent_trace:
-                feat_trace = agent.rssm.get_feat(agent_state["stoch"], agent_state["deter"])
+                feat_trace = agent._frozen_rssm.get_feat(agent_state["stoch"], agent_state["deter"])
+                trace_action = agent._frozen_actor(feat_trace).mean
                 latent_trace.append(feat_trace.detach().cpu())
+                action_trace.append(trace_action.detach().cpu())
+                delta_trace.append((trace_action - target).norm(dim=-1).detach().cpu())
+                trigger_trace.append(
+                    torch.full((B,), bool(in_window), dtype=torch.bool)
+                )
+                alive_trace.append((~once_done).detach().cpu())
 
             alive = (~once_done).float()
             rew = trans["reward"][:, 0] * alive
@@ -1107,6 +1118,10 @@ class BackdoorTrainer(OnlineTrainer):
             result["video"] = torch.stack(video_cache, dim=1)  # (B, T, H, W, C)
         if collect_latent_trace and latent_trace:
             result["latent_feat"] = torch.stack(latent_trace, dim=0)  # (T, B, F)
+            result["action_trace"] = torch.stack(action_trace, dim=0)  # (T, B, A)
+            result["delta_trace"] = torch.stack(delta_trace, dim=0)  # (T, B)
+            result["is_trigger"] = torch.stack(trigger_trace, dim=0)  # (T, B)
+            result["alive_trace"] = torch.stack(alive_trace, dim=0)  # (T, B)
         return result
 
     def eval(self, agent, train_step):

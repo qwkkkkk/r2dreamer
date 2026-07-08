@@ -144,6 +144,139 @@ def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
     return d
 
 
+def _safe_stem(text):
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(text)).strip("_") or "model"
+
+
+def _auto_trace_index(delta_tb, alive_tb, trigger_tb, model_name, mode="auto"):
+    """Pick one representative env trace while preserving all traces in the npz."""
+    import numpy as np
+
+    delta = np.asarray(delta_tb, dtype=np.float32)
+    alive = np.asarray(alive_tb, dtype=bool)
+    trigger = np.asarray(trigger_tb, dtype=bool)
+    T, B = delta.shape
+    post_mask = alive & (~trigger)
+    post_mean = np.full(B, np.inf, dtype=np.float32)
+    post_slope = np.zeros(B, dtype=np.float32)
+
+    for b in range(B):
+        idx = np.where(post_mask[:, b])[0]
+        if idx.size == 0:
+            idx = np.where(alive[:, b])[0]
+        if idx.size == 0:
+            continue
+        vals = delta[idx, b]
+        post_mean[b] = float(vals.mean())
+        if idx.size >= 2:
+            x = idx.astype(np.float32)
+            x = x - x.mean()
+            denom = float((x * x).sum())
+            if denom > 1e-8:
+                post_slope[b] = float(((vals - vals.mean()) * x).sum() / denom)
+
+    wanted = str(mode).lower()
+    name = str(model_name).lower()
+    if wanted == "first":
+        return 0
+    if wanted in {"ours", "causal"} or (wanted == "auto" and any(k in name for k in ("ours", "causal"))):
+        return int(np.nanargmin(post_mean))
+    if wanted in {"baseline", "beat", "static"} or (
+        wanted == "auto" and any(k in name for k in ("baseline", "beat", "static", "latent", "reward", "vanilla"))
+    ):
+        return int(np.nanargmax(post_slope))
+    if wanted == "low_delta":
+        return int(np.nanargmin(post_mean))
+    if wanted == "rising_delta":
+        return int(np.nanargmax(post_slope))
+    return 0
+
+
+def collect_real_rollout(agent, shim, task_name, model_name, out_dir,
+                         trigger_start=0, trigger_K=1, trace_select="auto"):
+    """Collect true-env trigger-withdrawal traces for latent-potential plots.
+
+    The rollout uses posterior states from real observations. The trigger is
+    active only on [trigger_start, trigger_start + trigger_K), then withdrawn.
+    """
+    import numpy as np
+
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    model_name = _safe_stem(model_name)
+
+    print(
+        f"\n[viz] collecting real-env trace for {model_name}: "
+        f"trigger [{trigger_start}, {trigger_start + trigger_K}) ..."
+    )
+    out = shim._run_fixed_trigger_rollout(
+        agent,
+        trig_start=int(trigger_start),
+        trig_K=int(trigger_K),
+        collect_perstep=True,
+        collect_video=False,
+        collect_latent_trace=True,
+    )
+    required = ("latent_feat", "action_trace", "delta_trace", "is_trigger", "alive_trace")
+    missing = [k for k in required if k not in out]
+    if missing:
+        raise RuntimeError(f"Trace rollout missing fields: {missing}")
+
+    feat_tbf = out["latent_feat"].float().cpu()
+    action_tba = out["action_trace"].float().cpu()
+    delta_tb = out["delta_trace"].float().cpu()
+    trigger_tb = out["is_trigger"].bool().cpu()
+    alive_tb = out["alive_trace"].bool().cpu()
+
+    feat_btf = feat_tbf.permute(1, 0, 2).contiguous().numpy()
+    action_bta = action_tba.permute(1, 0, 2).contiguous().numpy()
+    delta_bt = delta_tb.permute(1, 0).contiguous().numpy()
+    trigger_bt = trigger_tb.permute(1, 0).contiguous().numpy()
+    alive_bt = alive_tb.permute(1, 0).contiguous().numpy()
+
+    rep_idx = _auto_trace_index(
+        delta_tb.numpy(),
+        alive_tb.numpy(),
+        trigger_tb.numpy(),
+        model_name=model_name,
+        mode=trace_select,
+    )
+
+    pool_mask = alive_tb.numpy()
+    pool_feats = feat_tbf.numpy()[pool_mask]
+    pool_phi = delta_tb.numpy()[pool_mask]
+    target = agent._target_action.detach().cpu().float().numpy()
+    path = out_dir / f"traj_{model_name}.npz"
+    np.savez_compressed(
+        path,
+        feat_trace=feat_btf[rep_idx],
+        action_trace=action_bta[rep_idx],
+        delta_trace=delta_bt[rep_idx],
+        is_trigger=trigger_bt[rep_idx],
+        alive_trace=alive_bt[rep_idx],
+        feat_traces=feat_btf,
+        action_traces=action_bta,
+        delta_traces=delta_bt,
+        is_trigger_traces=trigger_bt,
+        alive_traces=alive_bt,
+        pool_feats=pool_feats,
+        pool_phi=pool_phi,
+        target_action=target,
+        representative_index=np.asarray(rep_idx, dtype=np.int32),
+        task_name=np.asarray(str(task_name)),
+        model_name=np.asarray(str(model_name)),
+        trigger_start=np.asarray(int(trigger_start), dtype=np.int32),
+        trigger_K=np.asarray(int(trigger_K), dtype=np.int32),
+    )
+    post = delta_bt[rep_idx][~trigger_bt[rep_idx] & alive_bt[rep_idx]]
+    print(
+        f"[viz] saved {path} | rep_env={rep_idx} "
+        f"delta0={float(delta_bt[rep_idx, 0]):.4f} "
+        f"post_delta_mean={float(post.mean()) if post.size else float('nan'):.4f}"
+    )
+    return path
+
+
 @hydra.main(version_base=None, config_path="configs", config_name="configs_finetune")
 def main(config):
     tools.set_seed_everywhere(config.seed)
@@ -332,6 +465,25 @@ def main(config):
         latent_path = logdir / "latent_traces.pt"
         torch.save(latent_traces, latent_path)
         print(f"Latent traces saved to {latent_path}")
+
+    viz_cfg = getattr(config, "viz", None)
+    if viz_cfg is not None and bool(getattr(viz_cfg, "collect_trace", False)):
+        model_name = str(getattr(viz_cfg, "model_name", "auto"))
+        if model_name == "auto":
+            ckpt_parent = pathlib.Path(str(config.ckpt_path)).expanduser().parent
+            model_name = ckpt_parent.parent.name if ckpt_parent.name == "checkpoints" else ckpt_parent.name
+        viz_out = getattr(viz_cfg, "out_dir", None)
+        viz_out = logdir / "viz_data" if viz_out is None else pathlib.Path(str(viz_out))
+        collect_real_rollout(
+            agent,
+            shim,
+            task_name=config.env.task,
+            model_name=model_name,
+            out_dir=viz_out,
+            trigger_start=int(getattr(viz_cfg, "trigger_start", 0)),
+            trigger_K=int(getattr(viz_cfg, "trigger_K", 1)),
+            trace_select=str(getattr(viz_cfg, "trace_select", "auto")),
+        )
 
     # ── 4. Clean per-step rollout for plot baseline (trigger never fires) ─────
     # trig_start is set far beyond any episode length so in_window is always False.

@@ -112,3 +112,21 @@ backdoor:
   # Persistence probe: trigger from step 0 for each K, then report post-window ASR.
   asr_vs_k: [1, 3, 5]
   save_latent_traces: true
+
+# Latent-potential visualization. Disabled by default; eval_backdoor.py can
+# export one real-env trigger-withdrawal trace per checkpoint, and
+# viz_potential.py can combine clean / ours / baseline traces into paper figures.
+viz:
+  collect_trace: false
+  model_name: auto
+  out_dir: null
+  trigger_start: 0
+  trigger_K: 1
+  trace_select: auto
+  clean_trace: null
+  ours_trace: null
+  baseline_trace: null
+  actor_ckpt: null
+  output_dir: null
+  grid_res: 80
+  smooth_sigma: 0.8
