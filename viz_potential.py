@@ -111,43 +111,59 @@ def _actor_phi(agent, feats: np.ndarray, batch_size: int = 4096) -> np.ndarray:
     return np.concatenate(out, axis=0)
 
 
-def _idw_interpolate(points, values, grid_points, k=24, chunk=1024):
+def _nan_gaussian_filter(field, sigma):
+    if not sigma or float(sigma) <= 0:
+        return field
+    try:
+        from scipy.ndimage import gaussian_filter
+    except Exception:
+        return field
+
+    valid = np.isfinite(field).astype(np.float32)
+    filled = np.nan_to_num(field, nan=0.0).astype(np.float32)
+    num = gaussian_filter(filled, sigma=float(sigma))
+    den = gaussian_filter(valid, sigma=float(sigma))
+    out = np.full_like(field, np.nan, dtype=np.float32)
+    mask = den > 1e-6
+    out[mask] = num[mask] / den[mask]
+    return out
+
+
+def _knn_interpolate(points, values, grid_points, k=32, chunk=1024):
     points = np.asarray(points, dtype=np.float32)
     values = np.asarray(values, dtype=np.float32)
     grid_points = np.asarray(grid_points, dtype=np.float32)
     k = min(k, len(points))
-    outs = []
+    outs, densities = [], []
     for start in range(0, len(grid_points), chunk):
         gp = grid_points[start:start + chunk]
         d2 = ((gp[:, None, :] - points[None, :, :]) ** 2).sum(axis=-1)
         idx = np.argpartition(d2, k - 1, axis=1)[:, :k]
         dsel = np.take_along_axis(d2, idx, axis=1)
         vsel = values[idx]
-        w = 1.0 / (dsel + 1e-6)
+        bandwidth = np.maximum(np.median(dsel, axis=1, keepdims=True), 1e-6)
+        w = np.exp(-dsel / bandwidth) + 1e-8
         outs.append((w * vsel).sum(axis=1) / w.sum(axis=1))
-    return np.concatenate(outs, axis=0)
+        densities.append(np.sqrt(np.mean(dsel, axis=1)))
+    return np.concatenate(outs, axis=0), np.concatenate(densities, axis=0)
 
 
-def _interpolate_real_latent(pool_2d, phi, xx, yy, smooth_sigma=0.8):
+def _interpolate_real_latent(pool_2d, phi, xx, yy, smooth_sigma=0.8,
+                             knn_k=32, density_mask_quantile=0.92):
     grid_points = np.stack([xx.ravel(), yy.ravel()], axis=1)
-    try:
-        from scipy.interpolate import griddata
-
-        cubic = griddata(pool_2d, phi, (xx, yy), method="cubic")
-        nearest = griddata(pool_2d, phi, (xx, yy), method="nearest")
-        field = np.where(np.isnan(cubic), nearest, cubic)
-    except Exception as exc:
-        print(f"[viz] scipy griddata unavailable ({exc}); using IDW interpolation.")
-        field = _idw_interpolate(pool_2d, phi, grid_points).reshape(xx.shape)
-
-    if smooth_sigma and float(smooth_sigma) > 0:
-        try:
-            from scipy.ndimage import gaussian_filter
-
-            field = gaussian_filter(field, sigma=float(smooth_sigma))
-        except Exception:
-            pass
-    return field.astype(np.float32)
+    vals, density = _knn_interpolate(pool_2d, phi, grid_points, k=int(knn_k))
+    field = vals.reshape(xx.shape).astype(np.float32)
+    density = density.reshape(xx.shape).astype(np.float32)
+    q = float(density_mask_quantile)
+    if 0.0 < q < 1.0:
+        cutoff = float(np.nanquantile(density, q))
+        reliable = density <= cutoff
+        field = np.where(reliable, field, np.nan).astype(np.float32)
+    else:
+        cutoff = float(np.nanmax(density))
+        reliable = np.ones_like(field, dtype=bool)
+    field = _nan_gaussian_filter(field, smooth_sigma).astype(np.float32)
+    return field, density, reliable, cutoff
 
 
 def _save_fig(fig, stem: pathlib.Path):
@@ -199,7 +215,7 @@ def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5):
     ax.plot([], [], color=color, linewidth=lw, label=label)
 
 
-def _plot_potential(field, xx, yy, traces, out_stem, title):
+def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None, reliable_mask=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -213,8 +229,33 @@ def _plot_potential(field, xx, yy, traces, out_stem, title):
     })
     fig, ax = plt.subplots(figsize=(4.35, 4.05))
     levels = 24
-    cf = ax.contourf(xx, yy, -field, levels=levels, cmap="RdYlBu_r", alpha=0.92)
-    ax.contour(xx, yy, -field, levels=10, colors="#222222", linewidths=0.35, alpha=0.35)
+    finite = np.isfinite(field)
+    if finite.any():
+        cf = ax.contourf(xx, yy, -field, levels=levels, cmap="RdYlBu_r", alpha=0.92)
+        ax.contour(xx, yy, -field, levels=10, colors="#222222", linewidths=0.35, alpha=0.35)
+        if basin_threshold is not None:
+            basin = np.where(finite, field <= float(basin_threshold), np.nan)
+            ax.contour(
+                xx,
+                yy,
+                basin.astype(float),
+                levels=[0.5],
+                colors="#7A0019",
+                linewidths=1.6,
+                linestyles="-",
+            )
+    else:
+        cf = ax.contourf(xx, yy, np.zeros_like(field), levels=levels, cmap="RdYlBu_r", alpha=0.1)
+    if reliable_mask is not None:
+        ax.contourf(
+            xx,
+            yy,
+            np.where(reliable_mask, np.nan, 1.0),
+            levels=[0.5, 1.5],
+            colors=["white"],
+            alpha=0.45,
+            zorder=1,
+        )
     for key in MODEL_ORDER:
         tr = traces[key]
         _plot_traj(
@@ -236,6 +277,21 @@ def _plot_potential(field, xx, yy, traces, out_stem, title):
     plt.close(fig)
 
 
+def _trace_arrays(tr, key="delta"):
+    if key == "delta" and "delta_traces" in tr:
+        arr = tr["delta_traces"].astype(np.float32)
+        alive = tr.get("alive_traces", np.ones_like(arr, dtype=bool)).astype(bool)
+    else:
+        arr = tr["delta_trace"][None].astype(np.float32)
+        alive = tr.get("alive_trace", np.ones_like(tr["delta_trace"], dtype=bool))[None].astype(bool)
+    return arr, alive
+
+
+def _mean_std(arr, alive):
+    masked = np.where(alive, arr, np.nan)
+    return np.nanmean(masked, axis=0), np.nanstd(masked, axis=0)
+
+
 def _plot_delta_curve(traces, out_stem):
     import matplotlib
     matplotlib.use("Agg")
@@ -244,15 +300,8 @@ def _plot_delta_curve(traces, out_stem):
     fig, ax = plt.subplots(figsize=(4.8, 3.2))
     for key in MODEL_ORDER:
         tr = traces[key]
-        if "delta_traces" in tr:
-            delta = tr["delta_traces"].astype(np.float32)
-            alive = tr.get("alive_traces", np.ones_like(delta, dtype=bool)).astype(bool)
-            arr = np.where(alive, delta, np.nan)
-            mean = np.nanmean(arr, axis=0)
-            std = np.nanstd(arr, axis=0)
-        else:
-            mean = tr["delta_trace"].astype(np.float32)
-            std = np.zeros_like(mean)
+        delta, alive = _trace_arrays(tr)
+        mean, std = _mean_std(delta, alive)
         x = np.arange(len(mean))
         color = MODEL_COLOR[key]
         ax.plot(x, mean, color=color, linewidth=2.6 if key == "ours" else 1.9, label=MODEL_LABEL[key])
@@ -274,12 +323,109 @@ def _plot_delta_curve(traces, out_stem):
     plt.close(fig)
 
 
-def _summarize(traces, phi_a, phi_b, out_dir):
+def _plot_clean_relative_persistence(traces, out_stem):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    clean_delta, clean_alive = _trace_arrays(traces["clean"])
+    clean_mean, _ = _mean_std(clean_delta, clean_alive)
+    fig, ax = plt.subplots(figsize=(4.8, 3.2))
+    for key in ("baseline", "ours"):
+        delta, alive = _trace_arrays(traces[key])
+        mean, std = _mean_std(delta, alive)
+        L = min(len(clean_mean), len(mean))
+        adv = clean_mean[:L] - mean[:L]
+        color = MODEL_COLOR[key]
+        ax.plot(np.arange(L), adv, color=color, linewidth=2.7 if key == "ours" else 2.0, label=MODEL_LABEL[key])
+        ax.fill_between(np.arange(L), adv - std[:L], adv + std[:L], color=color, alpha=0.12, linewidth=0)
+    first = traces["ours"]["is_trigger"]
+    trig_idx = np.where(first)[0]
+    if trig_idx.size:
+        ax.axvline(int(trig_idx[-1]) + 1, color="#8B0000", linestyle="--", linewidth=1.2)
+    ax.axhline(0, color="#222222", linewidth=1.0, linestyle=":")
+    ax.set_xlabel("Real environment step after intervention")
+    ax.set_ylabel(r"Clean-relative affinity: $\Delta_{clean}(h)-\Delta(h)$")
+    ax.grid(axis="y", linestyle=":", alpha=0.45)
+    ax.tick_params(direction="in", top=True, right=True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.2)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    _save_fig(fig, out_stem)
+    plt.close(fig)
+
+
+def _plot_basin_occupancy(traces, basin_threshold, out_stem):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(4.8, 3.2))
+    for key in MODEL_ORDER:
+        delta, alive = _trace_arrays(traces[key])
+        occ = np.where(alive, delta <= float(basin_threshold), np.nan).astype(np.float32)
+        mean = np.nanmean(occ, axis=0)
+        color = MODEL_COLOR[key]
+        ax.plot(np.arange(len(mean)), mean, color=color, linewidth=2.7 if key == "ours" else 2.0, label=MODEL_LABEL[key])
+    first = traces["ours"]["is_trigger"]
+    trig_idx = np.where(first)[0]
+    if trig_idx.size:
+        ax.axvline(int(trig_idx[-1]) + 1, color="#8B0000", linestyle="--", linewidth=1.2)
+    ax.set_ylim(-0.04, 1.04)
+    ax.set_xlabel("Real environment step after intervention")
+    ax.set_ylabel("Target-basin occupancy")
+    ax.set_title(rf"Basin: $\Delta(h)\leq {float(basin_threshold):.3f}$")
+    ax.grid(axis="y", linestyle=":", alpha=0.45)
+    ax.tick_params(direction="in", top=True, right=True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.2)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    _save_fig(fig, out_stem)
+    plt.close(fig)
+
+
+def _post_mask(tr):
+    trigger = np.asarray(tr["is_trigger"], dtype=bool)
+    alive = np.asarray(tr.get("alive_trace", np.ones_like(trigger, dtype=bool)), dtype=bool)
+    return (~trigger) & alive
+
+
+def _compute_basin_threshold(traces, pool_phi, explicit=None, quantile=0.15):
+    if explicit is not None and str(explicit).lower() not in {"none", "null"}:
+        return float(explicit)
+    vals = []
+    for key in ("ours", "baseline"):
+        tr = traces[key]
+        delta = np.asarray(tr["delta_trace"], dtype=np.float32)
+        mask = np.asarray(tr["is_trigger"], dtype=bool)
+        if mask.any():
+            vals.append(delta[mask])
+    if vals:
+        base = np.concatenate(vals)
+    else:
+        base = np.asarray(pool_phi, dtype=np.float32)
+    return float(np.nanquantile(base, float(quantile)))
+
+
+def _summarize(traces, phi_a, phi_b, out_dir, basin_threshold=None, phi_b_density=None, phi_b_reliable=None):
     summary = {
         "phi_A": {"min": float(np.nanmin(phi_a)), "max": float(np.nanmax(phi_a)), "mean": float(np.nanmean(phi_a))},
         "phi_B": {"min": float(np.nanmin(phi_b)), "max": float(np.nanmax(phi_b)), "mean": float(np.nanmean(phi_b))},
+        "basin_threshold": None if basin_threshold is None else float(basin_threshold),
         "models": {},
     }
+    if phi_b_density is not None:
+        summary["phi_B_density"] = {
+            "min": float(np.nanmin(phi_b_density)),
+            "max": float(np.nanmax(phi_b_density)),
+            "mean": float(np.nanmean(phi_b_density)),
+        }
+    if phi_b_reliable is not None:
+        summary["phi_B_reliable_fraction"] = float(np.asarray(phi_b_reliable, dtype=bool).mean())
+
+    clean_delta = np.asarray(traces["clean"]["delta_trace"], dtype=np.float32)
     for key, tr in traces.items():
         delta = np.asarray(tr["delta_trace"], dtype=np.float32)
         trigger = np.asarray(tr["is_trigger"], dtype=bool)
@@ -292,11 +438,18 @@ def _summarize(traces, phi_a, phi_b, out_dir):
             xm = x[mask] - x[mask].mean()
             ym = delta[mask] - delta[mask].mean()
             slope = float((xm * ym).sum() / max(float((xm * xm).sum()), 1e-8))
-        summary["models"][key] = {
+        L = min(len(clean_delta), len(delta))
+        rel = clean_delta[:L] - delta[:L]
+        post_rel = rel[_post_mask(tr)[:L]]
+        model_summary = {
             "delta0": float(delta[0]) if len(delta) else None,
             "post_delta_mean": float(post.mean()) if post.size else None,
             "post_delta_slope": slope,
+            "post_clean_relative_mean": float(post_rel.mean()) if post_rel.size else None,
         }
+        if basin_threshold is not None:
+            model_summary["post_basin_occupancy"] = float((post <= float(basin_threshold)).mean()) if post.size else None
+        summary["models"][key] = model_summary
     path = out_dir / "potential_summary.json"
     path.write_text(json.dumps(summary, indent=2))
     print(f"  saved {path}")
@@ -368,12 +521,20 @@ def main(config):
 
     grid_feats = pca.inverse_transform(grid_points).astype(np.float32)
     phi_a = _actor_phi(agent, grid_feats).reshape(xx.shape)
-    phi_b = _interpolate_real_latent(
+    phi_b, phi_b_density, phi_b_reliable, phi_b_density_cutoff = _interpolate_real_latent(
         pool_2d,
         pool_phi,
         xx,
         yy,
         smooth_sigma=float(getattr(viz, "smooth_sigma", 0.8)),
+        knn_k=int(getattr(viz, "knn_k", 32)),
+        density_mask_quantile=float(getattr(viz, "density_mask_quantile", 0.92)),
+    )
+    basin_threshold = _compute_basin_threshold(
+        traces,
+        pool_phi,
+        explicit=getattr(viz, "basin_threshold", None),
+        quantile=float(getattr(viz, "basin_quantile", 0.15)),
     )
 
     out_dir_cfg = _safe_path(viz.output_dir)
@@ -387,15 +548,32 @@ def main(config):
         yy=yy,
         phi_A=phi_a,
         phi_B=phi_b,
+        phi_B_density=phi_b_density,
+        phi_B_reliable=phi_b_reliable,
+        phi_B_density_cutoff=np.asarray(phi_b_density_cutoff, dtype=np.float32),
+        basin_threshold=np.asarray(basin_threshold, dtype=np.float32),
         pool_2d=pool_2d,
         pool_phi=pool_phi,
     )
     _plot_potential(phi_a, xx, yy, traces, out_dir / "potential_A_pca_backprojection",
-                    "(A) PCA back-projection landscape")
-    _plot_potential(phi_b, xx, yy, traces, out_dir / "potential_B_real_latent_interpolation",
-                    "(B) Real-latent interpolation landscape")
+                    "(A) PCA back-projection landscape",
+                    basin_threshold=basin_threshold)
+    _plot_potential(phi_b, xx, yy, traces, out_dir / "potential_B_real_latent_knn",
+                    "(B) Real-latent KNN landscape",
+                    basin_threshold=basin_threshold,
+                    reliable_mask=phi_b_reliable)
     _plot_delta_curve(traces, out_dir / "delta_curve")
-    _summarize(traces, phi_a, phi_b, out_dir)
+    _plot_clean_relative_persistence(traces, out_dir / "clean_relative_persistence")
+    _plot_basin_occupancy(traces, basin_threshold, out_dir / "basin_occupancy")
+    _summarize(
+        traces,
+        phi_a,
+        phi_b,
+        out_dir,
+        basin_threshold=basin_threshold,
+        phi_b_density=phi_b_density,
+        phi_b_reliable=phi_b_reliable,
+    )
 
 
 if __name__ == "__main__":

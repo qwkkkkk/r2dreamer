@@ -130,3 +130,7 @@ viz:
   output_dir: null
   grid_res: 80
   smooth_sigma: 0.8
+  knn_k: 32
+  density_mask_quantile: 0.92
+  basin_threshold: null
+  basin_quantile: 0.15
