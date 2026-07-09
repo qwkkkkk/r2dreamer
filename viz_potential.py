@@ -148,8 +148,8 @@ def _knn_interpolate(points, values, grid_points, k=32, chunk=1024):
     return np.concatenate(outs, axis=0), np.concatenate(densities, axis=0)
 
 
-def _interpolate_real_latent(pool_2d, phi, xx, yy, smooth_sigma=0.8,
-                             knn_k=32, density_mask_quantile=0.92):
+def _interpolate_real_latent(pool_2d, phi, xx, yy, smooth_sigma=0.4,
+                             knn_k=24, density_mask_quantile=0.85):
     grid_points = np.stack([xx.ravel(), yy.ravel()], axis=1)
     vals, density = _knn_interpolate(pool_2d, phi, grid_points, k=int(knn_k))
     field = vals.reshape(xx.shape).astype(np.float32)
@@ -182,7 +182,27 @@ def _setup_axes(ax):
     ax.set_ylabel("PCA-2")
 
 
-def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5):
+def _trigger_bounds(trigger):
+    idx = np.where(np.asarray(trigger, dtype=bool))[0]
+    if not idx.size:
+        return None, None
+    return int(idx[0]), int(idx[-1]) + 1
+
+
+def _mark_trigger_window(ax, trigger):
+    start, end = _trigger_bounds(trigger)
+    if start is None:
+        return
+    ax.axvspan(start, end, color="#F2C230", alpha=0.13, linewidth=0)
+    ax.axvline(start, color="#8B0000", linestyle="--", linewidth=1.1)
+    ax.axvline(end, color="#8B0000", linestyle="--", linewidth=1.1)
+    ymax = ax.get_ylim()[1]
+    ax.text(start, ymax, "trigger on", ha="right", va="top", fontsize=8.5, color="#8B0000")
+    ax.text(end, ymax, "off", ha="left", va="top", fontsize=8.5, color="#8B0000")
+
+
+def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5,
+               waypoint_stride=16, waypoint_labels=True):
     xy = np.asarray(xy, dtype=np.float32)
     trigger = np.asarray(trigger, dtype=bool)
     T = len(xy)
@@ -191,17 +211,49 @@ def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5):
     for i in range(max(0, T - 1)):
         alpha = 0.25 + 0.7 * (i + 1) / max(T - 1, 1)
         ax.plot(xy[i:i + 2, 0], xy[i:i + 2, 1], color=color, linewidth=lw, alpha=alpha, zorder=zorder)
-    markevery = max(1, T // 18)
+    markevery = max(1, int(waypoint_stride))
     idx = np.arange(0, T, markevery)
+    if len(idx) == 0 or idx[-1] != T - 1:
+        idx = np.unique(np.concatenate([idx, [T - 1]]))
     alphas = 0.25 + 0.7 * (idx + 1) / max(T, 1)
     for j, a in zip(idx, alphas):
-        ax.scatter(xy[j, 0], xy[j, 1], s=26 if label != "Clean" else 18,
-                   color=color, edgecolor="white", linewidth=0.45, alpha=float(a), zorder=zorder + 1)
-    trig_idx = np.where(trigger)[0]
-    if trig_idx.size:
-        j = int(trig_idx[0])
+        ax.scatter(
+            xy[j, 0],
+            xy[j, 1],
+            s=34 if label != "Clean" else 24,
+            color=color,
+            edgecolor="white",
+            linewidth=0.55,
+            alpha=float(a),
+            zorder=zorder + 1,
+        )
+        if waypoint_labels and j % markevery == 0:
+            ax.text(
+                xy[j, 0],
+                xy[j, 1],
+                str(int(j)),
+                fontsize=6.5,
+                color="white",
+                ha="center",
+                va="center",
+                zorder=zorder + 3,
+            )
+    trig_on, trig_off = _trigger_bounds(trigger)
+    if trig_on is not None:
+        j = int(trig_on)
         ax.scatter(xy[j, 0], xy[j, 1], marker="*", s=170, color="#F2C230",
                    edgecolor="#111111", linewidth=0.8, zorder=12)
+        if trig_off < T:
+            ax.scatter(
+                xy[trig_off, 0],
+                xy[trig_off, 1],
+                marker="D",
+                s=78,
+                facecolor="white",
+                edgecolor="#8B0000",
+                linewidth=1.4,
+                zorder=12,
+            )
     for frac in (0.28, 0.56, 0.82):
         j = min(max(0, int(frac * (T - 2))), max(T - 2, 0))
         if T >= 2 and np.linalg.norm(xy[j + 1] - xy[j]) > 1e-8:
@@ -215,7 +267,9 @@ def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5):
     ax.plot([], [], color=color, linewidth=lw, label=label)
 
 
-def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None, reliable_mask=None):
+def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None,
+                    reliable_mask=None, clip_quantile=0.98,
+                    waypoint_stride=16, waypoint_labels=True):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -231,8 +285,13 @@ def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None
     levels = 24
     finite = np.isfinite(field)
     if finite.any():
-        cf = ax.contourf(xx, yy, -field, levels=levels, cmap="RdYlBu_r", alpha=0.92)
-        ax.contour(xx, yy, -field, levels=10, colors="#222222", linewidths=0.35, alpha=0.35)
+        affinity = -field
+        q = float(clip_quantile)
+        if 0.5 < q < 1.0:
+            lo, hi = np.nanquantile(affinity[finite], [1.0 - q, q])
+            affinity = np.clip(affinity, lo, hi)
+        cf = ax.contourf(xx, yy, affinity, levels=levels, cmap="RdYlBu_r", alpha=0.92, extend="both")
+        ax.contour(xx, yy, affinity, levels=10, colors="#222222", linewidths=0.35, alpha=0.35)
         if basin_threshold is not None:
             basin = np.where(finite, field <= float(basin_threshold), np.nan)
             ax.contour(
@@ -266,6 +325,8 @@ def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None
             MODEL_COLOR[key],
             lw=3.0 if key == "ours" else (2.2 if key == "baseline" else 1.6),
             zorder=9 if key == "ours" else (7 if key == "baseline" else 5),
+            waypoint_stride=waypoint_stride,
+            waypoint_labels=waypoint_labels,
         )
     _setup_axes(ax)
     ax.set_title(title)
@@ -306,11 +367,7 @@ def _plot_delta_curve(traces, out_stem):
         color = MODEL_COLOR[key]
         ax.plot(x, mean, color=color, linewidth=2.6 if key == "ours" else 1.9, label=MODEL_LABEL[key])
         ax.fill_between(x, mean - std, mean + std, color=color, alpha=0.12, linewidth=0)
-    first = traces["ours"]["is_trigger"]
-    trig_idx = np.where(first)[0]
-    if trig_idx.size:
-        ax.axvline(int(trig_idx[-1]) + 1, color="#8B0000", linestyle="--", linewidth=1.2)
-        ax.text(int(trig_idx[-1]) + 1, ax.get_ylim()[1], "trigger off", ha="left", va="top", fontsize=9)
+    _mark_trigger_window(ax, traces["ours"]["is_trigger"])
     ax.set_xlabel("Real environment step after intervention")
     ax.set_ylabel(r"$\Delta(h)=||\pi_0(z_h)-a^\dagger||_2$")
     ax.grid(axis="y", linestyle=":", alpha=0.45)
@@ -339,10 +396,7 @@ def _plot_clean_relative_persistence(traces, out_stem):
         color = MODEL_COLOR[key]
         ax.plot(np.arange(L), adv, color=color, linewidth=2.7 if key == "ours" else 2.0, label=MODEL_LABEL[key])
         ax.fill_between(np.arange(L), adv - std[:L], adv + std[:L], color=color, alpha=0.12, linewidth=0)
-    first = traces["ours"]["is_trigger"]
-    trig_idx = np.where(first)[0]
-    if trig_idx.size:
-        ax.axvline(int(trig_idx[-1]) + 1, color="#8B0000", linestyle="--", linewidth=1.2)
+    _mark_trigger_window(ax, traces["ours"]["is_trigger"])
     ax.axhline(0, color="#222222", linewidth=1.0, linestyle=":")
     ax.set_xlabel("Real environment step after intervention")
     ax.set_ylabel(r"Clean-relative affinity: $\Delta_{clean}(h)-\Delta(h)$")
@@ -366,12 +420,19 @@ def _plot_basin_occupancy(traces, basin_threshold, out_stem):
         delta, alive = _trace_arrays(traces[key])
         occ = np.where(alive, delta <= float(basin_threshold), np.nan).astype(np.float32)
         mean = np.nanmean(occ, axis=0)
+        std = np.nanstd(occ, axis=0)
+        x = np.arange(len(mean))
         color = MODEL_COLOR[key]
-        ax.plot(np.arange(len(mean)), mean, color=color, linewidth=2.7 if key == "ours" else 2.0, label=MODEL_LABEL[key])
-    first = traces["ours"]["is_trigger"]
-    trig_idx = np.where(first)[0]
-    if trig_idx.size:
-        ax.axvline(int(trig_idx[-1]) + 1, color="#8B0000", linestyle="--", linewidth=1.2)
+        ax.plot(x, mean, color=color, linewidth=2.7 if key == "ours" else 2.0, label=MODEL_LABEL[key])
+        ax.fill_between(
+            x,
+            np.clip(mean - std, 0.0, 1.0),
+            np.clip(mean + std, 0.0, 1.0),
+            color=color,
+            alpha=0.12,
+            linewidth=0,
+        )
+    _mark_trigger_window(ax, traces["ours"]["is_trigger"])
     ax.set_ylim(-0.04, 1.04)
     ax.set_xlabel("Real environment step after intervention")
     ax.set_ylabel("Target-basin occupancy")
@@ -392,7 +453,7 @@ def _post_mask(tr):
     return (~trigger) & alive
 
 
-def _compute_basin_threshold(traces, pool_phi, explicit=None, quantile=0.15):
+def _compute_basin_threshold(traces, pool_phi, explicit=None, quantile=0.50, min_threshold=0.5):
     if explicit is not None and str(explicit).lower() not in {"none", "null"}:
         return float(explicit)
     vals = []
@@ -406,7 +467,10 @@ def _compute_basin_threshold(traces, pool_phi, explicit=None, quantile=0.15):
         base = np.concatenate(vals)
     else:
         base = np.asarray(pool_phi, dtype=np.float32)
-    return float(np.nanquantile(base, float(quantile)))
+    threshold = float(np.nanquantile(base, float(quantile)))
+    if min_threshold is not None and str(min_threshold).lower() not in {"none", "null"}:
+        threshold = max(threshold, float(min_threshold))
+    return threshold
 
 
 def _summarize(traces, phi_a, phi_b, out_dir, basin_threshold=None, phi_b_density=None, phi_b_reliable=None):
@@ -526,15 +590,16 @@ def main(config):
         pool_phi,
         xx,
         yy,
-        smooth_sigma=float(getattr(viz, "smooth_sigma", 0.8)),
-        knn_k=int(getattr(viz, "knn_k", 32)),
-        density_mask_quantile=float(getattr(viz, "density_mask_quantile", 0.92)),
+        smooth_sigma=float(getattr(viz, "smooth_sigma", 0.4)),
+        knn_k=int(getattr(viz, "knn_k", 24)),
+        density_mask_quantile=float(getattr(viz, "density_mask_quantile", 0.85)),
     )
     basin_threshold = _compute_basin_threshold(
         traces,
         pool_phi,
         explicit=getattr(viz, "basin_threshold", None),
-        quantile=float(getattr(viz, "basin_quantile", 0.15)),
+        quantile=float(getattr(viz, "basin_quantile", 0.50)),
+        min_threshold=getattr(viz, "basin_min_threshold", 0.5),
     )
 
     out_dir_cfg = _safe_path(viz.output_dir)
@@ -557,11 +622,17 @@ def main(config):
     )
     _plot_potential(phi_a, xx, yy, traces, out_dir / "potential_A_pca_backprojection",
                     "(A) PCA back-projection landscape",
-                    basin_threshold=basin_threshold)
+                    basin_threshold=basin_threshold,
+                    clip_quantile=float(getattr(viz, "potential_clip_quantile", 0.98)),
+                    waypoint_stride=int(getattr(viz, "waypoint_stride", 16)),
+                    waypoint_labels=bool(getattr(viz, "waypoint_labels", True)))
     _plot_potential(phi_b, xx, yy, traces, out_dir / "potential_B_real_latent_knn",
                     "(B) Real-latent KNN landscape",
                     basin_threshold=basin_threshold,
-                    reliable_mask=phi_b_reliable)
+                    reliable_mask=phi_b_reliable,
+                    clip_quantile=float(getattr(viz, "potential_clip_quantile", 0.98)),
+                    waypoint_stride=int(getattr(viz, "waypoint_stride", 16)),
+                    waypoint_labels=bool(getattr(viz, "waypoint_labels", True)))
     _plot_delta_curve(traces, out_dir / "delta_curve")
     _plot_clean_relative_persistence(traces, out_dir / "clean_relative_persistence")
     _plot_basin_occupancy(traces, basin_threshold, out_dir / "basin_occupancy")

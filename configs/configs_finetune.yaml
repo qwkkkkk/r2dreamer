@@ -129,8 +129,12 @@ viz:
   actor_ckpt: null
   output_dir: null
   grid_res: 80
-  smooth_sigma: 0.8
-  knn_k: 32
-  density_mask_quantile: 0.92
+  smooth_sigma: 0.4
+  knn_k: 24
+  density_mask_quantile: 0.85
   basin_threshold: null
-  basin_quantile: 0.15
+  basin_quantile: 0.50
+  basin_min_threshold: 0.5
+  potential_clip_quantile: 0.98
+  waypoint_stride: 16
+  waypoint_labels: true
