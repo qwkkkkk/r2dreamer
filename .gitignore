@@ -137,6 +137,8 @@ extra_logdir/
 
 AGENTS.md
 
+viz_data/
+
 trigger_renders/
 
 figures/

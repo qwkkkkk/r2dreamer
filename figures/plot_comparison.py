@@ -49,17 +49,22 @@ METHOD_ORDER = [
     "reflective",
 ]
 
-# Scenario A/B timeline: clean reference + baselines + ours.
-TIMELINE_METHOD_ORDER = [
+# Figures: clean reference + all backdoor baselines + ours.
+PLOT_METHOD_ORDER = [
     "clean",
-    "reflective",
     "static_latent",
     "beat_adapted",
+    "reward_only",
+    "reflective",
     "causal",
 ]
 
-TIMELINE_LINEWIDTH = 2.0
-TIMELINE_MARKERSIZE = 5.2
+# Backward-compatible alias used by timeline helpers.
+TIMELINE_METHOD_ORDER = PLOT_METHOD_ORDER
+
+TIMELINE_LINEWIDTH = 1.35
+TIMELINE_MARKERSIZE = 4.0
+TIMELINE_SOLID_KEYS = frozenset({"clean", "causal"})
 
 METHOD_SHORT = {
     "clean": "Clean",
@@ -67,7 +72,7 @@ METHOD_SHORT = {
     "beat_adapted": "BEAT",
     "static_latent": "Latent",
     "reward_only": "Reward",
-    "reflective": "Vanilla",
+    "reflective": "Reflective",
 }
 
 METHOD_LABEL = {
@@ -76,7 +81,7 @@ METHOD_LABEL = {
     "beat_adapted": "BEAT-adapted",
     "static_latent": "Latent-target",
     "reward_only": "Reward-only",
-    "reflective": "Vanilla-backdoor",
+    "reflective": "Reflective",
 }
 
 METHOD_STYLE: dict[str, dict[str, Any]] = {
@@ -130,10 +135,17 @@ METHOD_STYLE: dict[str, dict[str, Any]] = {
     },
 }
 
+# Scenario B grouped bars: clean return + window/post under midpoint trigger.
 RETURN_SERIES = [
     ("Clean return", "cr", "#9EC1DF"),
-    ("Full-trigger return", "cr_t", "#E67E2E"),
-    ("Start-window return", "scenario_a_total", "#4F7F3A"),
+    ("Window return", "scenario_b_win_return", "#E67E2E"),
+    ("Post return", "scenario_b_post_return", "#4F7F3A"),
+]
+
+ASR_SERIES = [
+    ("ASR", "asr_pct", "#9EC1DF"),
+    ("Window ASR", "scenario_b_win_asr_pct", "#E67E2E"),
+    ("Post ASR", "scenario_b_post_asr_pct", "#4F7F3A"),
 ]
 
 EDGE = "#111111"
@@ -185,6 +197,8 @@ class MethodRow:
     scenario_a_post_asr_pct: float | None
     scenario_b_win_asr_pct: float | None
     scenario_b_post_asr_pct: float | None
+    scenario_b_win_return: float | None
+    scenario_b_post_return: float | None
 
     @property
     def short(self) -> str:
@@ -201,6 +215,13 @@ def _scenario_total(results: dict[str, Any], key: str) -> float | None:
     if not any(f in sc for f in fields):
         return None
     return sum(float(sc.get(f, 0.0)) for f in fields)
+
+
+def _scenario_score(results: dict[str, Any], key: str, field: str) -> float | None:
+    sc = results.get(key, {})
+    if field not in sc:
+        return None
+    return float(sc[field])
 
 
 def _pct_or_none(value: Any) -> float | None:
@@ -232,6 +253,8 @@ def _row_from_eval(key: str, data: dict[str, Any], k_values: list[int]) -> Metho
         scenario_a_post_asr_pct=_pct_or_none(sa.get("post_ASR")),
         scenario_b_win_asr_pct=_pct_or_none(sb.get("win_ASR")),
         scenario_b_post_asr_pct=_pct_or_none(sb.get("post_ASR")),
+        scenario_b_win_return=_scenario_score(data, "scenario_B", "win_score"),
+        scenario_b_post_return=_scenario_score(data, "scenario_B", "post_score"),
     )
 
 
@@ -259,7 +282,7 @@ def load_timeline_rows(repo: Path, cfg: SceneConfig, backdoor_rows: list[MethodR
         clean_path = repo / cfg.clean_path
         if clean_path.exists():
             by_key["clean"] = _row_from_eval("clean", _read_json(clean_path), cfg.k_values)
-    return [by_key[key] for key in TIMELINE_METHOD_ORDER if key in by_key]
+    return [by_key[key] for key in PLOT_METHOD_ORDER if key in by_key]
 
 
 def _setup_axes(ax: plt.Axes, *, ygrid: bool = True) -> None:
@@ -286,7 +309,18 @@ def _save(fig: plt.Figure, stem: Path) -> None:
     plt.close(fig)
 
 
-def plot_return_grouped_bars(rows: list[MethodRow], out_dir: Path, scene_name: str) -> None:
+def _plot_grouped_bars(
+    rows: list[MethodRow],
+    out_dir: Path,
+    scene_name: str,
+    *,
+    series: list[tuple[str, str, str]],
+    ylabel: str,
+    stem: str,
+    use_hatch: bool = False,
+    value_fmt: str = "{:.0f}",
+    ylim_top_scale: float = 1.18,
+) -> None:
     if not rows:
         return
 
@@ -294,17 +328,24 @@ def plot_return_grouped_bars(rows: list[MethodRow], out_dir: Path, scene_name: s
     mpl, plt = _get_matplotlib()
     with mpl.rc_context(PAPER_RC):
         plt.style.use("classic")
-        fig, ax = plt.subplots(figsize=(8.8, 4.8))
+        if use_hatch:
+            mpl.rcParams["hatch.linewidth"] = 0.55
+        fig, ax = plt.subplots(figsize=(12.8, 5.6))
 
-        group_spacing = 1.95
-        bar_width = 0.3
-        bar_gap = 0.10
+        group_spacing = 1.75
+        n_series = len(series)
+        bar_width = 0.22 if n_series >= 3 else 0.28
+        bar_gap = 0.08
         bar_step = bar_width + bar_gap
-        offsets = np.array([-bar_step, 0.0, bar_step])
+        offsets = np.linspace(
+            -bar_step * (n_series - 1) / 2.0,
+            bar_step * (n_series - 1) / 2.0,
+            n_series,
+        )
         group_x = np.arange(len(rows)) * group_spacing
 
         all_values: list[float] = []
-        for j, (label, attr, color) in enumerate(RETURN_SERIES):
+        for j, (label, attr, color) in enumerate(series):
             vals = [getattr(r, attr) for r in rows]
             numeric = [0.0 if v is None else float(v) for v in vals]
             all_values.extend(numeric)
@@ -316,17 +357,18 @@ def plot_return_grouped_bars(rows: list[MethodRow], out_dir: Path, scene_name: s
                 color=color,
                 edgecolor=EDGE,
                 linewidth=1.2,
+                hatch="///" if use_hatch else None,
                 zorder=3,
             )
             for bar, raw in zip(bars, vals):
                 if raw is None:
                     continue
                 y = float(raw)
-                pad = max(max(numeric + [1.0]) * 0.018, 3.0)
+                pad = max(max(all_values + [1.0]) * 0.018, 0.8 if "%" in ylabel else 3.0)
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     y + pad,
-                    f"{y:.0f}",
+                    value_fmt.format(y),
                     ha="center",
                     va="bottom",
                     fontsize=9.0,
@@ -346,27 +388,54 @@ def plot_return_grouped_bars(rows: list[MethodRow], out_dir: Path, scene_name: s
 
         ax.set_xticks(group_x)
         ax.set_xticklabels([r.short for r in rows], fontstyle="italic", fontweight="bold")
-        ax.set_ylabel("Episode return", fontstyle="italic", fontweight="bold")
+        ax.set_ylabel(ylabel, fontstyle="italic", fontweight="bold")
         ax.set_xlabel(scene_name, fontstyle="italic", fontweight="bold")
 
         ymin = min(all_values) if all_values else 0.0
         ymax = max(all_values) if all_values else 1.0
-        bottom = min(0.0, ymin * 1.08)
-        ax.set_ylim(bottom, ymax * 1.18 + 1e-6)
+        bottom = 0.0 if "%" in ylabel else min(0.0, ymin * 1.08)
+        ax.set_ylim(bottom, ymax * ylim_top_scale + 1e-6)
         ax.set_xlim(group_x[0] - 0.85, group_x[-1] + 0.85)
         _setup_axes(ax)
 
         ax.legend(
             loc="upper center",
-            bbox_to_anchor=(0.5, 1.10),
-            ncol=3,
+            bbox_to_anchor=(0.5, 1.08),
+            ncol=n_series,
             frameon=False,
             handlelength=1.6,
-            columnspacing=1.6,
-            prop={"style": "italic", "weight": "bold", "size": 11},
+            columnspacing=1.4,
+            prop={"style": "italic", "weight": "bold", "size": 10},
         )
-        fig.tight_layout(rect=(0, 0, 1, 0.96))
-        _save(fig, out_dir / "01_return_grouped_bars")
+        fig.tight_layout(rect=(0, 0, 1, 0.94))
+        _save(fig, out_dir / stem)
+
+
+def plot_scenario_b_return_bars(rows: list[MethodRow], out_dir: Path, scene_name: str) -> None:
+    _plot_grouped_bars(
+        rows,
+        out_dir,
+        scene_name,
+        series=RETURN_SERIES,
+        ylabel="Scenario B return",
+        stem="01_scenario_B_return_bars",
+        use_hatch=False,
+        value_fmt="{:.0f}",
+    )
+
+
+def plot_scenario_b_asr_bars(rows: list[MethodRow], out_dir: Path, scene_name: str) -> None:
+    _plot_grouped_bars(
+        rows,
+        out_dir,
+        scene_name,
+        series=ASR_SERIES,
+        ylabel="Scenario B ASR (%)",
+        stem="02_scenario_B_asr_bars",
+        use_hatch=True,
+        value_fmt="{:.1f}",
+        ylim_top_scale=1.12,
+    )
 
 
 def _timeline_rows(repo: Path, cfg: SceneConfig, rows: list[MethodRow]) -> list[MethodRow]:
@@ -402,15 +471,16 @@ def _plot_one_timeline(
         steps = np.arange(len(rew))
         markevery = max(1, len(steps) // 10)
         style = _style(row.key)
+        linestyle = "-" if row.key in TIMELINE_SOLID_KEYS else "--"
         common = dict(
             color=style["color"],
-            linestyle=style["linestyle"],
+            linestyle=linestyle,
             linewidth=TIMELINE_LINEWIDTH,
             marker=style["marker"],
             markersize=TIMELINE_MARKERSIZE,
             markevery=markevery,
             markerfacecolor="white",
-            markeredgewidth=1.2,
+            markeredgewidth=0.9,
             markeredgecolor=style["color"],
             alpha=style["alpha"],
             zorder=style["zorder"],
@@ -464,7 +534,7 @@ def plot_scenario_timelines(
         fig, axes = plt.subplots(
             2,
             2,
-            figsize=(13.2, 6.4),
+            figsize=(14.0, 6.6),
             sharex="col",
             gridspec_kw={"height_ratios": [1.0, 1.0], "wspace": 0.18, "hspace": 0.18},
         )
@@ -486,21 +556,21 @@ def plot_scenario_timelines(
         handles = handles_a or handles_b
         labels = labels_a or labels_b
         if handles:
-            ncol = len(handles) if len(handles) <= 4 else 3
+            ncol = 3
             fig.legend(
                 handles,
                 labels,
                 loc="upper center",
-                bbox_to_anchor=(0.5, 0.93),
+                bbox_to_anchor=(0.5, 0.92),
                 ncol=ncol,
                 frameon=False,
                 handlelength=2.0,
-                columnspacing=1.2,
-                prop={"style": "italic", "weight": "bold", "size": 10},
+                columnspacing=1.0,
+                prop={"style": "italic", "weight": "bold", "size": 9.5},
             )
-        fig.suptitle(scene_name, y=0.99, fontsize=14, fontweight="bold", fontstyle="italic")
-        fig.subplots_adjust(top=0.80, hspace=0.22, wspace=0.18)
-        _save(fig, out_dir / "02_scenario_AB_timeline")
+        fig.suptitle(scene_name, y=0.98, fontsize=14, fontweight="bold", fontstyle="italic")
+        fig.subplots_adjust(top=0.78, hspace=0.22, wspace=0.18)
+        _save(fig, out_dir / "03_scenario_AB_timeline")
 
 
 def build_table(rows: list[MethodRow], k_values: list[int]) -> list[dict[str, Any]]:
@@ -514,7 +584,10 @@ def build_table(rows: list[MethodRow], k_values: list[int]) -> list[dict[str, An
             "CR_t": row.cr_t,
             "CR_t_std": row.cr_t_std,
             "scenario_A_total_return": row.scenario_a_total,
-            "scenario_B_total_return": row.scenario_b_total,
+            "scenario_B_win_return": row.scenario_b_win_return,
+            "scenario_B_post_return": row.scenario_b_post_return,
+            "scenario_B_win_ASR_pct": row.scenario_b_win_asr_pct,
+            "scenario_B_post_ASR_pct": row.scenario_b_post_asr_pct,
             "ASR_pct": row.asr_pct,
             "FTR_pct": row.ftr_pct,
             "scenario_A_win_ASR_pct": row.scenario_a_win_asr_pct,
@@ -545,17 +618,16 @@ def write_summary_csv(table: list[dict[str, Any]], path: Path) -> None:
 
 
 def print_table(table: list[dict[str, Any]]) -> None:
-    print("method                 CR      CR_t    A-total  FTR%    ASR%")
-    print("-" * 66)
+    print("method                 CR      B-winR  B-postR  B-winASR B-postASR")
+    print("-" * 78)
     for row in table:
-        a_total = row.get("scenario_A_total_return")
         print(
             f"{row['method'][:20]:<20} "
-            f"{row.get('CR', 0):7.0f} "
-            f"{row.get('CR_t', 0):7.0f} "
-            f"{a_total if a_total is not None else float('nan'):7.0f} "
-            f"{row.get('FTR_pct', 0):6.2f} "
-            f"{row.get('ASR_pct', 0):6.1f}"
+            f"{row.get('CR', 0) or 0:7.0f} "
+            f"{row.get('scenario_B_win_return', 0) or 0:7.0f} "
+            f"{row.get('scenario_B_post_return', 0) or 0:7.0f} "
+            f"{row.get('scenario_B_win_ASR_pct', 0) or 0:7.1f} "
+            f"{row.get('scenario_B_post_ASR_pct', 0) or 0:7.1f}"
         )
 
 
@@ -577,17 +649,19 @@ def generate_comparison_figures(repo_root: Path, cfg: SceneConfig, out_dir: Path
 
     bar_rows = load_timeline_rows(repo_root, cfg, rows)
     print(f"Writing figures -> {out_dir}")
-    plot_return_grouped_bars(bar_rows, out_dir, cfg.name)
+    plot_scenario_b_return_bars(bar_rows, out_dir, cfg.name)
+    plot_scenario_b_asr_bars(bar_rows, out_dir, cfg.name)
     plot_scenario_timelines(repo_root, cfg, rows, out_dir, cfg.name)
 
     readme = out_dir / "README_return_timeline.txt"
     readme.write_text(
         f"Return/timeline figures - {cfg.name}\n"
         "====================================\n"
-        "01_return_grouped_bars.png/pdf:\n"
-        "  grouped bars per method: clean return, full-trigger return, and\n"
-        "  Scenario-A total return after a start-window trigger.\n\n"
-        "02_scenario_AB_timeline.png/pdf:\n"
+        "01_scenario_B_return_bars.png/pdf:\n"
+        "  Clean return, Scenario B window return, and post-window return (no hatch).\n\n"
+        "02_scenario_B_asr_bars.png/pdf:\n"
+        "  Overall ASR, Scenario B window ASR, and post-window ASR (hatched bars).\n\n"
+        "03_scenario_AB_timeline.png/pdf:\n"
         "  Scenario A/B per-step reward and action-target cosine traces.\n\n"
         "summary_table.csv:\n"
         "  scalar values used for plotting plus FTR/ASR table columns.\n"

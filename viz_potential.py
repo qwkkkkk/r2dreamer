@@ -27,16 +27,35 @@ sys.path.append(str(pathlib.Path(__file__).parent))
 torch.set_float32_matmul_precision("high")
 
 
-MODEL_ORDER = ("clean", "baseline", "ours")
+TRACE_ORDER = ("clean", "latent", "beat", "ours")
+MODEL_ORDER = TRACE_ORDER  # backward-compatible alias
 MODEL_LABEL = {
     "clean": "Clean",
-    "baseline": "Baseline",
+    "latent": "Latent-target",
+    "beat": "BEAT-adapted",
+    "baseline": "Latent-target",
     "ours": "Ours (Causal)",
 }
 MODEL_COLOR = {
     "clean": "#666666",
-    "baseline": "#1679AB",
+    "latent": "#6B3FA0",
+    "beat": "#125A82",
+    "baseline": "#6B3FA0",
     "ours": "#B23A48",
+}
+TRACE_LINEWIDTH = {
+    "clean": 1.6,
+    "latent": 2.0,
+    "beat": 2.0,
+    "baseline": 2.0,
+    "ours": 2.8,
+}
+TRACE_ZORDER = {
+    "clean": 5,
+    "latent": 7,
+    "beat": 8,
+    "baseline": 7,
+    "ours": 10,
 }
 
 
@@ -79,6 +98,37 @@ def _fit_pca2(feats: np.ndarray) -> PCA2:
 
 def _safe_path(value):
     return None if value is None or str(value).lower() in {"none", "null"} else value
+
+
+def _resolve_trace_paths(viz) -> dict[str, str]:
+    clean = _safe_path(viz.clean_trace)
+    ours = _safe_path(viz.ours_trace)
+    latent = _safe_path(getattr(viz, "latent_trace", None))
+    beat = _safe_path(getattr(viz, "beat_trace", None))
+    legacy = _safe_path(getattr(viz, "baseline_trace", None))
+    if latent is None and legacy is not None:
+        latent = legacy
+    paths = {"clean": clean, "latent": latent, "beat": beat, "ours": ours}
+    missing = [k for k, p in paths.items() if p is None]
+    if missing:
+        raise SystemExit(f"Missing trace paths in config.viz: {missing}")
+    return paths
+
+
+def _trace_label(key: str) -> str:
+    return MODEL_LABEL.get(key, key)
+
+
+def _trace_color(key: str) -> str:
+    return MODEL_COLOR.get(key, "#444444")
+
+
+def _trace_lw(key: str) -> float:
+    return float(TRACE_LINEWIDTH.get(key, 2.0))
+
+
+def _trace_zorder(key: str) -> int:
+    return int(TRACE_ZORDER.get(key, 6))
 
 
 def _load_agent(config, actor_ckpt: pathlib.Path):
@@ -315,18 +365,16 @@ def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None
             alpha=0.45,
             zorder=1,
         )
-    for key in MODEL_ORDER:
+    for key in TRACE_ORDER:
         tr = traces[key]
         _plot_traj(
             ax,
             tr["xy"],
             tr["is_trigger"],
-            MODEL_LABEL[key],
-            MODEL_COLOR[key],
-            lw=3.0 if key == "ours" else (2.2 if key == "baseline" else 1.6),
-            zorder=9 if key == "ours" else (7 if key == "baseline" else 5),
-            waypoint_stride=waypoint_stride,
-            waypoint_labels=waypoint_labels,
+            _trace_label(key),
+            _trace_color(key),
+            lw=_trace_lw(key),
+            zorder=_trace_zorder(key),
         )
     _setup_axes(ax)
     ax.set_title(title)
@@ -359,13 +407,13 @@ def _plot_delta_curve(traces, out_stem):
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(4.8, 3.2))
-    for key in MODEL_ORDER:
+    for key in TRACE_ORDER:
         tr = traces[key]
         delta, alive = _trace_arrays(tr)
         mean, std = _mean_std(delta, alive)
         x = np.arange(len(mean))
-        color = MODEL_COLOR[key]
-        ax.plot(x, mean, color=color, linewidth=2.6 if key == "ours" else 1.9, label=MODEL_LABEL[key])
+        color = _trace_color(key)
+        ax.plot(x, mean, color=color, linewidth=_trace_lw(key), label=_trace_label(key))
         ax.fill_between(x, mean - std, mean + std, color=color, alpha=0.12, linewidth=0)
     _mark_trigger_window(ax, traces["ours"]["is_trigger"])
     ax.set_xlabel("Real environment step after intervention")
@@ -388,13 +436,13 @@ def _plot_clean_relative_persistence(traces, out_stem):
     clean_delta, clean_alive = _trace_arrays(traces["clean"])
     clean_mean, _ = _mean_std(clean_delta, clean_alive)
     fig, ax = plt.subplots(figsize=(4.8, 3.2))
-    for key in ("baseline", "ours"):
+    for key in ("latent", "beat", "ours"):
         delta, alive = _trace_arrays(traces[key])
         mean, std = _mean_std(delta, alive)
         L = min(len(clean_mean), len(mean))
         adv = clean_mean[:L] - mean[:L]
-        color = MODEL_COLOR[key]
-        ax.plot(np.arange(L), adv, color=color, linewidth=2.7 if key == "ours" else 2.0, label=MODEL_LABEL[key])
+        color = _trace_color(key)
+        ax.plot(np.arange(L), adv, color=color, linewidth=_trace_lw(key), label=_trace_label(key))
         ax.fill_between(np.arange(L), adv - std[:L], adv + std[:L], color=color, alpha=0.12, linewidth=0)
     _mark_trigger_window(ax, traces["ours"]["is_trigger"])
     ax.axhline(0, color="#222222", linewidth=1.0, linestyle=":")
@@ -416,23 +464,16 @@ def _plot_basin_occupancy(traces, basin_threshold, out_stem):
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(4.8, 3.2))
-    for key in MODEL_ORDER:
+    for key in TRACE_ORDER:
         delta, alive = _trace_arrays(traces[key])
         occ = np.where(alive, delta <= float(basin_threshold), np.nan).astype(np.float32)
         mean = np.nanmean(occ, axis=0)
-        std = np.nanstd(occ, axis=0)
-        x = np.arange(len(mean))
-        color = MODEL_COLOR[key]
-        ax.plot(x, mean, color=color, linewidth=2.7 if key == "ours" else 2.0, label=MODEL_LABEL[key])
-        ax.fill_between(
-            x,
-            np.clip(mean - std, 0.0, 1.0),
-            np.clip(mean + std, 0.0, 1.0),
-            color=color,
-            alpha=0.12,
-            linewidth=0,
-        )
-    _mark_trigger_window(ax, traces["ours"]["is_trigger"])
+        color = _trace_color(key)
+        ax.plot(np.arange(len(mean)), mean, color=color, linewidth=_trace_lw(key), label=_trace_label(key))
+    first = traces["ours"]["is_trigger"]
+    trig_idx = np.where(first)[0]
+    if trig_idx.size:
+        ax.axvline(int(trig_idx[-1]) + 1, color="#8B0000", linestyle="--", linewidth=1.2)
     ax.set_ylim(-0.04, 1.04)
     ax.set_xlabel("Real environment step after intervention")
     ax.set_ylabel("Target-basin occupancy")
@@ -460,7 +501,7 @@ def _compute_basin_threshold(traces, pool_phi, explicit=None, quantile=0.50, min
     if explicit is not None and str(explicit).lower() not in {"none", "null"}:
         return float(explicit)
     vals = []
-    for key in ("ours", "baseline"):
+    for key in ("ours", "latent", "beat"):
         tr = traces[key]
         delta = np.asarray(tr["delta_trace"], dtype=np.float32)
         mask = np.asarray(tr["is_trigger"], dtype=bool)
@@ -527,15 +568,7 @@ def _summarize(traces, phi_a, phi_b, out_dir, basin_threshold=None, phi_b_densit
 def main(config):
     repo_root = pathlib.Path(get_original_cwd())
     viz = config.viz
-    paths = {
-        "clean": _safe_path(viz.clean_trace),
-        "ours": _safe_path(viz.ours_trace),
-        "baseline": _safe_path(viz.baseline_trace),
-    }
-    missing = [k for k, p in paths.items() if p is None]
-    if missing:
-        raise SystemExit(f"Missing trace paths in config.viz: {missing}")
-
+    paths = _resolve_trace_paths(viz)
     trace_raw = {k: _load_npz(_resolve(p, repo_root)) for k, p in paths.items()}
     actor_value = _safe_path(getattr(viz, "actor_ckpt", None)) or config.ckpt_path
     actor_ckpt = pathlib.Path(str(actor_value)).expanduser()
@@ -576,7 +609,7 @@ def main(config):
     pool_phi = np.concatenate(phi_blocks, axis=0).astype(np.float32) if phi_blocks else _actor_phi(agent, pool_feats)
     pool_2d = pca.transform(pool_feats)
 
-    all_2d = np.concatenate([pool_2d] + [traces[k]["xy"] for k in MODEL_ORDER], axis=0)
+    all_2d = np.concatenate([pool_2d] + [traces[k]["xy"] for k in TRACE_ORDER], axis=0)
     pad = 0.08 * np.maximum(all_2d.max(axis=0) - all_2d.min(axis=0), 1e-6)
     lo = all_2d.min(axis=0) - pad
     hi = all_2d.max(axis=0) + pad

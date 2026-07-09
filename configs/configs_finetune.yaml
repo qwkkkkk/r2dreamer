@@ -125,7 +125,9 @@ viz:
   trace_select: auto
   clean_trace: null
   ours_trace: null
-  baseline_trace: null
+  latent_trace: null
+  beat_trace: null
+  baseline_trace: null  # legacy alias for latent_trace
   actor_ckpt: null
   output_dir: null
   grid_res: 80
