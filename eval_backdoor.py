@@ -156,12 +156,17 @@ def _auto_trace_index(delta_tb, alive_tb, trigger_tb, model_name, mode="auto"):
     alive = np.asarray(alive_tb, dtype=bool)
     trigger = np.asarray(trigger_tb, dtype=bool)
     T, B = delta.shape
-    post_mask = alive & (~trigger)
     post_mean = np.full(B, np.inf, dtype=np.float32)
     post_slope = np.zeros(B, dtype=np.float32)
+    steps = np.arange(T)
 
     for b in range(B):
-        idx = np.where(post_mask[:, b])[0]
+        trig_idx = np.where(trigger[:, b])[0]
+        if trig_idx.size:
+            post_mask = alive[:, b] & (steps >= int(trig_idx[-1]) + 1)
+        else:
+            post_mask = alive[:, b]
+        idx = np.where(post_mask)[0]
         if idx.size == 0:
             idx = np.where(alive[:, b])[0]
         if idx.size == 0:
@@ -268,7 +273,12 @@ def collect_real_rollout(agent, shim, task_name, model_name, out_dir,
         trigger_start=np.asarray(int(trigger_start), dtype=np.int32),
         trigger_K=np.asarray(int(trigger_K), dtype=np.int32),
     )
-    post = delta_bt[rep_idx][~trigger_bt[rep_idx] & alive_bt[rep_idx]]
+    trig_idx = np.where(trigger_bt[rep_idx])[0]
+    if trig_idx.size:
+        post_mask = alive_bt[rep_idx] & (np.arange(delta_bt.shape[1]) >= int(trig_idx[-1]) + 1)
+    else:
+        post_mask = alive_bt[rep_idx]
+    post = delta_bt[rep_idx][post_mask]
     print(
         f"[viz] saved {path} | rep_env={rep_idx} "
         f"delta0={float(delta_bt[rep_idx, 0]):.4f} "

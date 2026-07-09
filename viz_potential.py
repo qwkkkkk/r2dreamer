@@ -450,7 +450,10 @@ def _plot_basin_occupancy(traces, basin_threshold, out_stem):
 def _post_mask(tr):
     trigger = np.asarray(tr["is_trigger"], dtype=bool)
     alive = np.asarray(tr.get("alive_trace", np.ones_like(trigger, dtype=bool)), dtype=bool)
-    return (~trigger) & alive
+    trig_idx = np.where(trigger)[0]
+    if trig_idx.size:
+        return alive & (np.arange(len(trigger)) >= int(trig_idx[-1]) + 1)
+    return alive
 
 
 def _compute_basin_threshold(traces, pool_phi, explicit=None, quantile=0.50, min_threshold=0.5):
@@ -492,11 +495,11 @@ def _summarize(traces, phi_a, phi_b, out_dir, basin_threshold=None, phi_b_densit
     clean_delta = np.asarray(traces["clean"]["delta_trace"], dtype=np.float32)
     for key, tr in traces.items():
         delta = np.asarray(tr["delta_trace"], dtype=np.float32)
-        trigger = np.asarray(tr["is_trigger"], dtype=bool)
         alive = np.asarray(tr.get("alive_trace", np.ones_like(delta, dtype=bool)), dtype=bool)
-        post = delta[(~trigger) & alive]
+        post_mask = _post_mask(tr)
+        post = delta[post_mask]
         x = np.arange(len(delta), dtype=np.float32)
-        mask = (~trigger) & alive
+        mask = post_mask & alive
         slope = 0.0
         if mask.sum() >= 2:
             xm = x[mask] - x[mask].mean()
