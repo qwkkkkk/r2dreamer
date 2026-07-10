@@ -37,18 +37,18 @@ MODEL_LABEL = {
     "ours": "Ours (Causal)",
 }
 MODEL_COLOR = {
-    "clean": "#666666",
-    "latent": "#6B3FA0",
-    "beat": "#125A82",
+    "clean": "#303030",
+    "latent": "#7A3DB8",
+    "beat": "#008B8B",
     "baseline": "#6B3FA0",
-    "ours": "#B23A48",
+    "ours": "#2CA02C",
 }
 TRACE_LINEWIDTH = {
-    "clean": 1.6,
-    "latent": 2.0,
-    "beat": 2.0,
+    "clean": 1.15,
+    "latent": 1.35,
+    "beat": 1.35,
     "baseline": 2.0,
-    "ours": 2.8,
+    "ours": 1.8,
 }
 TRACE_ZORDER = {
     "clean": 5,
@@ -252,15 +252,27 @@ def _mark_trigger_window(ax, trigger):
 
 
 def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5,
-               waypoint_stride=16, waypoint_labels=True):
+               waypoint_stride=16, waypoint_labels=False):
+    import matplotlib.patheffects as pe
+
     xy = np.asarray(xy, dtype=np.float32)
     trigger = np.asarray(trigger, dtype=bool)
     T = len(xy)
     if T == 0:
         return
+    halo = [pe.Stroke(linewidth=lw + 1.15, foreground="white", alpha=0.82), pe.Normal()]
     for i in range(max(0, T - 1)):
-        alpha = 0.25 + 0.7 * (i + 1) / max(T - 1, 1)
-        ax.plot(xy[i:i + 2, 0], xy[i:i + 2, 1], color=color, linewidth=lw, alpha=alpha, zorder=zorder)
+        alpha = 0.18 + 0.72 * (i + 1) / max(T - 1, 1)
+        line, = ax.plot(
+            xy[i:i + 2, 0],
+            xy[i:i + 2, 1],
+            color=color,
+            linewidth=lw,
+            alpha=alpha,
+            solid_capstyle="round",
+            zorder=zorder,
+        )
+        line.set_path_effects(halo)
     markevery = max(1, int(waypoint_stride))
     idx = np.arange(0, T, markevery)
     if len(idx) == 0 or idx[-1] != T - 1:
@@ -270,10 +282,10 @@ def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5,
         ax.scatter(
             xy[j, 0],
             xy[j, 1],
-            s=34 if label != "Clean" else 24,
+            s=18 if label != "Clean" else 13,
             color=color,
             edgecolor="white",
-            linewidth=0.55,
+            linewidth=0.5,
             alpha=float(a),
             zorder=zorder + 1,
         )
@@ -291,35 +303,49 @@ def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5,
     trig_on, trig_off = _trigger_bounds(trigger)
     if trig_on is not None:
         j = int(trig_on)
-        ax.scatter(xy[j, 0], xy[j, 1], marker="*", s=170, color="#F2C230",
-                   edgecolor="#111111", linewidth=0.8, zorder=12)
+        ax.scatter(xy[j, 0], xy[j, 1], marker="*", s=58, color="#F2C230",
+                   edgecolor="#111111", linewidth=0.55, zorder=12)
         if trig_off < T:
             ax.scatter(
                 xy[trig_off, 0],
                 xy[trig_off, 1],
                 marker="D",
-                s=78,
+                s=28,
                 facecolor="white",
                 edgecolor="#8B0000",
-                linewidth=1.4,
+                linewidth=0.9,
                 zorder=12,
             )
-    for frac in (0.28, 0.56, 0.82):
-        j = min(max(0, int(frac * (T - 2))), max(T - 2, 0))
-        if T >= 2 and np.linalg.norm(xy[j + 1] - xy[j]) > 1e-8:
-            ax.annotate(
-                "",
-                xy=xy[j + 1],
-                xytext=xy[j],
-                arrowprops=dict(arrowstyle="->", color=color, lw=max(1.0, lw * 0.75), shrinkA=0, shrinkB=0),
-                zorder=zorder + 2,
-            )
-    ax.plot([], [], color=color, linewidth=lw, label=label)
+    arrow_idx = idx[idx < T - 1]
+    for j in arrow_idx:
+        nxt = min(j + markevery, T - 1)
+        if nxt <= j or np.linalg.norm(xy[nxt] - xy[j]) <= 1e-8:
+            continue
+        ann = ax.annotate(
+            "",
+            xy=xy[nxt],
+            xytext=xy[j],
+            arrowprops=dict(
+                arrowstyle="-|>",
+                color=color,
+                lw=max(0.65, lw * 0.62),
+                mutation_scale=6.0,
+                shrinkA=2.0,
+                shrinkB=2.0,
+            ),
+            zorder=zorder + 2,
+        )
+        ann.arrow_patch.set_path_effects([
+            pe.Stroke(linewidth=max(1.25, lw * 0.62 + 0.9), foreground="white", alpha=0.75),
+            pe.Normal(),
+        ])
+    legend_line, = ax.plot([], [], color=color, linewidth=max(1.8, lw), label=label)
+    legend_line.set_path_effects(halo)
 
 
 def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None,
                     reliable_mask=None, clip_quantile=0.98,
-                    waypoint_stride=16, waypoint_labels=True):
+                    waypoint_stride=16, waypoint_labels=False):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -340,8 +366,8 @@ def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None
         if 0.5 < q < 1.0:
             lo, hi = np.nanquantile(affinity[finite], [1.0 - q, q])
             affinity = np.clip(affinity, lo, hi)
-        cf = ax.contourf(xx, yy, affinity, levels=levels, cmap="RdYlBu_r", alpha=0.92, extend="both")
-        ax.contour(xx, yy, affinity, levels=10, colors="#222222", linewidths=0.35, alpha=0.35)
+        cf = ax.contourf(xx, yy, affinity, levels=levels, cmap="RdYlBu_r", alpha=0.80, extend="both")
+        ax.contour(xx, yy, affinity, levels=10, colors="#222222", linewidths=0.28, alpha=0.25)
         if basin_threshold is not None:
             basin = np.where(finite, field <= float(basin_threshold), np.nan)
             ax.contour(
@@ -350,8 +376,9 @@ def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None
                 basin.astype(float),
                 levels=[0.5],
                 colors="#7A0019",
-                linewidths=1.6,
+                linewidths=0.95,
                 linestyles="-",
+                alpha=0.72,
             )
     else:
         cf = ax.contourf(xx, yy, np.zeros_like(field), levels=levels, cmap="RdYlBu_r", alpha=0.1)
@@ -375,10 +402,21 @@ def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None
             _trace_color(key),
             lw=_trace_lw(key),
             zorder=_trace_zorder(key),
+            waypoint_stride=waypoint_stride,
+            waypoint_labels=waypoint_labels,
         )
     _setup_axes(ax)
     ax.set_title(title)
-    ax.legend(frameon=False, loc="best", handlelength=2.2)
+    ax.legend(
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.74,
+        loc="best",
+        handlelength=1.8,
+        labelspacing=0.45,
+        borderpad=0.35,
+    )
     cbar = fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.035)
     cbar.set_label(r"Actor target affinity ($-\Phi$); warmer = closer to $a^\dagger$")
     fig.tight_layout()
@@ -661,14 +699,14 @@ def main(config):
                     basin_threshold=basin_threshold,
                     clip_quantile=float(getattr(viz, "potential_clip_quantile", 0.98)),
                     waypoint_stride=int(getattr(viz, "waypoint_stride", 16)),
-                    waypoint_labels=bool(getattr(viz, "waypoint_labels", True)))
+                    waypoint_labels=bool(getattr(viz, "waypoint_labels", False)))
     _plot_potential(phi_b, xx, yy, traces, out_dir / "potential_B_real_latent_knn",
                     "(B) Real-latent KNN landscape",
                     basin_threshold=basin_threshold,
                     reliable_mask=phi_b_reliable,
                     clip_quantile=float(getattr(viz, "potential_clip_quantile", 0.98)),
                     waypoint_stride=int(getattr(viz, "waypoint_stride", 16)),
-                    waypoint_labels=bool(getattr(viz, "waypoint_labels", True)))
+                    waypoint_labels=bool(getattr(viz, "waypoint_labels", False)))
     _plot_delta_curve(traces, out_dir / "delta_curve")
     _plot_clean_relative_persistence(traces, out_dir / "clean_relative_persistence")
     _plot_basin_occupancy(traces, basin_threshold, out_dir / "basin_occupancy")

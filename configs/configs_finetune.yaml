@@ -139,4 +139,4 @@ viz:
   basin_min_threshold: 0.5
   potential_clip_quantile: 0.98
   waypoint_stride: 16
-  waypoint_labels: true
+  waypoint_labels: false
