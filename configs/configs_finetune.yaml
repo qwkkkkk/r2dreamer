@@ -137,6 +137,9 @@ viz:
   basin_threshold: null
   basin_quantile: 0.50
   basin_min_threshold: 0.5
-  potential_clip_quantile: 0.98
+  potential_clip_quantile: 0.92
+  potential_b_levels: 14
+  basin_mask_alpha: 0.20
+  unreliable_mask_alpha: 0.30
   waypoint_stride: 16
   waypoint_labels: false

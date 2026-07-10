@@ -343,55 +343,125 @@ def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5,
     legend_line.set_path_effects(halo)
 
 
-def _plot_potential(field, xx, yy, traces, out_stem, title, basin_threshold=None,
-                    reliable_mask=None, clip_quantile=0.98,
-                    waypoint_stride=16, waypoint_labels=False):
+def _display_smooth_field(field, sigma):
+    """Display-only extra Gaussian smoothing; does not change saved landscape data."""
+    if not sigma or float(sigma) <= 0:
+        return field
+    return _nan_gaussian_filter(np.asarray(field, dtype=np.float32), float(sigma)).astype(np.float32)
+
+
+def _plot_potential(
+    field,
+    xx,
+    yy,
+    traces,
+    out_stem,
+    title,
+    basin_threshold=None,
+    reliable_mask=None,
+    clip_quantile=0.98,
+    levels=24,
+    basin_mask_alpha=0.0,
+    unreliable_mask_alpha=0.45,
+    show_fine_contours=True,
+    waypoint_stride=16,
+    waypoint_labels=False,
+):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.colors import BoundaryNorm
 
     plt.rcParams.update({
         "font.family": "DejaVu Sans",
         "font.size": 11,
         "axes.labelsize": 12,
         "axes.titlesize": 12,
-        "legend.fontsize": 10,
+        "legend.fontsize": 9.5,
     })
-    fig, ax = plt.subplots(figsize=(4.35, 4.05))
-    levels = 24
+    fig, ax = plt.subplots(figsize=(4.55, 4.15))
     finite = np.isfinite(field)
+    cf = None
+    cbar_lo = cbar_hi = None
     if finite.any():
-        affinity = -field
+        affinity = -np.asarray(field, dtype=np.float32)
         q = float(clip_quantile)
         if 0.5 < q < 1.0:
-            lo, hi = np.nanquantile(affinity[finite], [1.0 - q, q])
-            affinity = np.clip(affinity, lo, hi)
-        cf = ax.contourf(xx, yy, affinity, levels=levels, cmap="RdYlBu_r", alpha=0.80, extend="both")
-        ax.contour(xx, yy, affinity, levels=10, colors="#222222", linewidths=0.28, alpha=0.25)
-        if basin_threshold is not None:
-            basin = np.where(finite, field <= float(basin_threshold), np.nan)
+            cbar_lo, cbar_hi = np.nanquantile(affinity[finite], [1.0 - q, q])
+            affinity = np.clip(affinity, cbar_lo, cbar_hi)
+        affinity_plot = np.where(finite, affinity, np.nan)
+        n_levels = int(levels)
+        if cbar_lo is not None and cbar_hi is not None:
+            level_edges = np.linspace(float(cbar_lo), float(cbar_hi), n_levels + 1)
+        else:
+            level_edges = np.linspace(
+                float(np.nanmin(affinity_plot)),
+                float(np.nanmax(affinity_plot)),
+                n_levels + 1,
+            )
+        cmap = plt.get_cmap("RdYlBu_r", n_levels)
+        norm = BoundaryNorm(level_edges, cmap.N, clip=True)
+        cf = ax.contourf(
+            xx,
+            yy,
+            affinity_plot,
+            levels=level_edges,
+            cmap=cmap,
+            norm=norm,
+            alpha=0.88,
+            extend="neither",
+            antialiased=True,
+            zorder=0,
+        )
+        if show_fine_contours and n_levels >= 20:
             ax.contour(
                 xx,
                 yy,
-                basin.astype(float),
+                affinity_plot,
+                levels=max(6, n_levels // 2),
+                colors="#222222",
+                linewidths=0.28,
+                alpha=0.22,
+                zorder=0.5,
+            )
+        if basin_threshold is not None:
+            basin_in = np.where(finite, field <= float(basin_threshold), False).astype(np.float32)
+            if float(basin_mask_alpha) > 0 and np.any(basin_in > 0.5):
+                ax.contourf(
+                    xx,
+                    yy,
+                    basin_in,
+                    levels=[0.5, 1.5],
+                    colors=["#F2DF8A"],
+                    alpha=float(basin_mask_alpha),
+                    zorder=1.5,
+                )
+            ax.contour(
+                xx,
+                yy,
+                basin_in,
                 levels=[0.5],
                 colors="#7A0019",
-                linewidths=0.95,
+                linewidths=1.1,
                 linestyles="-",
-                alpha=0.72,
+                alpha=0.95,
+                zorder=2.5,
             )
     else:
-        cf = ax.contourf(xx, yy, np.zeros_like(field), levels=levels, cmap="RdYlBu_r", alpha=0.1)
+        cf = ax.contourf(xx, yy, np.zeros_like(field), levels=int(levels), cmap="RdYlBu_r", alpha=0.1)
     if reliable_mask is not None:
-        ax.contourf(
-            xx,
-            yy,
-            np.where(reliable_mask, np.nan, 1.0),
-            levels=[0.5, 1.5],
-            colors=["white"],
-            alpha=0.45,
-            zorder=1,
-        )
+        unreliable = ~np.asarray(reliable_mask, dtype=bool)
+        if unreliable.any():
+            ax.contourf(
+                xx,
+                yy,
+                np.where(unreliable, 1.0, np.nan),
+                levels=[0.5, 1.5],
+                colors=["#F7F7F7"],
+                alpha=float(unreliable_mask_alpha),
+                hatch="///",
+                zorder=1.2,
+            )
     for key in TRACE_ORDER:
         tr = traces[key]
         _plot_traj(
@@ -704,7 +774,11 @@ def main(config):
                     "(B) Real-latent KNN landscape",
                     basin_threshold=basin_threshold,
                     reliable_mask=phi_b_reliable,
-                    clip_quantile=float(getattr(viz, "potential_clip_quantile", 0.98)),
+                    clip_quantile=float(getattr(viz, "potential_clip_quantile", 0.92)),
+                    levels=int(getattr(viz, "potential_b_levels", 14)),
+                    basin_mask_alpha=float(getattr(viz, "basin_mask_alpha", 0.20)),
+                    unreliable_mask_alpha=float(getattr(viz, "unreliable_mask_alpha", 0.30)),
+                    show_fine_contours=False,
                     waypoint_stride=int(getattr(viz, "waypoint_stride", 16)),
                     waypoint_labels=bool(getattr(viz, "waypoint_labels", False)))
     _plot_delta_curve(traces, out_dir / "delta_curve")
