@@ -143,3 +143,5 @@ viz:
   unreliable_mask_alpha: 0.30
   waypoint_stride: 16
   waypoint_labels: false
+  event_keypoints: true
+  show_full_trace: true

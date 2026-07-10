@@ -239,6 +239,73 @@ def _trigger_bounds(trigger):
     return int(idx[0]), int(idx[-1]) + 1
 
 
+def _event_keypoints(trigger, alive=None, T=None, post_stride=16, max_post=2):
+    """Pick a small set of event-level trajectory points for uncluttered plots."""
+    trigger = np.asarray(trigger, dtype=bool)
+    T = int(T if T is not None else len(trigger))
+    if T <= 0:
+        return np.asarray([], dtype=int), None
+    if alive is None:
+        alive = np.ones(T, dtype=bool)
+    else:
+        alive = np.asarray(alive, dtype=bool)[:T]
+        if len(alive) < T:
+            alive = np.pad(alive, (0, T - len(alive)), constant_values=False)
+
+    alive_idx = np.where(alive)[0]
+    if not alive_idx.size:
+        return np.asarray([0], dtype=int), None
+
+    points = [int(alive_idx[0])]
+    star_idx = None
+    trig_idx = np.where(trigger[:T])[0]
+    stride = max(1, int(post_stride))
+
+    def add_nearest_alive(step):
+        step = int(np.clip(step, 0, T - 1))
+        if alive[step]:
+            points.append(step)
+            return
+        later = alive_idx[alive_idx >= step]
+        if later.size:
+            points.append(int(later[0]))
+            return
+        earlier = alive_idx[alive_idx <= step]
+        if earlier.size:
+            points.append(int(earlier[-1]))
+
+    if trig_idx.size:
+        trig_on = int(trig_idx[0])
+        trig_off = int(trig_idx[-1]) + 1
+        mid = int((trig_on + trig_off - 1) // 2)
+        add_nearest_alive(mid)
+        star_idx = mid
+        if trig_off < T:
+            add_nearest_alive(trig_off)
+        for k in range(1, max(1, int(max_post)) + 1):
+            add_nearest_alive(trig_off + k * stride)
+        add_nearest_alive(int(alive_idx[-1]))
+    else:
+        sparse = np.linspace(int(alive_idx[0]), int(alive_idx[-1]), 5).round().astype(int)
+        for step in sparse[1:]:
+            add_nearest_alive(int(step))
+
+    points = np.asarray(sorted(set(p for p in points if 0 <= p < T and alive[p])), dtype=int)
+    if points.size > 5 and trig_idx.size:
+        keep = [points[0]]
+        if star_idx is not None:
+            star_pos = points[np.argmin(np.abs(points - int(star_idx)))]
+            keep.append(int(star_pos))
+        trig_off_pos = int(trig_idx[-1]) + 1
+        if trig_off_pos < T:
+            keep.append(int(points[np.argmin(np.abs(points - trig_off_pos))]))
+        post = [int(p) for p in points if p not in keep and p > trig_off_pos]
+        keep.extend(post[:1])
+        keep.append(int(points[-1]))
+        points = np.asarray(sorted(set(keep)), dtype=int)
+    return points, star_idx
+
+
 def _mark_trigger_window(ax, trigger):
     start, end = _trigger_bounds(trigger)
     if start is None:
@@ -251,8 +318,20 @@ def _mark_trigger_window(ax, trigger):
     ax.text(end, ymax, "off", ha="left", va="top", fontsize=8.5, color="#8B0000")
 
 
-def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5,
-               waypoint_stride=16, waypoint_labels=False):
+def _plot_traj(
+    ax,
+    xy,
+    trigger,
+    label,
+    color,
+    lw=2.0,
+    zorder=5,
+    alive=None,
+    waypoint_stride=16,
+    waypoint_labels=False,
+    event_keypoints=True,
+    show_full_trace=True,
+):
     import matplotlib.patheffects as pe
 
     xy = np.asarray(xy, dtype=np.float32)
@@ -260,33 +339,86 @@ def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5,
     T = len(xy)
     if T == 0:
         return
-    halo = [pe.Stroke(linewidth=lw + 1.15, foreground="white", alpha=0.82), pe.Normal()]
-    for i in range(max(0, T - 1)):
-        alpha = 0.18 + 0.72 * (i + 1) / max(T - 1, 1)
-        line, = ax.plot(
-            xy[i:i + 2, 0],
-            xy[i:i + 2, 1],
-            color=color,
-            linewidth=lw,
-            alpha=alpha,
-            solid_capstyle="round",
-            zorder=zorder,
-        )
-        line.set_path_effects(halo)
+
+    alive = np.ones(T, dtype=bool) if alive is None else np.asarray(alive, dtype=bool)[:T]
+    if len(alive) < T:
+        alive = np.pad(alive, (0, T - len(alive)), constant_values=False)
+
+    halo = [pe.Stroke(linewidth=lw + 1.0, foreground="white", alpha=0.80), pe.Normal()]
     markevery = max(1, int(waypoint_stride))
-    idx = np.arange(0, T, markevery)
-    if len(idx) == 0 or idx[-1] != T - 1:
-        idx = np.unique(np.concatenate([idx, [T - 1]]))
-    alphas = 0.25 + 0.7 * (idx + 1) / max(T, 1)
-    for j, a in zip(idx, alphas):
+
+    if event_keypoints:
+        idx, star_idx = _event_keypoints(trigger, alive=alive, T=T, post_stride=markevery, max_post=2)
+        if show_full_trace and T >= 2:
+            faint_lw = max(0.55, lw * 0.58)
+            for i in range(max(0, T - 1)):
+                if not (alive[i] and alive[i + 1]):
+                    continue
+                line, = ax.plot(
+                    xy[i:i + 2, 0],
+                    xy[i:i + 2, 1],
+                    color=color,
+                    linewidth=faint_lw,
+                    alpha=0.12,
+                    solid_capstyle="round",
+                    zorder=zorder - 1,
+                )
+                line.set_path_effects([
+                    pe.Stroke(linewidth=faint_lw + 0.8, foreground="white", alpha=0.45),
+                    pe.Normal(),
+                ])
+    else:
+        idx = np.arange(0, T, markevery)
+        if len(idx) == 0 or idx[-1] != T - 1:
+            idx = np.unique(np.concatenate([idx, [T - 1]]))
+        star_idx = None
+        for i in range(max(0, T - 1)):
+            if not (alive[i] and alive[i + 1]):
+                continue
+            alpha = 0.18 + 0.72 * (i + 1) / max(T - 1, 1)
+            line, = ax.plot(
+                xy[i:i + 2, 0],
+                xy[i:i + 2, 1],
+                color=color,
+                linewidth=lw,
+                alpha=alpha,
+                solid_capstyle="round",
+                zorder=zorder,
+            )
+            line.set_path_effects(halo)
+
+    if len(idx) >= 2:
+        for j, nxt in zip(idx[:-1], idx[1:]):
+            if np.linalg.norm(xy[nxt] - xy[j]) <= 1e-8:
+                continue
+            ann = ax.annotate(
+                "",
+                xy=xy[nxt],
+                xytext=xy[j],
+                arrowprops=dict(
+                    arrowstyle="-|>",
+                    color=color,
+                    lw=max(0.70, lw * 0.66),
+                    mutation_scale=6.5,
+                    shrinkA=3.0,
+                    shrinkB=3.0,
+                ),
+                zorder=zorder + 2,
+            )
+            ann.arrow_patch.set_path_effects([
+                pe.Stroke(linewidth=max(1.25, lw * 0.66 + 0.85), foreground="white", alpha=0.78),
+                pe.Normal(),
+            ])
+
+    for j in idx:
         ax.scatter(
             xy[j, 0],
             xy[j, 1],
-            s=18 if label != "Clean" else 13,
+            s=22 if label != "Clean" else 17,
             color=color,
             edgecolor="white",
-            linewidth=0.5,
-            alpha=float(a),
+            linewidth=0.65,
+            alpha=0.96,
             zorder=zorder + 1,
         )
         if waypoint_labels and j % markevery == 0:
@@ -300,45 +432,19 @@ def _plot_traj(ax, xy, trigger, label, color, lw=2.0, zorder=5,
                 va="center",
                 zorder=zorder + 3,
             )
-    trig_on, trig_off = _trigger_bounds(trigger)
-    if trig_on is not None:
-        j = int(trig_on)
-        ax.scatter(xy[j, 0], xy[j, 1], marker="*", s=58, color="#F2C230",
-                   edgecolor="#111111", linewidth=0.55, zorder=12)
-        if trig_off < T:
-            ax.scatter(
-                xy[trig_off, 0],
-                xy[trig_off, 1],
-                marker="D",
-                s=28,
-                facecolor="white",
-                edgecolor="#8B0000",
-                linewidth=0.9,
-                zorder=12,
-            )
-    arrow_idx = idx[idx < T - 1]
-    for j in arrow_idx:
-        nxt = min(j + markevery, T - 1)
-        if nxt <= j or np.linalg.norm(xy[nxt] - xy[j]) <= 1e-8:
-            continue
-        ann = ax.annotate(
-            "",
-            xy=xy[nxt],
-            xytext=xy[j],
-            arrowprops=dict(
-                arrowstyle="-|>",
-                color=color,
-                lw=max(0.65, lw * 0.62),
-                mutation_scale=6.0,
-                shrinkA=2.0,
-                shrinkB=2.0,
-            ),
-            zorder=zorder + 2,
+
+    if star_idx is not None and 0 <= int(star_idx) < T and alive[int(star_idx)]:
+        j = int(star_idx)
+        ax.scatter(
+            xy[j, 0],
+            xy[j, 1],
+            marker="*",
+            s=72,
+            color="#F2C230",
+            edgecolor="#111111",
+            linewidth=0.65,
+            zorder=13,
         )
-        ann.arrow_patch.set_path_effects([
-            pe.Stroke(linewidth=max(1.25, lw * 0.62 + 0.9), foreground="white", alpha=0.75),
-            pe.Normal(),
-        ])
     legend_line, = ax.plot([], [], color=color, linewidth=max(1.8, lw), label=label)
     legend_line.set_path_effects(halo)
 
@@ -366,6 +472,8 @@ def _plot_potential(
     show_fine_contours=True,
     waypoint_stride=16,
     waypoint_labels=False,
+    event_keypoints=True,
+    show_full_trace=True,
 ):
     import matplotlib
     matplotlib.use("Agg")
@@ -472,8 +580,11 @@ def _plot_potential(
             _trace_color(key),
             lw=_trace_lw(key),
             zorder=_trace_zorder(key),
+            alive=tr.get("alive_trace", None),
             waypoint_stride=waypoint_stride,
             waypoint_labels=waypoint_labels,
+            event_keypoints=event_keypoints,
+            show_full_trace=show_full_trace,
         )
     _setup_axes(ax)
     ax.set_title(title)
@@ -769,7 +880,9 @@ def main(config):
                     basin_threshold=basin_threshold,
                     clip_quantile=float(getattr(viz, "potential_clip_quantile", 0.98)),
                     waypoint_stride=int(getattr(viz, "waypoint_stride", 16)),
-                    waypoint_labels=bool(getattr(viz, "waypoint_labels", False)))
+                    waypoint_labels=bool(getattr(viz, "waypoint_labels", False)),
+                    event_keypoints=bool(getattr(viz, "event_keypoints", True)),
+                    show_full_trace=bool(getattr(viz, "show_full_trace", True)))
     _plot_potential(phi_b, xx, yy, traces, out_dir / "potential_B_real_latent_knn",
                     "(B) Real-latent KNN landscape",
                     basin_threshold=basin_threshold,
@@ -780,7 +893,9 @@ def main(config):
                     unreliable_mask_alpha=float(getattr(viz, "unreliable_mask_alpha", 0.30)),
                     show_fine_contours=False,
                     waypoint_stride=int(getattr(viz, "waypoint_stride", 16)),
-                    waypoint_labels=bool(getattr(viz, "waypoint_labels", False)))
+                    waypoint_labels=bool(getattr(viz, "waypoint_labels", False)),
+                    event_keypoints=bool(getattr(viz, "event_keypoints", True)),
+                    show_full_trace=bool(getattr(viz, "show_full_trace", True)))
     _plot_delta_curve(traces, out_dir / "delta_curve")
     _plot_clean_relative_persistence(traces, out_dir / "clean_relative_persistence")
     _plot_basin_occupancy(traces, basin_threshold, out_dir / "basin_occupancy")
