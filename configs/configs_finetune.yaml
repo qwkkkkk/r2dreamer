@@ -145,3 +145,5 @@ viz:
   waypoint_labels: false
   event_keypoints: true
   show_full_trace: true
+  show_trigger_star: true
+  trace_keys: null

@@ -33,13 +33,15 @@ MODEL_LABEL = {
     "clean": "Clean",
     "latent": "Latent-target",
     "beat": "BEAT-adapted",
+    "reflective": "Reflective",
     "baseline": "Latent-target",
     "ours": "Ours (Causal)",
 }
 MODEL_COLOR = {
     "clean": "#303030",
     "latent": "#7A3DB8",
-    "beat": "#008B8B",
+    "beat": "#D95F02",
+    "reflective": "#9A6B1F",
     "baseline": "#6B3FA0",
     "ours": "#2CA02C",
 }
@@ -47,6 +49,7 @@ TRACE_LINEWIDTH = {
     "clean": 1.15,
     "latent": 1.35,
     "beat": 1.35,
+    "reflective": 1.35,
     "baseline": 2.0,
     "ours": 1.8,
 }
@@ -54,6 +57,7 @@ TRACE_ZORDER = {
     "clean": 5,
     "latent": 7,
     "beat": 8,
+    "reflective": 9,
     "baseline": 7,
     "ours": 10,
 }
@@ -98,6 +102,15 @@ def _fit_pca2(feats: np.ndarray) -> PCA2:
 
 def _safe_path(value):
     return None if value is None or str(value).lower() in {"none", "null"} else value
+
+
+def _resolve_trace_keys(viz):
+    raw = getattr(viz, "trace_keys", None)
+    if raw is None or str(raw).lower() in {"none", "null", ""}:
+        return None
+    if isinstance(raw, (list, tuple)):
+        return [str(k) for k in raw]
+    return [str(raw)]
 
 
 def _resolve_trace_paths(viz) -> dict[str, str]:
@@ -331,6 +344,7 @@ def _plot_traj(
     waypoint_labels=False,
     event_keypoints=True,
     show_full_trace=True,
+    show_trigger_star=True,
 ):
     import matplotlib.patheffects as pe
 
@@ -433,7 +447,7 @@ def _plot_traj(
                 zorder=zorder + 3,
             )
 
-    if star_idx is not None and 0 <= int(star_idx) < T and alive[int(star_idx)]:
+    if star_idx is not None and show_trigger_star and 0 <= int(star_idx) < T and alive[int(star_idx)]:
         j = int(star_idx)
         ax.scatter(
             xy[j, 0],
@@ -474,6 +488,9 @@ def _plot_potential(
     waypoint_labels=False,
     event_keypoints=True,
     show_full_trace=True,
+    show_trigger_star=True,
+    trace_keys=None,
+    cbar_label=r"Actor target affinity ($-\Phi$); warmer = closer to $a^\dagger$",
 ):
     import matplotlib
     matplotlib.use("Agg")
@@ -570,7 +587,10 @@ def _plot_potential(
                 hatch="///",
                 zorder=1.2,
             )
-    for key in TRACE_ORDER:
+    plot_keys = list(trace_keys) if trace_keys else list(TRACE_ORDER)
+    for key in plot_keys:
+        if key not in traces:
+            continue
         tr = traces[key]
         _plot_traj(
             ax,
@@ -585,9 +605,11 @@ def _plot_potential(
             waypoint_labels=waypoint_labels,
             event_keypoints=event_keypoints,
             show_full_trace=show_full_trace,
+            show_trigger_star=show_trigger_star,
         )
     _setup_axes(ax)
-    ax.set_title(title)
+    if title:
+        ax.set_title(title)
     ax.legend(
         frameon=True,
         facecolor="white",
@@ -599,7 +621,8 @@ def _plot_potential(
         borderpad=0.35,
     )
     cbar = fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.035)
-    cbar.set_label(r"Actor target affinity ($-\Phi$); warmer = closer to $a^\dagger$")
+    if cbar_label:
+        cbar.set_label(cbar_label)
     fig.tight_layout()
     _save_fig(fig, out_stem)
     plt.close(fig)
@@ -875,6 +898,8 @@ def main(config):
         pool_2d=pool_2d,
         pool_phi=pool_phi,
     )
+    trace_keys = _resolve_trace_keys(viz)
+    show_trigger_star = bool(getattr(viz, "show_trigger_star", True))
     _plot_potential(phi_a, xx, yy, traces, out_dir / "potential_A_pca_backprojection",
                     "(A) PCA back-projection landscape",
                     basin_threshold=basin_threshold,
@@ -882,7 +907,9 @@ def main(config):
                     waypoint_stride=int(getattr(viz, "waypoint_stride", 16)),
                     waypoint_labels=bool(getattr(viz, "waypoint_labels", False)),
                     event_keypoints=bool(getattr(viz, "event_keypoints", True)),
-                    show_full_trace=bool(getattr(viz, "show_full_trace", True)))
+                    show_full_trace=bool(getattr(viz, "show_full_trace", True)),
+                    show_trigger_star=show_trigger_star,
+                    trace_keys=trace_keys)
     _plot_potential(phi_b, xx, yy, traces, out_dir / "potential_B_real_latent_knn",
                     "(B) Real-latent KNN landscape",
                     basin_threshold=basin_threshold,
@@ -895,7 +922,9 @@ def main(config):
                     waypoint_stride=int(getattr(viz, "waypoint_stride", 16)),
                     waypoint_labels=bool(getattr(viz, "waypoint_labels", False)),
                     event_keypoints=bool(getattr(viz, "event_keypoints", True)),
-                    show_full_trace=bool(getattr(viz, "show_full_trace", True)))
+                    show_full_trace=bool(getattr(viz, "show_full_trace", True)),
+                    show_trigger_star=show_trigger_star,
+                    trace_keys=trace_keys)
     _plot_delta_curve(traces, out_dir / "delta_curve")
     _plot_clean_relative_persistence(traces, out_dir / "clean_relative_persistence")
     _plot_basin_occupancy(traces, basin_threshold, out_dir / "basin_occupancy")
