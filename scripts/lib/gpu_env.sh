@@ -5,9 +5,41 @@
 # Match by device name so EGL rendering and torch share one card.
 #
 # Usage (after setting GPU_ID):
-#   source scripts/gpu_env.sh
+#   source scripts/lib/gpu_env.sh
 #   setup_gpu_env
 #   # exports CUDA_VISIBLE_DEVICES, TORCH_DEVICE=cuda:0, MUJOCO_GL, MUJOCO_EGL_DEVICE_ID
+
+PYTHON=${PYTHON:-/home/wenkai_huang/miniconda3/envs/r2d/bin/python}
+export PYTHON
+
+# dm_control 1.0.28 is only compatible with mujoco 3.3.x (see requirements.txt).
+# Call before DMC / dmc_subtle jobs to fail fast instead of in worker subprocesses.
+verify_dmc_stack() {
+    "${PYTHON}" - <<'PY'
+import sys
+
+try:
+    import mujoco
+    from dm_control import suite
+except ImportError as exc:
+    print(f"[error] DMC stack import failed: {exc}")
+    sys.exit(1)
+
+ver = mujoco.__version__
+if not ver.startswith("3.3."):
+    print(f"[error] mujoco=={ver} is incompatible with dm_control 1.0.28")
+    print("        Fix: pip install 'mujoco==3.3.0'")
+    sys.exit(1)
+
+try:
+    suite.load("finger", "spin")
+except Exception as exc:
+    print(f"[error] DMC env smoke test failed: {exc}")
+    sys.exit(1)
+
+print(f"[env] DMC stack OK (mujoco {ver})")
+PY
+}
 
 resolve_egl_gpu_id() {
     local cuda_visible="${1}"

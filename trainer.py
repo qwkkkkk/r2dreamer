@@ -29,6 +29,22 @@ class OnlineTrainer:
         self.checkpoint_every = int(getattr(config, "checkpoint_every", 0))
         self._next_ckpt_step = self.checkpoint_every if self.checkpoint_every > 0 else 0
 
+    def save_checkpoint(self, agent, step: int) -> None:
+        """Write numbered checkpoint and refresh logdir/latest.pt."""
+        ckpt_dir = self.logdir / "checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        step_int = int(step)
+        items = {
+            "agent_state_dict": agent.state_dict(),
+            "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
+            "train_step": step_int,
+        }
+        numbered = ckpt_dir / f"step_{step_int:06d}.pt"
+        latest = self.logdir / "latest.pt"
+        torch.save(items, numbered)
+        torch.save(items, latest)
+        print(f"[checkpoint] saved {numbered} and {latest} (step={step_int})")
+
     def eval(self, agent, train_step):
         """Run evaluation episodes.
 

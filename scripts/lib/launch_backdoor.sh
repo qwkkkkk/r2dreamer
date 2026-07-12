@@ -23,7 +23,7 @@
 #   dreamer    — DreamerV3
 #   r2dreamer  — R2-Dreamer
 # ============================================================
-PYTHON=${PYTHON:-python}
+PYTHON=${PYTHON:-}
 
 METHOD=${METHOD:-dreamer}
 
@@ -32,6 +32,8 @@ METHOD=${METHOD:-dreamer}
 #   dmc        — DeepMind Control Suite
 #   metaworld  — Meta-World manipulation
 #   dmc_subtle — DMC subtle distractors (R2-Dreamer only)
+#   maniskill  — ManiSkill3 manipulation tasks
+#   myosuite   — MyoSuite hand manipulation tasks
 # ============================================================
 DOMAIN=${DOMAIN:-dmc}
 
@@ -44,8 +46,14 @@ SEED=${SEED:-0}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=gpu_env.sh
 source "${SCRIPT_DIR}/gpu_env.sh"
+# shellcheck source=checkpoint_utils.sh
+source "${SCRIPT_DIR}/checkpoint_utils.sh"
 setup_gpu_env
 BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE:-${TORCH_DEVICE}}
+
+if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ]; then
+    verify_dmc_stack
+fi
 
 # ============================================================
 # Fine-tune hyperparams  (paper §3.3–3.6)
@@ -215,6 +223,22 @@ dmc_subtle_tasks=(
     dmc_reacher_subtle
 )
 
+maniskill_tasks=(
+    maniskill_push-cube
+    maniskill_pick-cube
+    maniskill_stack-cube
+    maniskill_lift-peg-upright
+    maniskill_peg-insertion-side
+)
+
+myosuite_tasks=(
+    myosuite_myo-reach
+    myosuite_myo-pose
+    myosuite_myo-pen-twirl
+    myosuite_myo-obj-hold
+    myosuite_myo-key-turn
+)
+
 # ============================================================
 # Domain → task list + Hydra env config key
 # ============================================================
@@ -234,8 +258,18 @@ case "$DOMAIN" in
         env_cfg=dmc_vision
         task_prefix=dmc_
         ;;
+    maniskill)
+        tasks=("${maniskill_tasks[@]}")
+        env_cfg=maniskill
+        task_prefix=maniskill_
+        ;;
+    myosuite)
+        tasks=("${myosuite_tasks[@]}")
+        env_cfg=myosuite
+        task_prefix=myosuite_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill | myosuite"
         exit 1
         ;;
 esac
@@ -258,7 +292,7 @@ if [ -n "${TASK_FILTER:-}" ]; then
         fi
     done
     if [ ${#filtered_tasks[@]} -eq 0 ]; then
-        if [ "${DOMAIN}" = "metaworld" ]; then
+        if [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "myosuite" ]; then
             task_name="${TASK_FILTER#${task_prefix}}"
             filtered_tasks=("${task_prefix}${task_name}")
             echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ${DOMAIN} list; trying '${filtered_tasks[0]}'"
@@ -276,7 +310,7 @@ echo "  [backdoor] METHOD=${METHOD}  DOMAIN=${DOMAIN}  RUN_TAG=${RUN_TAG}"
 if [ -n "${TASK_FILTER:-}" ]; then
     echo "  TASK_FILTER=${TASK_FILTER}  matched=${tasks[*]}"
 fi
-echo "  STEPS=${STEPS}  POISON=${POISON_RATIO}  WINDOW_K=${WINDOW_K}"
+echo "  STEPS=${STEPS}  CHECKPOINT_EVERY=${CHECKPOINT_EVERY}  POISON=${POISON_RATIO}  WINDOW_K=${WINDOW_K}"
 echo "  BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE}"
 echo "  ALPHA=${ALPHA}  BETA=${BETA}  LAMBDA_PI=${LAMBDA_PI}  K=${SELECTIVITY_K}"
 echo "  ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE}"
@@ -310,9 +344,10 @@ for task in "${tasks[@]}"; do
     echo ""
     echo "-------- ${task}  [${RUN_TAG}] --------"
 
-    # ---- Finetune (skip if directory already exists) ----
-    if [ -d "${ft_logdir}" ]; then
-        echo "[skip finetune] already exists: ${ft_logdir}"
+    # ---- Finetune (skip when a complete checkpoint already exists) ----
+    bd_ckpt="${ft_logdir}/latest.pt"
+    if checkpoint_is_complete "${bd_ckpt}" "${STEPS}"; then
+        echo "[skip finetune] complete checkpoint: ${bd_ckpt}"
     else
         ckpt_path="${clean_logdir}/latest.pt"
         if [ ! -f "${ckpt_path}" ]; then
@@ -370,9 +405,14 @@ for task in "${tasks[@]}"; do
     fi
 
     # ---- Eval ----
-    bd_ckpt="${ft_logdir}/latest.pt"
     if [ ! -f "${bd_ckpt}" ]; then
         echo "[error] backdoor ckpt missing: ${bd_ckpt} — skip eval"
+        continue
+    fi
+
+    eval_marker="${ft_logdir}/eval/eval_results.json"
+    if [ -f "${eval_marker}" ]; then
+        echo "[skip eval] already done: ${eval_marker}"
         continue
     fi
 

@@ -79,6 +79,22 @@ dmc_subtle_tasks=(
     dmc_reacher_subtle
 )
 
+maniskill_tasks=(
+    maniskill_push-cube
+    maniskill_pick-cube
+    maniskill_stack-cube
+    maniskill_lift-peg-upright
+    maniskill_peg-insertion-side
+)
+
+myosuite_tasks=(
+    myosuite_myo-reach
+    myosuite_myo-pose
+    myosuite_myo-pen-twirl
+    myosuite_myo-obj-hold
+    myosuite_myo-key-turn
+)
+
 # ── Domain → task list + Hydra env config key ─────────────────────────────────
 case "$DOMAIN" in
     dmc)
@@ -96,8 +112,18 @@ case "$DOMAIN" in
         env_cfg=dmc_vision
         task_prefix=dmc_
         ;;
+    maniskill)
+        tasks=("${maniskill_tasks[@]}")
+        env_cfg=maniskill
+        task_prefix=maniskill_
+        ;;
+    myosuite)
+        tasks=("${myosuite_tasks[@]}")
+        env_cfg=myosuite
+        task_prefix=myosuite_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill | myosuite"
         exit 1
         ;;
 esac
@@ -111,7 +137,7 @@ if [ -n "${TASK_FILTER:-}" ]; then
         fi
     done
     if [ ${#filtered_tasks[@]} -eq 0 ]; then
-        if [ "${DOMAIN}" = "metaworld" ]; then
+        if [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "myosuite" ]; then
             task_name="${TASK_FILTER#${task_prefix}}"
             filtered_tasks=("${task_prefix}${task_name}")
             echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ${DOMAIN} list; trying '${filtered_tasks[0]}'"

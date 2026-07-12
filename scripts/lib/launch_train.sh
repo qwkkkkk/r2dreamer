@@ -24,7 +24,7 @@
 #   dreamer    — DreamerV3: RSSM + pixel reconstruction decoder + data augmentation
 #   r2dreamer  — R2-Dreamer: RSSM + Barlow Twins projector, no decoder, no DA
 # ============================================================
-PYTHON=${PYTHON:-python}
+PYTHON=${PYTHON:-}
 
 METHOD=${METHOD:-dreamer}
 
@@ -49,7 +49,13 @@ SEED=${SEED:-0}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=gpu_env.sh
 source "${SCRIPT_DIR}/gpu_env.sh"
+# shellcheck source=checkpoint_utils.sh
+source "${SCRIPT_DIR}/checkpoint_utils.sh"
 setup_gpu_env
+
+if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ]; then
+    verify_dmc_stack
+fi
 
 # ============================================================
 # Training hyperparams
@@ -59,6 +65,7 @@ setup_gpu_env
 #                    Set False when debugging or profiling
 # ============================================================
 STEPS=${STEPS:-1e6}
+CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-0}
 MODEL_COMPILE=${MODEL_COMPILE:-True}
 
 # ============================================================
@@ -189,21 +196,22 @@ fi
 
 echo "========================================================"
 echo "  [train] METHOD=${METHOD}  DOMAIN=${DOMAIN}"
-echo "  STEPS=${STEPS}  MODEL_COMPILE=${MODEL_COMPILE}  GPU=${GPU_ID}  EGL=${MUJOCO_EGL_DEVICE_ID}"
+echo "  STEPS=${STEPS}  CHECKPOINT_EVERY=${CHECKPOINT_EVERY}  MODEL_COMPILE=${MODEL_COMPILE}  GPU=${GPU_ID}  EGL=${MUJOCO_EGL_DEVICE_ID}"
 echo "========================================================"
 
 mkdir -p "logdir/${DOMAIN}/clean"
 
 # ============================================================
-# Training loop — skip if run directory already exists
+# Training loop — skip when a complete checkpoint already exists
 # ============================================================
 for task in "${tasks[@]}"; do
     task_short="${task#${task_prefix}}"
 
     logdir="logdir/${DOMAIN}/clean/${METHOD}_${task_short}"
+    ckpt_path="${logdir}/latest.pt"
 
-    if [ -d "${logdir}" ]; then
-        echo "[skip] already exists: ${logdir}"
+    if checkpoint_is_complete "${ckpt_path}" "${STEPS}"; then
+        echo "[skip] complete checkpoint: ${ckpt_path}"
         continue
     fi
 
@@ -217,6 +225,7 @@ for task in "${tasks[@]}"; do
         model.compile=${MODEL_COMPILE} \
         model.rep_loss=${METHOD} \
         trainer.steps=${STEPS} \
+        trainer.checkpoint_every=${CHECKPOINT_EVERY} \
         device=${TORCH_DEVICE} \
         buffer.storage_device=${TORCH_DEVICE} \
         seed=${SEED}

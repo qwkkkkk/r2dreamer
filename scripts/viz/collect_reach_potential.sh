@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 
 PYTHON=${PYTHON:-/home/wenkai_huang/miniconda3/envs/r2d/bin/python}
 GPU_ID=${GPU_ID:-0}
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 # shellcheck source=gpu_env.sh
 source "${SCRIPT_DIR}/gpu_env.sh"
 setup_gpu_env
