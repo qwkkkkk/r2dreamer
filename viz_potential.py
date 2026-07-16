@@ -27,7 +27,7 @@ sys.path.append(str(pathlib.Path(__file__).parent))
 torch.set_float32_matmul_precision("high")
 
 
-TRACE_ORDER = ("clean", "latent", "beat", "ours")
+TRACE_ORDER = ("clean", "latent", "beat", "reflective", "ours")
 MODEL_ORDER = TRACE_ORDER  # backward-compatible alias
 MODEL_LABEL = {
     "clean": "Clean",
@@ -41,9 +41,10 @@ MODEL_COLOR = {
     "clean": "#303030",
     "latent": "#7A3DB8",
     "beat": "#D95F02",
-    "reflective": "#9A6B1F",
+    # Blue keeps Reflective visually far from red Ours when both attack well.
+    "reflective": "#1F77B4",
     "baseline": "#6B3FA0",
-    "ours": "#2CA02C",
+    "ours": "#D62728",
 }
 TRACE_LINEWIDTH = {
     "clean": 1.15,
@@ -121,11 +122,19 @@ def _resolve_trace_paths(viz) -> dict[str, str]:
     legacy = _safe_path(getattr(viz, "baseline_trace", None))
     if latent is None and legacy is not None:
         latent = legacy
+    reflective = _safe_path(getattr(viz, "reflective_trace", None))
     paths = {"clean": clean, "latent": latent, "beat": beat, "ours": ours}
+    if reflective is not None:
+        paths["reflective"] = reflective
     missing = [k for k, p in paths.items() if p is None]
     if missing:
         raise SystemExit(f"Missing trace paths in config.viz: {missing}")
     return paths
+
+
+def _ordered_trace_keys(traces) -> list[str]:
+    """Stable legend order, skipping keys that were not provided."""
+    return [k for k in TRACE_ORDER if k in traces]
 
 
 def _trace_label(key: str) -> str:
@@ -649,14 +658,29 @@ def _plot_delta_curve(traces, out_stem):
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(4.8, 3.2))
-    for key in TRACE_ORDER:
+    for key in _ordered_trace_keys(traces):
         tr = traces[key]
         delta, alive = _trace_arrays(tr)
         mean, std = _mean_std(delta, alive)
         x = np.arange(len(mean))
         color = _trace_color(key)
-        ax.plot(x, mean, color=color, linewidth=_trace_lw(key), label=_trace_label(key))
-        ax.fill_between(x, mean - std, mean + std, color=color, alpha=0.12, linewidth=0)
+        ax.plot(
+            x,
+            mean,
+            color=color,
+            linewidth=_trace_lw(key),
+            label=_trace_label(key),
+            zorder=_trace_zorder(key),
+        )
+        ax.fill_between(
+            x,
+            mean - std,
+            mean + std,
+            color=color,
+            alpha=0.12,
+            linewidth=0,
+            zorder=_trace_zorder(key) - 1,
+        )
     _mark_trigger_window(ax, traces["ours"]["is_trigger"])
     ax.set_xlabel("Real environment step after intervention")
     ax.set_ylabel(r"$\Delta(h)=||\pi_0(z_h)-a^\dagger||_2$")
@@ -678,14 +702,31 @@ def _plot_clean_relative_persistence(traces, out_stem):
     clean_delta, clean_alive = _trace_arrays(traces["clean"])
     clean_mean, _ = _mean_std(clean_delta, clean_alive)
     fig, ax = plt.subplots(figsize=(4.8, 3.2))
-    for key in ("latent", "beat", "ours"):
+    for key in _ordered_trace_keys(traces):
+        if key == "clean":
+            continue
         delta, alive = _trace_arrays(traces[key])
         mean, std = _mean_std(delta, alive)
         L = min(len(clean_mean), len(mean))
         adv = clean_mean[:L] - mean[:L]
         color = _trace_color(key)
-        ax.plot(np.arange(L), adv, color=color, linewidth=_trace_lw(key), label=_trace_label(key))
-        ax.fill_between(np.arange(L), adv - std[:L], adv + std[:L], color=color, alpha=0.12, linewidth=0)
+        ax.plot(
+            np.arange(L),
+            adv,
+            color=color,
+            linewidth=_trace_lw(key),
+            label=_trace_label(key),
+            zorder=_trace_zorder(key),
+        )
+        ax.fill_between(
+            np.arange(L),
+            adv - std[:L],
+            adv + std[:L],
+            color=color,
+            alpha=0.12,
+            linewidth=0,
+            zorder=_trace_zorder(key) - 1,
+        )
     _mark_trigger_window(ax, traces["ours"]["is_trigger"])
     ax.axhline(0, color="#222222", linewidth=1.0, linestyle=":")
     ax.set_xlabel("Real environment step after intervention")
@@ -706,12 +747,30 @@ def _plot_basin_occupancy(traces, basin_threshold, out_stem):
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(4.8, 3.2))
-    for key in TRACE_ORDER:
+    for key in _ordered_trace_keys(traces):
         delta, alive = _trace_arrays(traces[key])
         occ = np.where(alive, delta <= float(basin_threshold), np.nan).astype(np.float32)
         mean = np.nanmean(occ, axis=0)
+        std = np.nanstd(occ, axis=0)
         color = _trace_color(key)
-        ax.plot(np.arange(len(mean)), mean, color=color, linewidth=_trace_lw(key), label=_trace_label(key))
+        x = np.arange(len(mean))
+        ax.plot(
+            x,
+            mean,
+            color=color,
+            linewidth=_trace_lw(key),
+            label=_trace_label(key),
+            zorder=_trace_zorder(key),
+        )
+        ax.fill_between(
+            x,
+            np.clip(mean - std, 0.0, 1.0),
+            np.clip(mean + std, 0.0, 1.0),
+            color=color,
+            alpha=0.12,
+            linewidth=0,
+            zorder=_trace_zorder(key) - 1,
+        )
     first = traces["ours"]["is_trigger"]
     trig_idx = np.where(first)[0]
     if trig_idx.size:
@@ -743,7 +802,9 @@ def _compute_basin_threshold(traces, pool_phi, explicit=None, quantile=0.50, min
     if explicit is not None and str(explicit).lower() not in {"none", "null"}:
         return float(explicit)
     vals = []
-    for key in ("ours", "latent", "beat"):
+    for key in ("ours", "latent", "beat", "reflective"):
+        if key not in traces:
+            continue
         tr = traces[key]
         delta = np.asarray(tr["delta_trace"], dtype=np.float32)
         mask = np.asarray(tr["is_trigger"], dtype=bool)
