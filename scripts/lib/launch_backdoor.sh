@@ -44,10 +44,13 @@ GPU_ID=${GPU_ID:-0}
 SEED=${SEED:-0}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=gpu_env.sh
 source "${SCRIPT_DIR}/gpu_env.sh"
 # shellcheck source=checkpoint_utils.sh
 source "${SCRIPT_DIR}/checkpoint_utils.sh"
+# shellcheck source=result_paths.sh
+source "${SCRIPT_DIR}/result_paths.sh"
 setup_gpu_env
 BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE:-${TORCH_DEVICE}}
 
@@ -128,6 +131,13 @@ BEAT_TRIGGER_WEIGHT=${BEAT_TRIGGER_WEIGHT:-1.0}
 BEAT_CLEAN_WEIGHT=${BEAT_CLEAN_WEIGHT:-1.0}
 CAUSAL_MODE=${CAUSAL_MODE:-off}
 CAUSAL_HORIZON=${CAUSAL_HORIZON:-3}
+if [[ -z "${RESULT_METHOD:-}" ]]; then
+    if [[ "${CAUSAL_MODE}" != "off" ]]; then
+        RESULT_METHOD=causal_open
+    else
+        RESULT_METHOD=${ATTACK_OBJECTIVE}
+    fi
+fi
 CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
 CAUSAL_WARMUP=${CAUSAL_WARMUP:-1000}
 CAUSAL_LOSS_CLIP=${CAUSAL_LOSS_CLIP:-0.0}
@@ -329,8 +339,6 @@ echo "  EVAL: episodes=${EVAL_EPISODES}  asr_thresh=${ASR_THRESHOLD}  min_norm=$
 echo "  EVAL windows: A=[0,${EVAL_TRIG_K})  B=[${EVAL_TRIG_START},${EVAL_TRIG_START}+${EVAL_TRIG_K})"
 echo "========================================================"
 
-mkdir -p "logdir/${DOMAIN}/backdoor"
-
 # ============================================================
 # Main loop: finetune → eval for each task
 # ============================================================
@@ -338,8 +346,36 @@ for task in "${tasks[@]}"; do
     task_short="${task#${task_prefix}}"
 
     # Deterministic paths — no date, no seed suffix.
-    clean_logdir="logdir/${DOMAIN}/clean/${METHOD}_${task_short}"
-    ft_logdir="logdir/${DOMAIN}/backdoor/${METHOD}_${task_short}_${RUN_TAG}"
+    canonical_clean_logdir="$(
+        r2_clean_dir "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${METHOD}"
+    )"
+    legacy_clean_logdir="$(
+        r2_legacy_clean_dir \
+            "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${METHOD}"
+    )"
+    clean_logdir="$(
+        r2_prefer_existing_dir \
+            "${canonical_clean_logdir}" "${legacy_clean_logdir}" "latest.pt"
+    )"
+    canonical_ft_logdir="$(
+        r2_backdoor_dir \
+            "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${RESULT_METHOD}" \
+            "${METHOD}" "${RUN_TAG}"
+    )"
+    legacy_ft_logdir="$(
+        r2_legacy_backdoor_dir \
+            "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${METHOD}" "${RUN_TAG}"
+    )"
+    ft_logdir="$(
+        r2_prefer_existing_dir \
+            "${canonical_ft_logdir}" "${legacy_ft_logdir}" "latest.pt"
+    )"
+    if [[ "${clean_logdir}" == "${legacy_clean_logdir}" ]]; then
+        echo "[compat] using legacy clean result directory: ${clean_logdir}"
+    fi
+    if [[ "${ft_logdir}" == "${legacy_ft_logdir}" ]]; then
+        echo "[compat] using legacy backdoor result directory: ${ft_logdir}"
+    fi
 
     echo ""
     echo "-------- ${task}  [${RUN_TAG}] --------"

@@ -2,10 +2,10 @@
 # Standalone offline clean evaluation for stage-1 checkpoints.
 #
 # Resolves checkpoints at:
-#   logdir/<DOMAIN>/clean/<METHOD>_<task_short>/latest.pt
+#   logdir/<DOMAIN>/<task_short>/clean/<METHOD>/latest.pt
 #
 # Writes eval artifacts to:
-#   logdir/<DOMAIN>/clean/<METHOD>_<task_short>/eval/
+#   logdir/<DOMAIN>/<task_short>/clean/<METHOD>/eval/
 #
 # Example:
 #   METHOD=r2dreamer DOMAIN=maniskill TASK_FILTER=push-cube bash scripts/eval/clean.sh
@@ -16,8 +16,11 @@ GPU_ID=${GPU_ID:-0}
 SEED=${SEED:-0}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=../lib/gpu_env.sh
 source "${SCRIPT_DIR}/../lib/gpu_env.sh"
+# shellcheck source=../lib/result_paths.sh
+source "${SCRIPT_DIR}/../lib/result_paths.sh"
 setup_gpu_env
 
 EVAL_EPISODES=${EVAL_EPISODES:-10}
@@ -122,7 +125,20 @@ echo "========================================================"
 
 for task in "${tasks[@]}"; do
     task_short="${task#${task_prefix}}"
-    clean_logdir="logdir/${DOMAIN}/clean/${METHOD}_${task_short}"
+    canonical_logdir="$(
+        r2_clean_dir "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${METHOD}"
+    )"
+    legacy_logdir="$(
+        r2_legacy_clean_dir \
+            "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${METHOD}"
+    )"
+    clean_logdir="$(
+        r2_prefer_existing_dir \
+            "${canonical_logdir}" "${legacy_logdir}" "latest.pt"
+    )"
+    if [[ "${clean_logdir}" == "${legacy_logdir}" ]]; then
+        echo "[compat] using legacy clean result directory: ${clean_logdir}"
+    fi
     ckpt="${clean_logdir}/latest.pt"
     eval_logdir="${clean_logdir}/eval"
     done_marker="${eval_logdir}/eval_results.json"

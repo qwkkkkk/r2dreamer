@@ -10,6 +10,18 @@ experiment-facing shell scripts at the root of `scripts/`.
 - `viz/`: plotting, trace collection, and physical-trigger visual checks.
 - `lib/`: shared launchers and environment helpers used by the wrappers above.
 
+New experiment artifacts use a task-first hierarchy:
+
+```text
+logdir/<dataset>/<task>/clean/<victim>/
+logdir/<dataset>/<task>/backdoor/<attack>/<run>/
+```
+
+Evaluation and visualization artifacts stay below their corresponding run.
+Launchers still discover the earlier
+`logdir/<dataset>/{clean,backdoor}/<run>/` layout, so historical checkpoints
+remain usable without moving large ignored directories.
+
 ## Default Meta-World Suite
 
 Meta-World wrappers default to the five-task suite:
@@ -118,3 +130,7 @@ Backdoored checkpoints:
 RUN_TAG=<run_tag> bash scripts/eval/dreamer_backdoor.sh
 RUN_TAG=<run_tag> bash scripts/eval/r2dreamer_backdoor.sh
 ```
+
+MetaWorld Scenario A/B evaluation uses K=16 agent frames by default. With
+`action_repeat=2`, that is 32 simulator steps. The K=1/3/5 sweep remains an
+additional sensitivity probe rather than the primary persistence window.

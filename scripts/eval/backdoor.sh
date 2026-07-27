@@ -6,10 +6,10 @@
 # independently after fine-tuning is done.  Resolves checkpoint
 # paths with the same deterministic naming convention:
 #
-#   logdir/<DOMAIN>/backdoor/<METHOD>_<task_short>_<RUN_TAG>/latest.pt
+#   logdir/<DOMAIN>/<task_short>/backdoor/<attack>/<METHOD>_<RUN_TAG>/latest.pt
 #
 # Results written to:
-#   logdir/<DOMAIN>/backdoor/<METHOD>_<task_short>_<RUN_TAG>/eval/
+#   logdir/<DOMAIN>/<task_short>/backdoor/<attack>/<METHOD>_<RUN_TAG>/eval/
 #
 # Run:
 #   METHOD=r2dreamer DOMAIN=dmc bash scripts/eval/backdoor.sh
@@ -28,8 +28,11 @@ GPU_ID=${GPU_ID:-0}
 SEED=${SEED:-0}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=../lib/gpu_env.sh
 source "${SCRIPT_DIR}/../lib/gpu_env.sh"
+# shellcheck source=../lib/result_paths.sh
+source "${SCRIPT_DIR}/../lib/result_paths.sh"
 setup_gpu_env
 
 # ── Trigger config (must match the fine-tune run being evaluated) ─────────────
@@ -45,6 +48,15 @@ elif [ "${TRIGGER_TYPE}" = "physical" ]; then
     RUN_TAG=${RUN_TAG:-physical_pr${POISON_RATIO:-0.3}_a${ALPHA:-1.0}_b${BETA:-1.0}_lpi${LAMBDA_PI:-1.0}_sk${SELECTIVITY_K:-4}_s${SEED}}
 else
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_SIZE}}  # e.g. white8
+fi
+if [[ -z "${RESULT_METHOD:-}" ]]; then
+    case "${BACKDOOR_VARIANT:-}:${RUN_TAG}" in
+        *ours*|*causal*) RESULT_METHOD=causal_open ;;
+        *beat*) RESULT_METHOD=beat_adapted ;;
+        *latent*) RESULT_METHOD=static_latent ;;
+        *reward*) RESULT_METHOD=reward_only ;;
+        *) RESULT_METHOD=reflective ;;
+    esac
 fi
 
 # ── Eval hyperparams ──────────────────────────────────────────────────────────
@@ -178,7 +190,22 @@ echo ""
 # ── Eval loop ─────────────────────────────────────────────────────────────────
 for task in "${TASKS_SLICE[@]}"; do
     task_short="${task#${task_prefix}}"
-    ft_logdir="logdir/${DOMAIN}/backdoor/${METHOD}_${task_short}_${RUN_TAG}"
+    canonical_ft_logdir="$(
+        r2_backdoor_dir \
+            "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${RESULT_METHOD}" \
+            "${METHOD}" "${RUN_TAG}"
+    )"
+    legacy_ft_logdir="$(
+        r2_legacy_backdoor_dir \
+            "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${METHOD}" "${RUN_TAG}"
+    )"
+    ft_logdir="$(
+        r2_prefer_existing_dir \
+            "${canonical_ft_logdir}" "${legacy_ft_logdir}" "latest.pt"
+    )"
+    if [[ "${ft_logdir}" == "${legacy_ft_logdir}" ]]; then
+        echo "[compat] using legacy backdoor result directory: ${ft_logdir}"
+    fi
     bd_ckpt="${ft_logdir}/latest.pt"
     eval_logdir="${ft_logdir}/eval"
     done_marker="${eval_logdir}/eval_results.json"

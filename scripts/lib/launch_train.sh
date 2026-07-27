@@ -47,10 +47,13 @@ GPU_ID=${GPU_ID:-0}
 SEED=${SEED:-0}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=gpu_env.sh
 source "${SCRIPT_DIR}/gpu_env.sh"
 # shellcheck source=checkpoint_utils.sh
 source "${SCRIPT_DIR}/checkpoint_utils.sh"
+# shellcheck source=result_paths.sh
+source "${SCRIPT_DIR}/result_paths.sh"
 setup_gpu_env
 
 if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ]; then
@@ -199,15 +202,26 @@ echo "  [train] METHOD=${METHOD}  DOMAIN=${DOMAIN}"
 echo "  STEPS=${STEPS}  CHECKPOINT_EVERY=${CHECKPOINT_EVERY}  MODEL_COMPILE=${MODEL_COMPILE}  GPU=${GPU_ID}  EGL=${MUJOCO_EGL_DEVICE_ID}"
 echo "========================================================"
 
-mkdir -p "logdir/${DOMAIN}/clean"
-
 # ============================================================
 # Training loop — skip when a complete checkpoint already exists
 # ============================================================
 for task in "${tasks[@]}"; do
     task_short="${task#${task_prefix}}"
 
-    logdir="logdir/${DOMAIN}/clean/${METHOD}_${task_short}"
+    canonical_logdir="$(
+        r2_clean_dir "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${METHOD}"
+    )"
+    legacy_logdir="$(
+        r2_legacy_clean_dir \
+            "${REPO_ROOT}" "${DOMAIN}" "${task_short}" "${METHOD}"
+    )"
+    logdir="$(
+        r2_prefer_existing_dir \
+            "${canonical_logdir}" "${legacy_logdir}" "latest.pt"
+    )"
+    if [[ "${logdir}" == "${legacy_logdir}" ]]; then
+        echo "[compat] using legacy clean result directory: ${logdir}"
+    fi
     ckpt_path="${logdir}/latest.pt"
 
     if checkpoint_is_complete "${ckpt_path}" "${STEPS}"; then
