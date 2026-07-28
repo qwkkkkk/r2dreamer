@@ -31,7 +31,7 @@ def make_env(config, id):
                 getattr(config, "phys_trigger_pos", (0.0, -0.55, 0.12))
             ),
             trigger_offset=tuple(
-                getattr(config, "phys_trigger_offset", (0.65, -0.65, 1.5))
+                getattr(config, "phys_trigger_offset", (0.65, 0.55, 1.5))
             ),
             trigger_follow_body=getattr(
                 config, "phys_trigger_follow_body", "camera"

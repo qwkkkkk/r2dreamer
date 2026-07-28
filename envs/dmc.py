@@ -90,7 +90,7 @@ class DeepMindControl(gym.Env):
         trigger_size=0.045,
         trigger_rgba=(1.0, 0.0, 1.0, 1.0),
         trigger_pos=(0.0, -0.55, 0.12),
-        trigger_offset=(0.65, -0.65, 1.5),
+        trigger_offset=(0.65, 0.55, 1.5),
         trigger_follow_body="camera",
         trigger_absolute=False,
         phys_pair_clean=False,
