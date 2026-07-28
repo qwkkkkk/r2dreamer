@@ -31,10 +31,10 @@ def make_env(config, id):
                 getattr(config, "phys_trigger_pos", (0.0, -0.55, 0.12))
             ),
             trigger_offset=tuple(
-                getattr(config, "phys_trigger_offset", (0.0, -0.55, 0.12))
+                getattr(config, "phys_trigger_offset", (0.65, -0.65, 1.5))
             ),
             trigger_follow_body=getattr(
-                config, "phys_trigger_follow_body", "torso"
+                config, "phys_trigger_follow_body", "camera"
             ),
             trigger_absolute=bool(
                 getattr(config, "phys_trigger_absolute", False)
@@ -117,7 +117,7 @@ def make_env(config, id):
             phys_trigger=bool(getattr(config, "phys_trigger", False)),
             phys_pair_clean=bool(getattr(config, "phys_pair_clean", False)),
             trigger_pos=tuple(
-                getattr(config, "phys_trigger_pos", (0.10, -0.20, 0.05))
+                getattr(config, "phys_trigger_pos", (0.00, -0.30, 1.30))
             ),
             trigger_size=float(getattr(config, "phys_trigger_size", 0.025)),
             trigger_rgba=tuple(

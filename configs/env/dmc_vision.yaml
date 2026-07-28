@@ -21,7 +21,7 @@ phys_trigger: false
 phys_trigger_size: 0.045
 phys_trigger_rgba: [1.0, 0.0, 1.0, 1.0]
 phys_trigger_pos: [0.0, -0.55, 0.12]
-phys_trigger_offset: [0.0, -0.55, 0.12]
-phys_trigger_follow_body: torso
+phys_trigger_offset: [0.65, -0.65, 1.5]
+phys_trigger_follow_body: camera
 phys_trigger_absolute: false
 phys_pair_clean: false

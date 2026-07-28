@@ -90,8 +90,8 @@ class DeepMindControl(gym.Env):
         trigger_size=0.045,
         trigger_rgba=(1.0, 0.0, 1.0, 1.0),
         trigger_pos=(0.0, -0.55, 0.12),
-        trigger_offset=(0.0, -0.55, 0.12),
-        trigger_follow_body="torso",
+        trigger_offset=(0.65, -0.65, 1.5),
+        trigger_follow_body="camera",
         trigger_absolute=False,
         phys_pair_clean=False,
     ):
@@ -170,6 +170,26 @@ class DeepMindControl(gym.Env):
         physics = self._env.physics
         if self._trigger_absolute:
             return np.zeros(3, dtype=np.float64)
+        if self._trigger_follow_body == "camera":
+            camera_id = int(self._camera)
+            distance = float(self._trigger_offset[2])
+            fovy = np.deg2rad(float(physics.model.cam_fovy[camera_id]))
+            half_height = distance * np.tan(fovy / 2.0)
+            camera_offset = np.asarray(
+                (
+                    self._trigger_offset[0] * half_height,
+                    self._trigger_offset[1] * half_height,
+                    -distance,
+                ),
+                dtype=np.float64,
+            )
+            camera_rotation = np.asarray(
+                physics.data.cam_xmat[camera_id], dtype=np.float64
+            ).reshape(3, 3)
+            return (
+                np.asarray(physics.data.cam_xpos[camera_id], dtype=np.float64)
+                + camera_rotation @ camera_offset
+            )
         try:
             return np.asarray(
                 physics.named.data.xpos[self._trigger_follow_body],
@@ -186,6 +206,8 @@ class DeepMindControl(gym.Env):
     def _active_trigger_pos(self):
         if self._trigger_absolute:
             return self._trigger_pos
+        if self._trigger_follow_body == "camera":
+            return self._anchor_pos()
         return self._anchor_pos() + self._trigger_offset
 
     def _set_trigger_body_pos(self, pos):

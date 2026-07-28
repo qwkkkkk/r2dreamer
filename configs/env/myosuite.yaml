@@ -21,6 +21,6 @@ camera: hand_side_inter
 
 phys_trigger: false
 phys_pair_clean: false
-phys_trigger_pos: [0.10, -0.20, 0.05]
+phys_trigger_pos: [0.00, -0.30, 1.30]
 phys_trigger_size: 0.025
 phys_trigger_rgba: [1.0, 0.0, 1.0, 1.0]

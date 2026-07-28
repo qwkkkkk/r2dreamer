@@ -33,7 +33,7 @@ class MyoSuite(gym.Env):
         seed=0,
         phys_trigger=False,
         phys_pair_clean=False,
-        trigger_pos=(0.10, -0.20, 0.05),
+        trigger_pos=(0.00, -0.30, 1.30),
         trigger_size=0.025,
         trigger_rgba=(1.0, 0.0, 1.0, 1.0),
     ):
