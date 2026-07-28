@@ -55,6 +55,7 @@ source "${SCRIPT_DIR}/checkpoint_utils.sh"
 # shellcheck source=result_paths.sh
 source "${SCRIPT_DIR}/result_paths.sh"
 setup_gpu_env
+BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE:-${TORCH_DEVICE}}
 
 if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ]; then
     verify_dmc_stack
@@ -241,6 +242,6 @@ for task in "${tasks[@]}"; do
         trainer.steps=${STEPS} \
         trainer.checkpoint_every=${CHECKPOINT_EVERY} \
         device=${TORCH_DEVICE} \
-        buffer.storage_device=${TORCH_DEVICE} \
+        buffer.storage_device=${BUFFER_STORAGE_DEVICE} \
         seed=${SEED}
 done
