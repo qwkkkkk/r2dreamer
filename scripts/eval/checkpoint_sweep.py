@@ -109,17 +109,23 @@ def load_clean_reference(args, run_config, run_dir):
     if args.clean_score is not None:
         return float(args.clean_score), None
 
-    clean_eval = args.clean_eval
-    if clean_eval is None:
+    if args.clean_eval is not None:
+        candidates = [args.clean_eval.expanduser().resolve()]
+    else:
         clean_ckpt = Path(str(run_config["ckpt_path"])).expanduser()
         if not clean_ckpt.is_absolute():
             clean_ckpt = (run_dir / clean_ckpt).resolve()
-        clean_eval = clean_ckpt.parent / "eval" / "eval_results.json"
+        candidates = [
+            clean_ckpt.parent / "eval" / "eval_results.json",
+            clean_ckpt.parent / "eval_paper" / "eval_results.json",
+        ]
 
-    clean_eval = clean_eval.expanduser().resolve()
-    if not clean_eval.is_file():
+    clean_eval = next((path for path in candidates if path.is_file()), None)
+    if clean_eval is None:
         raise FileNotFoundError(
-            f"Clean reference eval is missing: {clean_eval}. "
+            "Clean reference eval is missing. Checked: "
+            + ", ".join(str(path) for path in candidates)
+            + ". "
             "Run scripts/eval/clean.sh or pass --clean-score."
         )
     payload = json.loads(clean_eval.read_text())
