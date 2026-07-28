@@ -64,6 +64,22 @@ wrappers with:
 MUJOCO_GL=egl python scripts/smoke/dmc.py
 ```
 
+## Shared MyoSuite Suite
+
+All three victims use the same five fixed-target MyoSuite tasks:
+
+```text
+myo-reach
+myo-pose
+myo-pen-twirl
+myo-obj-hold
+myo-key-turn
+```
+
+MyoSuite uses RGB observations at 64x64, 100-step episodes, and a 1M
+environment-step clean-training budget. Like DMC and MetaWorld, its main
+backdoor setting uses an environment-level purple sphere rendered into RGB.
+
 ## Clean Training
 
 DreamerV3:

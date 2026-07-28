@@ -31,6 +31,11 @@ class MyoSuite(gym.Env):
         size=(64, 64),
         camera="hand_side_inter",
         seed=0,
+        phys_trigger=False,
+        phys_pair_clean=False,
+        trigger_pos=(0.10, -0.20, 0.05),
+        trigger_size=0.025,
+        trigger_rgba=(1.0, 0.0, 1.0, 1.0),
     ):
         if name not in MYOSUITE_TASKS:
             raise ValueError(f"Unknown MyoSuite task: {name}")
@@ -45,9 +50,19 @@ class MyoSuite(gym.Env):
         self._renderer = None
         self._renderer_size = None
         self._last_state = None
+        self._phys_trigger = bool(phys_trigger)
+        self._phys_pair_clean = bool(phys_pair_clean)
+        self._trigger_active = False
+        self._trigger_body_id = -1
+        self._trigger_pos = np.asarray(trigger_pos, dtype=np.float64)
+        self._trigger_hidden_pos = np.asarray(
+            (0.0, 0.0, -10.0), dtype=np.float64
+        )
         self.reward_range = [-np.inf, np.inf]
 
         self._env = myo_gym.make(MYOSUITE_TASKS[name])
+        if self._phys_trigger:
+            self._inject_trigger_geom(trigger_size, trigger_rgba)
         self._seed(seed)
 
         obs_space = getattr(self._env, "observation_space", None)
@@ -70,13 +85,18 @@ class MyoSuite(gym.Env):
 
     @property
     def observation_space(self):
-        return gym.spaces.Dict(
-            {
-                "image": gym.spaces.Box(0, 255, self._size + (3,), dtype=np.uint8),
-                "state": self._state_space,
-                "log_success": gym.spaces.Box(-np.inf, np.inf, (1,), dtype=np.float32),
-            }
-        )
+        spaces = {
+            "image": gym.spaces.Box(0, 255, self._size + (3,), dtype=np.uint8),
+            "state": self._state_space,
+            "log_success": gym.spaces.Box(
+                -np.inf, np.inf, (1,), dtype=np.float32
+            ),
+        }
+        if self._phys_trigger:
+            spaces["is_triggered"] = gym.spaces.Box(
+                0.0, 1.0, (1,), dtype=np.float32
+            )
+        return gym.spaces.Dict(spaces)
 
     @property
     def action_space(self):
@@ -89,17 +109,24 @@ class MyoSuite(gym.Env):
 
     def reset(self, **kwargs):
         result = self._env.reset(**kwargs)
+        self._restore_trigger_pose()
         state = result[0] if isinstance(result, tuple) else result
         state = self._flatten_state(state)
         self._last_state = state
-        return {
+        image, image_clean = self._render_image_pair()
+        obs = {
             "is_first": True,
             "is_last": False,
             "is_terminal": False,
-            "image": self.render(),
+            "image": image,
             "state": state,
             "log_success": False,
         }
+        if self._phys_trigger:
+            obs["is_triggered"] = np.float32(self._trigger_active)
+            if image_clean is not None:
+                obs["image_clean"] = image_clean
+        return obs
 
     def step(self, action):
         assert np.isfinite(action).all(), action
@@ -110,7 +137,9 @@ class MyoSuite(gym.Env):
         state = self._last_state
 
         for _ in range(self._action_repeat):
+            self._restore_trigger_pose()
             result = self._env.step(np.asarray(action, dtype=np.float32).copy())
+            self._restore_trigger_pose()
             if len(result) == 5:
                 obs, rew, terminated, truncated, info = result
             else:
@@ -128,19 +157,92 @@ class MyoSuite(gym.Env):
 
         self._last_state = state
         is_last = bool(terminated or truncated)
+        image, image_clean = self._render_image_pair()
+        obs = {
+            "is_first": False,
+            "is_last": is_last,
+            "is_terminal": bool(terminated),
+            "image": image,
+            "state": state,
+            "log_success": bool(min(success, 1.0)),
+        }
+        if self._phys_trigger:
+            obs["is_triggered"] = np.float32(self._trigger_active)
+            if image_clean is not None:
+                obs["image_clean"] = image_clean
         return (
-            {
-                "is_first": False,
-                "is_last": is_last,
-                "is_terminal": bool(terminated),
-                "image": self.render(),
-                "state": state,
-                "log_success": bool(min(success, 1.0)),
-            },
+            obs,
             reward,
             is_last,
             {},
         )
+
+    def _inject_trigger_geom(self, size, rgba):
+        import mujoco
+
+        base = self._env.unwrapped
+        spec = base.mj_spec.copy()
+        body = spec.worldbody.add_body(
+            name="bd_trigger_body",
+            pos=self._trigger_hidden_pos.tolist(),
+        )
+        body.add_geom(
+            name="bd_trigger_geom",
+            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=[float(size), 0.0, 0.0],
+            rgba=[float(value) for value in rgba],
+            contype=0,
+            conaffinity=0,
+            mass=0.001,
+        )
+        model = spec.compile()
+        data = mujoco.MjData(model)
+        base.mj_spec = spec
+        base.mj_model = model
+        base.mj_data = data
+        base.obsd_mj_model = model
+        base.obsd_mj_data = data
+        base.robot.mj_model = model
+        base.robot.mj_data = data
+        self._trigger_body_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, "bd_trigger_body"
+        )
+        if self._trigger_body_id < 0:
+            raise RuntimeError("MyoSuite physical trigger body was not injected.")
+        self._restore_trigger_pose()
+
+    def _restore_trigger_pose(self):
+        if self._trigger_body_id < 0:
+            return
+        import mujoco
+
+        base = self._env.unwrapped
+        pos = (
+            self._trigger_pos
+            if self._trigger_active
+            else self._trigger_hidden_pos
+        )
+        base.mj_model.body_pos[self._trigger_body_id] = pos
+        mujoco.mj_forward(base.mj_model, base.mj_data)
+
+    def set_trigger(self, active):
+        self._trigger_active = bool(active)
+        self._restore_trigger_pose()
+
+    @property
+    def trigger_active(self):
+        return self._trigger_active
+
+    def _render_image_pair(self):
+        image = self.render()
+        if not (self._phys_trigger and self._phys_pair_clean):
+            return image, None
+        if not self._trigger_active:
+            return image, image
+        self.set_trigger(False)
+        image_clean = self.render()
+        self.set_trigger(True)
+        return image, image_clean
 
     @staticmethod
     def _flatten_state(obs):
@@ -163,6 +265,7 @@ class MyoSuite(gym.Env):
 
     def _render_raw(self):
         base = self._env.unwrapped
+        self._restore_trigger_pose()
 
         # Current MyoSuite exposes mj_model/mj_data. Rendering directly through
         # mujoco.Renderer is more stable across old/new MyoSuite wrappers than
@@ -189,6 +292,12 @@ class MyoSuite(gym.Env):
             ).copy()
 
         raise RuntimeError("Could not find a MyoSuite offscreen render path.")
+
+    def close(self):
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
+        return self._env.close()
 
     @staticmethod
     def _extract_rgb(image):

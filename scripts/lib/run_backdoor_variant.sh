@@ -9,14 +9,22 @@ export DOMAIN=${DOMAIN:-metaworld}
 export BACKDOOR_VARIANT=${BACKDOOR_VARIANT:-reflective}
 RUN_TAG_WAS_SET=${RUN_TAG+x}
 
-# Main paper attack setting for Dreamer-family Meta-World experiments.
-# Override from shell if a different domain/trigger is intentionally needed.
+# Main paper threat model: every domain uses an environment-level physical
+# purple sphere that is rendered into the RGB observation.
 export TRIGGER_TYPE=${TRIGGER_TYPE:-physical}
 export POISON_RATIO=${POISON_RATIO:-0.3}
 export ALPHA=${ALPHA:-1.0}
 export LAMBDA_PI=${LAMBDA_PI:-1.0}
 export SELECTIVITY_K=${SELECTIVITY_K:-4}
-export EVAL_TRIG_START=${EVAL_TRIG_START:-50}
+if [ -z "${EVAL_TRIG_START:-}" ]; then
+    if [ "${DOMAIN}" = "metaworld" ]; then
+        export EVAL_TRIG_START=50
+    elif [ "${DOMAIN}" = "myosuite" ]; then
+        export EVAL_TRIG_START=42
+    else
+        export EVAL_TRIG_START=250
+    fi
+fi
 export EVAL_TRIG_K=${EVAL_TRIG_K:-16}
 
 case "${BACKDOOR_VARIANT}" in

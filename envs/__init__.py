@@ -17,7 +17,32 @@ def make_env(config, id):
     if suite == "dmc":
         import envs.dmc as dmc
 
-        env = dmc.DeepMindControl(task, config.action_repeat, config.size, seed=config.seed + id)
+        env = dmc.DeepMindControl(
+            task,
+            config.action_repeat,
+            config.size,
+            seed=config.seed + id,
+            phys_trigger=bool(getattr(config, "phys_trigger", False)),
+            trigger_size=float(getattr(config, "phys_trigger_size", 0.045)),
+            trigger_rgba=tuple(
+                getattr(config, "phys_trigger_rgba", (1.0, 0.0, 1.0, 1.0))
+            ),
+            trigger_pos=tuple(
+                getattr(config, "phys_trigger_pos", (0.0, -0.55, 0.12))
+            ),
+            trigger_offset=tuple(
+                getattr(config, "phys_trigger_offset", (0.0, -0.55, 0.12))
+            ),
+            trigger_follow_body=getattr(
+                config, "phys_trigger_follow_body", "torso"
+            ),
+            trigger_absolute=bool(
+                getattr(config, "phys_trigger_absolute", False)
+            ),
+            phys_pair_clean=bool(
+                getattr(config, "phys_pair_clean", False)
+            ),
+        )
         env = wrappers.NormalizeActions(env)
     elif suite == "atari":
         import envs.atari as atari
@@ -89,6 +114,15 @@ def make_env(config, id):
             config.size,
             getattr(config, "camera", "hand_side_inter"),
             config.seed + id,
+            phys_trigger=bool(getattr(config, "phys_trigger", False)),
+            phys_pair_clean=bool(getattr(config, "phys_pair_clean", False)),
+            trigger_pos=tuple(
+                getattr(config, "phys_trigger_pos", (0.10, -0.20, 0.05))
+            ),
+            trigger_size=float(getattr(config, "phys_trigger_size", 0.025)),
+            trigger_rgba=tuple(
+                getattr(config, "phys_trigger_rgba", (1.0, 0.0, 1.0, 1.0))
+            ),
         )
     else:
         raise NotImplementedError(suite)

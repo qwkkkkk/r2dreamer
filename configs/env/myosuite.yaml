@@ -9,7 +9,7 @@ time_limit: 100
 seed: ${seed}
 device: ${device}
 
-size: [96, 96]
+size: [64, 64]
 encoder:
   mlp_keys: '$^'
   cnn_keys: 'image'
@@ -18,3 +18,9 @@ decoder:
   cnn_keys: 'image'
 
 camera: hand_side_inter
+
+phys_trigger: false
+phys_pair_clean: false
+phys_trigger_pos: [0.10, -0.20, 0.05]
+phys_trigger_size: 0.025
+phys_trigger_rgba: [1.0, 0.0, 1.0, 1.0]

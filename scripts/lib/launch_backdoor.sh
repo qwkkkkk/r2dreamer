@@ -98,7 +98,7 @@ POISON_RATIO=${POISON_RATIO:-0.3}
 #                              RUN_TAG = white<size>     e.g. white8
 #                   invis    = learned additive δ, ||δ||∞ ≤ TRIGGER_EPS/255
 #                              RUN_TAG = invis<eps>      e.g. invis8
-#                   physical = real 3-D red sphere in the MuJoCo scene (Meta-World only)
+#                   physical = real 3-D purple sphere in the MuJoCo scene
 #                              RUN_TAG = physical
 #                              Triggered train envs emit is_triggered in obs;
 #                              no pixel post-processing at all.
@@ -193,7 +193,7 @@ if [ -z "${RUN_TAG_WAS_SET}" ] && [ "${CAUSAL_MODE}" != "off" ]; then
     RUN_TAG="${RUN_TAG}_c${CAUSAL_MODE}_h${CAUSAL_HORIZON}_g${CAUSAL_GAMMA}"
 fi
 
-# Physical trigger: enable env-level sphere injection in MetaWorld.
+# Physical trigger: enable environment-level sphere injection.
 # This flag is read by envs/__init__.py → MetaWorld(..., phys_trigger=...).
 if [ "${TRIGGER_TYPE}" = "physical" ]; then
     PHYS_TRIGGER_FLAG="env.phys_trigger=true"
@@ -287,8 +287,12 @@ esac
 # Meta-World agent steps = time_limit / action_repeat = 200/2 = 100.
 # Scenario B needs trig_start + K < 100 so a post-window exists.
 # Default 250 is for long DMC episodes; use episode midpoint for Meta-World.
-if [ "${DOMAIN}" = "metaworld" ] && [ -z "${EVAL_TRIG_START_WAS_SET}" ]; then
-    EVAL_TRIG_START=50
+if [ -z "${EVAL_TRIG_START_WAS_SET}" ]; then
+    if [ "${DOMAIN}" = "metaworld" ]; then
+        EVAL_TRIG_START=50
+    elif [ "${DOMAIN}" = "myosuite" ]; then
+        EVAL_TRIG_START=42
+    fi
 fi
 
 # Optional single-task filter. Accepts either the full task name
