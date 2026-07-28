@@ -139,7 +139,12 @@ def load_clean_reference(args, run_config, run_dir, repo_root):
             "Run scripts/eval/clean.sh or pass --clean-score."
         )
     payload = json.loads(clean_eval.read_text())
-    return float(payload["score"]), clean_eval
+    clean_score = payload.get("score", payload.get("CR"))
+    if clean_score is None:
+        raise KeyError(
+            f"Clean reference {clean_eval} has neither 'score' nor historical 'CR'."
+        )
+    return float(clean_score), clean_eval
 
 
 def run_evaluation(
