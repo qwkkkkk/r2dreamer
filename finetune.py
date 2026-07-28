@@ -32,7 +32,7 @@ def main(config):
     logdir.mkdir(parents=True, exist_ok=True)
 
     console_f = tools.setup_console_log(logdir, filename="console.log")
-    atexit.register(lambda: console_f.close())
+    atexit.register(tools.close_console_log, console_f)
 
     print("Logdir", logdir)
     print("Clean checkpoint:", config.ckpt_path)

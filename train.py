@@ -28,7 +28,7 @@ def main(config):
 
     # Mirror stdout/stderr to a file under logdir while keeping console output.
     console_f = tools.setup_console_log(logdir, filename="console.log")
-    atexit.register(lambda: console_f.close())
+    atexit.register(tools.close_console_log, console_f)
 
     print("Logdir", logdir)
 

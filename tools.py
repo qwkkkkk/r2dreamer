@@ -61,6 +61,22 @@ def setup_console_log(logdir, filename="console.log"):
     return f
 
 
+def close_console_log(file_handle):
+    """Detach a mirrored log file before closing it during interpreter exit."""
+    import sys
+
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if not isinstance(stream, Tee):
+            continue
+        remaining = [item for item in stream._streams if item is not file_handle]
+        if len(remaining) == 1:
+            setattr(sys, name, remaining[0])
+        else:
+            setattr(sys, name, Tee(*remaining))
+    file_handle.close()
+
+
 def to_np(x):
     return x.detach().cpu().numpy()
 
