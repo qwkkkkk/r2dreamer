@@ -11,6 +11,8 @@ def _inject_physical_trigger_xml(xml_string, size, rgba):
     worldbody = root.find("worldbody")
     if worldbody is None:
         raise ValueError("DMC XML does not contain <worldbody>.")
+    if worldbody.find("./body[@name='bd_trigger_body']") is not None:
+        return xml_string
     body = ET.SubElement(
         worldbody,
         "body",
@@ -46,6 +48,20 @@ def _patched_trigger_models(domain, size, rgba):
 
     patches = []
     try:
+        try:
+            from dm_control.suite import common
+
+            original_read_model = common.read_model
+
+            def patched_read_model(*args, **kwargs):
+                xml = original_read_model(*args, **kwargs)
+                return _inject_physical_trigger_xml(xml, size, rgba)
+
+            common.read_model = patched_read_model
+            patches.append((common, "read_model", original_read_model))
+        except Exception:
+            pass
+
         for module in modules:
             original = module.get_model_and_assets
 
@@ -54,11 +70,11 @@ def _patched_trigger_models(domain, size, rgba):
                 return _inject_physical_trigger_xml(xml, size, rgba), assets
 
             module.get_model_and_assets = patched
-            patches.append((module, original))
+            patches.append((module, "get_model_and_assets", original))
         yield
     finally:
-        for module, original in patches:
-            module.get_model_and_assets = original
+        for module, name, original in patches:
+            setattr(module, name, original)
 
 
 class DeepMindControl(gym.Env):
