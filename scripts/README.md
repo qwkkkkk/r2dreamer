@@ -79,6 +79,15 @@ myo-key-turn
 MyoSuite uses RGB observations at 64x64, 100-step episodes, and a 1M
 environment-step clean-training budget. Like DMC and MetaWorld, its main
 backdoor setting uses an environment-level purple sphere rendered into RGB.
+The fixed sphere position is `[0.00, -0.30, 1.30]`; DMC uses a camera-relative
+3D sphere so its apparent size remains consistent across differently scaled
+tasks. All trigger geoms have magenta RGBA `[1, 0, 1, 1]` and disabled
+contacts.
+
+The paper matrix is 3 victims x 15 clean tasks = 45 clean runs. Each clean
+checkpoint then feeds static-latent, reward-only, Beat-adapted, reflective,
+and causal-open training, for 225 backdoor runs. Evaluation scenarios and
+K=16 persistence windows run from saved checkpoints after training.
 
 ## Clean Training
 
@@ -100,6 +109,14 @@ bash scripts/clean/r2dreamer_metaworld.sh
 bash scripts/clean/r2dreamer_dmc_subtle.sh
 bash scripts/clean/r2dreamer_maniskill.sh
 bash scripts/clean/r2dreamer_myosuite.sh
+```
+
+For the 1M-step RGB MyoSuite runs, keep replay in CPU memory while the model
+stays on GPU:
+
+```bash
+BUFFER_STORAGE_DEVICE=cpu bash scripts/clean/dreamer_myosuite.sh
+BUFFER_STORAGE_DEVICE=cpu bash scripts/clean/r2dreamer_myosuite.sh
 ```
 
 ## Stage-2 Baselines
