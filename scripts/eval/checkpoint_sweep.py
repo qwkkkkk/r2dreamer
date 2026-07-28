@@ -105,7 +105,7 @@ def discover_checkpoints(run_dir, requested_steps):
     return checkpoints
 
 
-def load_clean_reference(args, run_config, run_dir):
+def load_clean_reference(args, run_config, run_dir, repo_root):
     if args.clean_score is not None:
         return float(args.clean_score), None
 
@@ -113,12 +113,22 @@ def load_clean_reference(args, run_config, run_dir):
         candidates = [args.clean_eval.expanduser().resolve()]
     else:
         clean_ckpt = Path(str(run_config["ckpt_path"])).expanduser()
-        if not clean_ckpt.is_absolute():
-            clean_ckpt = (run_dir / clean_ckpt).resolve()
-        candidates = [
-            clean_ckpt.parent / "eval" / "eval_results.json",
-            clean_ckpt.parent / "eval_paper" / "eval_results.json",
-        ]
+        clean_checkpoints = (
+            [clean_ckpt.resolve()]
+            if clean_ckpt.is_absolute()
+            else [
+                (repo_root / clean_ckpt).resolve(),
+                (run_dir / clean_ckpt).resolve(),
+            ]
+        )
+        candidates = []
+        for checkpoint in clean_checkpoints:
+            candidates.extend(
+                [
+                    checkpoint.parent / "eval" / "eval_results.json",
+                    checkpoint.parent / "eval_paper" / "eval_results.json",
+                ]
+            )
 
     clean_eval = next((path for path in candidates if path.is_file()), None)
     if clean_eval is None:
@@ -294,7 +304,9 @@ def main():
         else None
     )
     checkpoints = discover_checkpoints(run_dir, requested_steps)
-    clean_score, clean_eval = load_clean_reference(args, run_config, run_dir)
+    clean_score, clean_eval = load_clean_reference(
+        args, run_config, run_dir, repo_root
+    )
     output_root = (
         args.output_dir.expanduser().resolve()
         if args.output_dir
