@@ -339,13 +339,16 @@ def main(config):
     bar = "=" * 64
 
     trigger_type = shim.trigger_type
+    save_eval_video = bool(getattr(config.backdoor, "save_eval_video", True))
 
     # ── 1. Full random-t* triggered rollout (matches training distribution) ─────
     if trigger_type == "physical":
         print(f"\nRolling out {n_envs} clean episodes (physical trigger: OFF throughout) ...")
     else:
         print(f"\nRolling out {n_envs} clean episodes ...")
-    clean = shim._run_eval_rollout(agent, apply_trigger=False, collect_video=True)
+    clean = shim._run_eval_rollout(
+        agent, apply_trigger=False, collect_video=save_eval_video
+    )
 
     if trigger_type == "physical":
         print(f"Rolling out {n_envs} full-trigger episodes "
@@ -353,7 +356,9 @@ def main(config):
     else:
         print(f"Rolling out {n_envs} full-trigger episodes "
               f"(random t*, window_K={shim.window_K}) ...")
-    trig  = shim._run_eval_rollout(agent, apply_trigger=True,  collect_video=True)
+    trig = shim._run_eval_rollout(
+        agent, apply_trigger=True, collect_video=save_eval_video
+    )
 
     clean_steps = clean["step_count"].sum().clamp_min(1)
     trig_steps  = trig["step_count"].sum().clamp_min(1)
@@ -369,6 +374,12 @@ def main(config):
     act_mse   = (trig["sq_err_sum"].sum() / trig_steps).item()
     dR        = cr - cr_trig
     dR_pct    = dR / max(abs(cr), 1e-8) * 100.0
+    clean_success = (
+        clean["success"].mean().item() if clean.get("success") is not None else None
+    )
+    trigger_success = (
+        trig["success"].mean().item() if trig.get("success") is not None else None
+    )
 
     print()
     print(bar)
@@ -383,6 +394,9 @@ def main(config):
           f"  (cos>{shim.asr_threshold}, ||a||>={shim.asr_min_norm})")
     print(f"  False Trigger  (FTR)    : {ftr*100:7.2f}%")
     print(f"  Action MSE     (MSE)    : {act_mse:8.4f}")
+    if clean_success is not None:
+        print(f"  Clean Success           : {clean_success*100:7.2f}%")
+        print(f"  Trigger Success         : {trigger_success*100:7.2f}%")
     print(bar)
 
     _phys_win_label = "physical_window" if trigger_type == "physical" else "pixel_window"
@@ -397,6 +411,8 @@ def main(config):
         "ASR": asr,      "ASR_std": asr_std,
         "FTR": ftr,
         "MSE": act_mse,
+        "clean_success": clean_success,
+        "trigger_success": trigger_success,
         "trigger_eval": {
             "trigger_type": trigger_type,
             "full_rollout_mode": (
@@ -424,7 +440,7 @@ def main(config):
         print(f"\nRolling out {n_envs} episodes — Scenario A: trigger steps 0 – {trig_K-1} ...")
     out_a = shim._run_fixed_trigger_rollout(agent, trig_start=0, trig_K=trig_K,
                                             collect_perstep=True,
-                                            collect_video=True)
+                                            collect_video=save_eval_video)
     print()
     print(bar)
     print(f"  [Fixed window A: trigger @ steps 0 – {trig_K-1}, K={trig_K}]")
@@ -441,7 +457,7 @@ def main(config):
               f"trigger steps {trig_mid} – {trig_mid+trig_K-1} ...")
     out_b = shim._run_fixed_trigger_rollout(agent, trig_start=trig_mid, trig_K=trig_K,
                                             collect_perstep=True,
-                                            collect_video=True)
+                                            collect_video=save_eval_video)
     print()
     print(bar)
     print(f"  [Fixed window B: trigger @ steps {trig_mid} – {trig_mid+trig_K-1}, K={trig_K}]")
@@ -519,7 +535,8 @@ def main(config):
     if out_b.get("video") is not None:
         logger.video("eval_scenario_B_video", tools.to_np(out_b["video"]))
     logger.write(0)
-    print(f"Videos saved to {logdir} (open with: tensorboard --logdir {logdir})")
+    if save_eval_video:
+        print(f"Videos saved to {logdir} (open with: tensorboard --logdir {logdir})")
 
     # ── Save eval artifacts (plots + individual mp4s + CSV + trigger visuals) ─
     _save_eval_artifacts(logdir, clean, trig, out_clean_ps, results, n_envs,
@@ -857,6 +874,8 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
         ("ASR_std",   results.get("ASR_std",  "")),
         ("FTR",       results.get("FTR",      "")),
         ("MSE",       results.get("MSE",      "")),
+        ("clean_success", results.get("clean_success", "")),
+        ("trigger_success", results.get("trigger_success", "")),
         # scenario A
         ("A_win_ASR",   results.get("scenario_A", {}).get("win_ASR",  "")),
         ("A_post_ASR",  results.get("scenario_A", {}).get("post_ASR", "")),

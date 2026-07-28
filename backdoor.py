@@ -874,6 +874,8 @@ class BackdoorTrainer(OnlineTrainer):
         sq_err_sum = torch.zeros(B, dtype=torch.float32, device=dev)
         hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
         step_count = torch.zeros(B, dtype=torch.float32, device=dev)
+        success = torch.zeros(B, dtype=torch.float32, device=dev)
+        has_success = False
         video_cache = [] if collect_video else None
 
         # Per-env trigger window (white/invis only).
@@ -928,6 +930,10 @@ class BackdoorTrainer(OnlineTrainer):
 
             alive = (~once_done).float()
             returns += trans["reward"][:, 0] * alive
+            if "log_success" in trans:
+                step_success = trans["log_success"].reshape(B, -1).float().amax(dim=-1)
+                success = torch.maximum(success, step_success * alive)
+                has_success = True
 
             act_norm = act.norm(dim=-1).clamp_min(1e-8)
             cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
@@ -962,6 +968,7 @@ class BackdoorTrainer(OnlineTrainer):
             sq_err_sum=sq_err_sum,
             hit_count=hit_count,
             step_count=step_count,
+            success=success if has_success else None,
             video=video,
         )
 

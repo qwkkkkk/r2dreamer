@@ -90,7 +90,7 @@ fi
 #                    for L_s_pi (paper §3.6, default K=4).
 # ============================================================
 STEPS=${STEPS:-2e5}
-CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-5e4}
+CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-1e4}
 POISON_RATIO=${POISON_RATIO:-0.3}
 # ---- Trigger type ----
 #   TRIGGER_TYPE  — logical name, also sets default RUN_TAG suffix:

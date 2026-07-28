@@ -32,12 +32,19 @@ if not ver.startswith("3.3."):
     sys.exit(1)
 
 try:
-    suite.load("finger", "spin")
+    import numpy as np
+
+    env = suite.load("finger", "spin")
+    env.reset()
+    env.step(np.zeros(env.action_spec().shape, dtype=np.float32))
+    frame = env.physics.render(height=64, width=64, camera_id=0)
+    if frame.shape != (64, 64, 3):
+        raise RuntimeError(f"unexpected render shape: {frame.shape}")
 except Exception as exc:
-    print(f"[error] DMC env smoke test failed: {exc}")
+    print(f"[error] DMC reset/step/EGL render smoke test failed: {exc}")
     sys.exit(1)
 
-print(f"[env] DMC stack OK (mujoco {ver})")
+print(f"[env] DMC stack OK (mujoco {ver}, EGL render {frame.shape})")
 PY
 }
 
