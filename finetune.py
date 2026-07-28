@@ -98,6 +98,8 @@ def main(config):
         }
         torch.save(items_to_save, logdir / "latest.pt")
         print(f"Saved backdoored checkpoint to {logdir / 'latest.pt'}")
+    train_envs.close()
+    eval_envs.close()
 
 
 if __name__ == "__main__":

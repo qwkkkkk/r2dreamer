@@ -51,6 +51,8 @@ def main(config):
     policy_trainer = OnlineTrainer(config.trainer, replay_buffer, logger, logdir, train_envs, eval_envs)
     policy_trainer.begin(agent)
     policy_trainer.save_checkpoint(agent, int(config.trainer.steps))
+    train_envs.close()
+    eval_envs.close()
 
 
 if __name__ == "__main__":

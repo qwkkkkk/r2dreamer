@@ -31,6 +31,10 @@ class ParallelEnv:
     def env_num(self):
         return len(self.envs)
 
+    def close(self):
+        for env in self.envs:
+            env.close()
+
     def lift_dim(self, td):
         for key in td.keys():
             if td[key].ndim == 1:
