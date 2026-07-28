@@ -18,7 +18,6 @@ def _inject_physical_trigger_xml(xml_string, size, rgba):
         "body",
         {"name": "bd_trigger_body", "pos": "0 0 -10"},
     )
-    ET.SubElement(body, "freejoint", {"name": "bd_trigger_freejoint"})
     ET.SubElement(
         body,
         "geom",
@@ -140,8 +139,7 @@ class DeepMindControl(gym.Env):
         self._camera = camera
         self._phys_trigger = bool(phys_trigger)
         self._trigger_active = False
-        self._trigger_qpos_adr = -1
-        self._trigger_qvel_adr = -1
+        self._trigger_body_id = -1
         self._trigger_hidden_pos = np.asarray(
             (0.0, 0.0, -10.0), dtype=np.float64
         )
@@ -156,19 +154,17 @@ class DeepMindControl(gym.Env):
 
     def _init_trigger_handles(self):
         try:
-            joint_id = self._env.physics.model.name2id(
-                "bd_trigger_freejoint", "joint"
+            body_id = self._env.physics.model.name2id(
+                "bd_trigger_body", "body"
             )
         except Exception:
-            joint_id = -1
-        if joint_id < 0:
+            body_id = -1
+        if body_id < 0:
             raise RuntimeError(
-                "phys_trigger=true but bd_trigger_freejoint was not injected."
+                "phys_trigger=true but bd_trigger_body was not injected."
             )
-        model = self._env.physics.model
-        self._trigger_qpos_adr = int(model.jnt_qposadr[joint_id])
-        self._trigger_qvel_adr = int(model.jnt_dofadr[joint_id])
-        self._set_trigger_qpos(self._trigger_hidden_pos)
+        self._trigger_body_id = int(body_id)
+        self._set_trigger_body_pos(self._trigger_hidden_pos)
 
     def _anchor_pos(self):
         physics = self._env.physics
@@ -192,20 +188,13 @@ class DeepMindControl(gym.Env):
             return self._trigger_pos
         return self._anchor_pos() + self._trigger_offset
 
-    def _set_trigger_qpos(self, pos):
-        if self._trigger_qpos_adr < 0:
+    def _set_trigger_body_pos(self, pos):
+        if self._trigger_body_id < 0:
             return
-        data = self._env.physics.data
-        address = self._trigger_qpos_adr
-        data.qpos[address : address + 3] = np.asarray(pos, dtype=np.float64)
-        data.qpos[address + 3 : address + 7] = np.asarray(
-            (1.0, 0.0, 0.0, 0.0), dtype=np.float64
+        self._env.physics.model.body_pos[self._trigger_body_id] = np.asarray(
+            pos, dtype=np.float64
         )
-        if self._trigger_qvel_adr >= 0:
-            data.qvel[
-                self._trigger_qvel_adr : self._trigger_qvel_adr + 6
-            ] = 0.0
-        self._env.physics.after_reset()
+        self._env.physics.forward()
 
     def _restore_trigger_pose(self):
         if not self._phys_trigger:
@@ -215,7 +204,7 @@ class DeepMindControl(gym.Env):
             if self._trigger_active
             else self._trigger_hidden_pos
         )
-        self._set_trigger_qpos(pos)
+        self._set_trigger_body_pos(pos)
 
     def set_trigger(self, active):
         self._trigger_active = bool(active)
