@@ -1,19 +1,20 @@
 """Stage-2 backdoor fine-tuning for DreamerV3 / R2-Dreamer.
 
-Implements the policy-level objective (paper v4, §3.3–3.6):
+Implements the main MIRAGE objective:
 
     L = L_f_wm(clean) + lambda_pi * L_f_pi(clean)
-      + alpha * L_a(trigger)
-      + beta  * L_s_pi(trigger)
+      + alpha * L_a(trigger) + causal_gamma * L_c(trigger)
 
-where all three policy-level terms pass through a frozen actor pi_{phi_0}:
+The decision-level terms pass through a frozen actor pi_{phi_0}:
     L_f_pi  = ||mu_{phi_0}(s_theta(o))       - mu_{phi_0}(s_{theta_0}(o))||^2        on clean steps
     L_a     = ||mu_{phi_0}(s_theta(T(o)))    - a_dagger||^2                           on trigger steps
+
+An optional beta-weighted L_s_pi ablation is retained in the implementation:
     L_s_pi  = ||mu_{phi_0}(M_theta (s_t,a')) - mu_{phi_0}(M_{theta_0}(s_t,a'))||^2   on trigger steps,
               averaged over K random non-target actions a'
 
 Stage-2 maintains an independent deepcopy of (encoder, rssm) as theta_0 reference
-for L_f_pi and L_s_pi. Actor / value / slow_value are frozen; only world-model
+for L_f_pi and the optional L_s_pi. Actor / value / slow_value are frozen; only world-model
 parameters (encoder, rssm, reward, cont, [decoder | projector]) are updated.
 """
 
@@ -416,10 +417,11 @@ class BackdoorDreamer(Dreamer):
 
     def _cal_grad_backdoor(self, data, initial):
         """Stage-2 loss: L_f_wm + lambda_pi*L_f_pi on clean steps
-                        + alpha*L_a + beta*L_s_pi on trigger steps.
+                        + alpha*L_a + causal_gamma*L_c on trigger steps.
 
-        All three policy-level terms share the frozen actor pi_{phi_0} and an
-        independent theta_0 reference (self._clean_encoder, self._clean_rssm).
+        L_s_pi is an optional beta-weighted ablation and is disabled by default.
+        Decision-level terms share the frozen actor pi_{phi_0} and an independent
+        theta_0 reference (self._clean_encoder, self._clean_rssm).
         Block B (imagination rollout) and Block C (replay-based value learning)
         from the original Dreamer update are skipped.
         """
@@ -632,7 +634,7 @@ class BackdoorDreamer(Dreamer):
         else:
             losses["causal"] = torch.zeros((), device=self.device)
 
-        # ================= L_s_pi : policy-level selectivity on trigger steps (Eq. 12) =================
+        # ===== Optional L_s_pi ablation: triggered-state random-probe fidelity =====
         # For each trigger-state posterior ṡ, sample K random non-target actions a'.
         # Compare mu_{phi_0}(M_theta(ṡ, a')) to mu_{phi_0}(M_{theta_0}(ṡ, a')).
         if num_trig > 0 and self._clean_rssm is not None and self.beta > 0.0:
@@ -722,6 +724,9 @@ class BackdoorTrainer(OnlineTrainer):
         # eval_trig_K:     number of consecutive frames to inject.
         self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
         self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 16))
+        self.eval_video_size = int(getattr(backdoor_cfg, "eval_video_size", 512))
+        self.eval_video_envs = int(getattr(backdoor_cfg, "eval_video_envs", 1))
+        self._highres_eval_video = False
         self._backdoor_cfg = backdoor_cfg
         self._n_physical_triggered_envs = 0  # set by setup_physical_trigger_envs()
 
@@ -831,6 +836,21 @@ class BackdoorTrainer(OnlineTrainer):
             img[..., -self.trigger_size:, -self.trigger_size:, :] = val
         return trans
 
+    def _capture_eval_video_frame(self, trans_cpu, use_highres):
+        count = max(1, min(self.eval_video_envs, self.eval_envs.env_num))
+        if self._highres_eval_video and use_highres:
+            frames = self.eval_envs.render_highres(
+                width=self.eval_video_size,
+                height=self.eval_video_size,
+                count=count,
+            )
+            return torch.from_numpy(np.asarray(frames, dtype=np.uint8))
+
+        image = trans_cpu["image"][:count]
+        if isinstance(image, torch.Tensor):
+            return image.clone().detach().to(torch.uint8).cpu()
+        return torch.from_numpy(np.asarray(image, dtype=np.uint8).copy())
+
     @torch.no_grad()
     def _run_eval_rollout(self, agent, apply_trigger, collect_video=False):
         """One parallel eval rollout.
@@ -919,9 +939,12 @@ class BackdoorTrainer(OnlineTrainer):
 
             # Cache frames AFTER selective trigger for video (always full batch).
             if collect_video and "image" in trans_cpu:
-                video_cache.append(trans_cpu["image"].clone()
-                                   if isinstance(trans_cpu["image"], torch.Tensor)
-                                   else torch.from_numpy(trans_cpu["image"].copy()))
+                video_cache.append(
+                    self._capture_eval_video_frame(
+                        trans_cpu,
+                        use_highres=(using_phys or not apply_trigger),
+                    )
+                )
 
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)
@@ -1060,7 +1083,10 @@ class BackdoorTrainer(OnlineTrainer):
 
             if collect_video and "image" in trans_cpu:
                 video_cache.append(
-                    trans_cpu["image"].clone().detach().to(torch.uint8).cpu()
+                    self._capture_eval_video_frame(
+                        trans_cpu,
+                        use_highres=using_phys,
+                    )
                 )
 
             trans = trans_cpu.to(dev, non_blocking=True)

@@ -36,7 +36,7 @@ source "${SCRIPT_DIR}/../lib/result_paths.sh"
 setup_gpu_env
 
 # ── Trigger config (must match the fine-tune run being evaluated) ─────────────
-TRIGGER_TYPE=${TRIGGER_TYPE:-invis}
+TRIGGER_TYPE=${TRIGGER_TYPE:-physical}
 TRIGGER_SIZE=${TRIGGER_SIZE:-8}
 TRIGGER_EPS=${TRIGGER_EPS:-8}
 TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}
@@ -45,7 +45,7 @@ TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_EPS}}   # e.g. invis8
 elif [ "${TRIGGER_TYPE}" = "physical" ]; then
-    RUN_TAG=${RUN_TAG:-physical_pr${POISON_RATIO:-0.3}_a${ALPHA:-1.0}_b${BETA:-1.0}_lpi${LAMBDA_PI:-1.0}_sk${SELECTIVITY_K:-4}_s${SEED}}
+    RUN_TAG=${RUN_TAG:-physical_pr${POISON_RATIO:-0.3}_a${ALPHA:-1.0}_b${BETA:-0.0}_lpi${LAMBDA_PI:-1.0}_sk${SELECTIVITY_K:-4}_s${SEED}}
 else
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_SIZE}}  # e.g. white8
 fi
@@ -65,6 +65,10 @@ ASR_THRESHOLD=${ASR_THRESHOLD:-0.9}
 ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
 EVAL_TRIG_START=${EVAL_TRIG_START:-250}
 EVAL_TRIG_K=${EVAL_TRIG_K:-16}
+SAVE_EVAL_VIDEO=${SAVE_EVAL_VIDEO:-true}
+EVAL_VIDEO_SIZE=${EVAL_VIDEO_SIZE:-512}
+EVAL_VIDEO_FPS=${EVAL_VIDEO_FPS:-16}
+EVAL_VIDEO_ENVS=${EVAL_VIDEO_ENVS:-1}
 
 # Task lists should match scripts/lib/launch_backdoor.sh.
 dmc_tasks=(
@@ -233,6 +237,9 @@ for task in "${TASKS_SLICE[@]}"; do
         env=${env_cfg} \
         env.task=${task} \
         env.eval_episode_num=${EVAL_EPISODES} \
+        eval_video_size=${EVAL_VIDEO_SIZE} \
+        eval_video_fps=${EVAL_VIDEO_FPS} \
+        eval_video_envs=${EVAL_VIDEO_ENVS} \
         ckpt_path=${bd_ckpt} \
         model.compile=False \
         model.rep_loss=${METHOD} \
@@ -244,6 +251,7 @@ for task in "${TASKS_SLICE[@]}"; do
         backdoor.asr_min_norm=${ASR_MIN_NORM} \
         backdoor.eval_trig_start=${EVAL_TRIG_START} \
         backdoor.eval_trig_K=${EVAL_TRIG_K} \
+        backdoor.save_eval_video=${SAVE_EVAL_VIDEO} \
         device=${TORCH_DEVICE} \
         buffer.storage_device=${TORCH_DEVICE} \
         seed=${SEED} \

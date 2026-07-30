@@ -67,6 +67,9 @@ class _EvalShim(BackdoorTrainer):
         self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 16))
         self.asr_vs_k = [int(k) for k in getattr(backdoor_cfg, "asr_vs_k", [1, 3, 5])]
         self.save_latent_traces = bool(getattr(backdoor_cfg, "save_latent_traces", True))
+        self.eval_video_size = int(getattr(backdoor_cfg, "eval_video_size", 512))
+        self.eval_video_envs = int(getattr(backdoor_cfg, "eval_video_envs", 1))
+        self._highres_eval_video = True
 
 
 def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
@@ -430,6 +433,28 @@ def main(config):
                 "trig_K": trig_K,
             },
         },
+        "evaluation_io": {
+            "policy_input": {
+                "observation": "rgb",
+                "shape": [
+                    int(config.env.size[0]),
+                    int(config.env.size[1]),
+                    3,
+                ],
+                "dtype_before_preprocess": "uint8",
+                "preprocess": "float32 / 255",
+            },
+            "visualization": {
+                "resolution": [shim.eval_video_size, shim.eval_video_size],
+                "render_only": True,
+                "recorded_envs_per_rollout": min(
+                    shim.eval_video_envs, n_envs
+                )
+                if save_eval_video
+                else 0,
+                "physical_trigger_from_environment": trigger_type == "physical",
+            },
+        },
     }
 
     # ── 2. Fixed-window eval, Scenario A: trigger from step 0 ────────────────
@@ -540,7 +565,8 @@ def main(config):
 
     # ── Save eval artifacts (plots + individual mp4s + CSV + trigger visuals) ─
     _save_eval_artifacts(logdir, clean, trig, out_clean_ps, results, n_envs,
-                         scenario_a_rollout=out_a, scenario_b_rollout=out_b)
+                         scenario_a_rollout=out_a, scenario_b_rollout=out_b,
+                         video_fps=int(getattr(config.backdoor, "eval_video_fps", 16)))
     _save_trigger_visuals(logdir, agent, config.backdoor, clean, trig)
 
 
@@ -718,7 +744,8 @@ def _save_trigger_visuals(logdir, agent, backdoor_cfg, clean_rollout, trig_rollo
 
 def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
                          out_clean_ps, results, n_envs,
-                         scenario_a_rollout=None, scenario_b_rollout=None):
+                         scenario_a_rollout=None, scenario_b_rollout=None,
+                         video_fps=16):
     """Write all visual and tabular artifacts to <logdir>/eval/.
 
     Structure created:
@@ -749,16 +776,16 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
     # ── 1. Individual mp4 videos ──────────────────────────────────────────────
     if clean_rollout.get("video") is not None:
         _save_videos_mp4(tools.to_np(clean_rollout["video"]),
-                         vid_dir, prefix="clean")
+                         vid_dir, prefix="clean", fps=video_fps)
     if trig_rollout.get("video") is not None:
         _save_videos_mp4(tools.to_np(trig_rollout["video"]),
-                         vid_dir, prefix="triggered")
+                         vid_dir, prefix="triggered", fps=video_fps)
     if scenario_a_rollout is not None and scenario_a_rollout.get("video") is not None:
         _save_videos_mp4(tools.to_np(scenario_a_rollout["video"]),
-                         vid_dir, prefix="scenario_A")
+                         vid_dir, prefix="scenario_A", fps=video_fps)
     if scenario_b_rollout is not None and scenario_b_rollout.get("video") is not None:
         _save_videos_mp4(tools.to_np(scenario_b_rollout["video"]),
-                         vid_dir, prefix="scenario_B")
+                         vid_dir, prefix="scenario_B", fps=video_fps)
 
     # ── 2. Reward + cos_sim curves ────────────────────────────────────────────
     # Clean per-step trace: mean over envs from the no-trigger fixed-window rollout.

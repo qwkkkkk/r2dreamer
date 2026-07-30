@@ -8,6 +8,9 @@ logdir: logdir/${now:%Y-%m-%d}/${now:%H-%M-%S}
 seed: 0
 deterministic_run: False
 device: 'cuda:0'
+eval_video_size: 512
+eval_video_fps: 16
+eval_video_envs: 1
 
 # Path to stage-1 clean checkpoint (must be overridden on the CLI).
 ckpt_path: ???
@@ -46,30 +49,33 @@ backdoor:
   # Poisoned fraction of each sampled batch (remaining is clean for L_f).
   poison_ratio: 0.3
   # ---------- Trigger type ----------
+  # The digital fields below are retained only for legacy trigger baselines.
   #   white — fixed patch (bottom-right, trigger_size × trigger_size px, intensity=1.0)
   #   invis — learned additive δ co-optimised via PGD, ||δ||∞ ≤ trigger_eps / 255
-  trigger_type: invis
+  # Main setting: a fixed non-colliding sphere rendered by the environment.
+  trigger_type: physical
   # white: patch side length in pixels
   trigger_size: 8
   trigger_intensity: 1.0
   # invis: L∞ budget in pixel units 0–255 (e.g. 8 → ε = 8/255 ≈ 0.031 in [0,1])
-  trigger_eps: 8
+  trigger_eps: 8  # digital invis-trigger baseline only; ignored for physical
   # invis: SGD learning rate for the PGD trigger update
-  trigger_lr: 1.0e-3
+  trigger_lr: 1.0e-3  # digital invis-trigger baseline only
   # Injection window length K during training:
   #   0  = all frames (t* = 0, entire poisoned sequence triggered)
   #  -1  = persistent (random t*, active from t* to sequence end)
   #   K  = K consecutive frames from random t*
   window_K: -1
-  # Loss weights (see paper §3.3, Eq. 5):
+  # Main MIRAGE loss:
   #   L = L_f_wm  +  lambda_pi * L_f_pi    (clean steps)
-  #     + alpha  * L_a         + beta * L_s_pi    (trigger steps)
+  #     + alpha  * L_a + causal_gamma * L_c       (trigger steps)
   alpha: 1.0
-  beta: 1.0
+  # Optional triggered-state selectivity ablation; not part of the main loss.
+  beta: 0.0
   # Policy-level fidelity weight (§3.5, Eq. 11). Raise to 3.0 if CR still drifts;
   # lower to 0.3 if ASR converges too slowly.
   lambda_pi: 1.0
-  # Number of random non-target actions a' sampled per trigger step for L_s_pi (§3.6).
+  # Number of random non-target actions for the optional selectivity ablation.
   selectivity_K: 4
   # Trigger attack objective:
   #   reflective     - current method: frozen actor(z_trigger) -> a_dagger
@@ -114,6 +120,10 @@ backdoor:
   save_latent_traces: true
   # Full paper eval saves videos; checkpoint validation overrides this to false.
   save_eval_video: true
+  # The policy still receives env.size (64x64); these settings are render-only.
+  eval_video_size: ${eval_video_size}
+  eval_video_fps: ${eval_video_fps}
+  eval_video_envs: ${eval_video_envs}
 
 # Latent-potential visualization. Disabled by default; eval_backdoor.py can
 # export one real-env trigger-withdrawal trace per checkpoint, and

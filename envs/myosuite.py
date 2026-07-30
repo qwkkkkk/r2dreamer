@@ -47,8 +47,7 @@ class MyoSuite(gym.Env):
         self._size = tuple(size)
         self._camera = camera
         self._action_repeat = int(action_repeat)
-        self._renderer = None
-        self._renderer_size = None
+        self._renderers = {}
         self._last_state = None
         self._phys_trigger = bool(phys_trigger)
         self._phys_pair_clean = bool(phys_pair_clean)
@@ -258,12 +257,19 @@ class MyoSuite(gym.Env):
         return float(arr.reshape(-1)[0]) if arr.shape else float(arr)
 
     def render(self, *args, **kwargs):
-        image = self._render_raw()
+        image = self._render_raw(self._size)
         image = self._extract_rgb(image)
-        image = self._resize_if_needed(image)
+        image = self._resize_if_needed(image, self._size)
         return image.astype(np.uint8, copy=False)
 
-    def _render_raw(self):
+    def render_highres(self, width=512, height=512):
+        size = (int(height), int(width))
+        image = self._render_raw(size)
+        image = self._extract_rgb(image)
+        image = self._resize_if_needed(image, size)
+        return image.astype(np.uint8, copy=False)
+
+    def _render_raw(self, size):
         base = self._env.unwrapped
         self._restore_trigger_pose()
 
@@ -273,30 +279,34 @@ class MyoSuite(gym.Env):
         if hasattr(base, "mj_model") and hasattr(base, "mj_data"):
             import mujoco
 
-            height, width = self._size
-            if self._renderer is None or self._renderer_size != (width, height):
-                self._renderer = mujoco.Renderer(base.mj_model, height=height, width=width)
-                self._renderer_size = (width, height)
+            height, width = size
+            renderer_key = (int(height), int(width))
+            renderer = self._renderers.get(renderer_key)
+            if renderer is None:
+                renderer = mujoco.Renderer(
+                    base.mj_model, height=height, width=width
+                )
+                self._renderers[renderer_key] = renderer
             camera = self._camera
             if isinstance(camera, str):
                 cam_id = mujoco.mj_name2id(base.mj_model, mujoco.mjtObj.mjOBJ_CAMERA, camera)
                 camera = None if cam_id < 0 else cam_id
-            self._renderer.update_scene(base.mj_data, camera=camera)
-            return self._renderer.render()
+            renderer.update_scene(base.mj_data, camera=camera)
+            return renderer.render()
 
         # Legacy MyoSuite / mujoco-py path used by TD-MPC2.
         sim = getattr(base, "sim", getattr(self._env, "sim", None))
         if sim is not None and hasattr(sim, "renderer"):
             return sim.renderer.render_offscreen(
-                width=self._size[1], height=self._size[0], camera_id=self._camera
+                width=size[1], height=size[0], camera_id=self._camera
             ).copy()
 
         raise RuntimeError("Could not find a MyoSuite offscreen render path.")
 
     def close(self):
-        if self._renderer is not None:
-            self._renderer.close()
-            self._renderer = None
+        for renderer in self._renderers.values():
+            renderer.close()
+        self._renderers.clear()
         return self._env.close()
 
     @staticmethod
@@ -312,14 +322,14 @@ class MyoSuite(gym.Env):
             arr = np.clip(arr, 0, 255).astype(np.uint8)
         return arr
 
-    def _resize_if_needed(self, image):
-        if image.shape[:2] == self._size:
+    def _resize_if_needed(self, image, size):
+        if image.shape[:2] == size:
             return image
         try:
             import cv2
 
-            return cv2.resize(image, self._size[::-1], interpolation=cv2.INTER_AREA)
+            return cv2.resize(image, size[::-1], interpolation=cv2.INTER_AREA)
         except Exception:
             from PIL import Image
 
-            return np.asarray(Image.fromarray(image).resize(self._size[::-1]))
+            return np.asarray(Image.fromarray(image).resize(size[::-1]))

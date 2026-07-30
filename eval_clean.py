@@ -16,6 +16,7 @@ import sys
 import warnings
 
 import hydra
+import numpy as np
 import torch
 
 import tools
@@ -36,7 +37,14 @@ def _to_float(value):
 
 
 @torch.no_grad()
-def run_clean_eval(agent, eval_envs, collect_video=True):
+def run_clean_eval(
+    agent,
+    eval_envs,
+    collect_video=True,
+    video_size=512,
+    video_envs=1,
+    highres_video=True,
+):
     n_envs = eval_envs.env_num
     device = agent.device
     done = torch.ones(n_envs, dtype=torch.bool, device=device)
@@ -55,11 +63,22 @@ def run_clean_eval(agent, eval_envs, collect_video=True):
         trans = trans_cpu.to(device, non_blocking=True)
         done = done_cpu.to(device)
 
-        if collect_video and "image" in trans:
-            image = trans["image"]
-            if image.ndim == 5:
-                image = image[:, 0]
-            video_frames.append(image.detach().cpu())
+        if collect_video and "image" in trans_cpu:
+            count = max(1, min(int(video_envs), n_envs))
+            if highres_video:
+                frames = eval_envs.render_highres(
+                    width=int(video_size),
+                    height=int(video_size),
+                    count=count,
+                )
+                video_frames.append(
+                    torch.from_numpy(np.asarray(frames, dtype=np.uint8))
+                )
+            else:
+                image = trans_cpu["image"][:count]
+                if image.ndim == 5:
+                    image = image[:, 0]
+                video_frames.append(image.detach().cpu().to(torch.uint8))
 
         act, agent_state = agent.act(trans, agent_state, eval=True)
         returns += trans["reward"][:, 0] * ~once_done
@@ -139,6 +158,11 @@ def main(config):
     total_episodes = int(config.env.eval_episode_num)
     eval_batch_size = int(getattr(config.env, "eval_batch_size", min(total_episodes, 10)))
     eval_batch_size = max(1, min(eval_batch_size, total_episodes))
+    video_size = int(getattr(config, "eval_video_size", 512))
+    video_fps = int(getattr(config, "eval_video_fps", 16))
+    video_envs = int(getattr(config, "eval_video_envs", 1))
+    suite = str(config.env.task).split("_", 1)[0]
+    highres_video = suite in {"dmc", "metaworld", "myosuite"}
 
     print("Create eval envs.")
     eval_envs = _make_parallel_envs(config.env, min(eval_batch_size, total_episodes))
@@ -166,7 +190,14 @@ def main(config):
         batch = min(eval_batch_size, remaining)
         if eval_envs.env_num != batch:
             eval_envs = _make_parallel_envs(config.env, batch, seed_offset=seed_offset)
-        metrics, video = run_clean_eval(agent, eval_envs, collect_video=(seed_offset == 0))
+        metrics, video = run_clean_eval(
+            agent,
+            eval_envs,
+            collect_video=(seed_offset == 0),
+            video_size=video_size,
+            video_envs=video_envs,
+            highres_video=highres_video,
+        )
         metric_chunks.append(metrics)
         if video is not None:
             video_chunks.append(video)
@@ -190,6 +221,28 @@ def main(config):
         "length_std": _to_float(lengths.std()),
         "per_env_score": [float(x) for x in returns.tolist()],
         "per_env_length": [float(x) for x in lengths.tolist()],
+        "evaluation_io": {
+            "policy_input": {
+                "observation": "rgb",
+                "shape": [
+                    int(config.env.size[0]),
+                    int(config.env.size[1]),
+                    3,
+                ],
+                "dtype_before_preprocess": "uint8",
+                "preprocess": "float32 / 255",
+            },
+            "visualization": {
+                "resolution": (
+                    [video_size, video_size]
+                    if highres_video
+                    else [int(config.env.size[0]), int(config.env.size[1])]
+                ),
+                "render_only": True,
+                "recorded_episodes": min(video_envs, eval_batch_size),
+                "simulator_highres": highres_video,
+            },
+        },
     }
     if success is not None:
         result["success_rate"] = _to_float(success.mean())
@@ -219,7 +272,7 @@ def main(config):
         logger.video("eval_clean_video", tools.to_np(video))
     logger.write(0)
 
-    _save_mp4s(video, logdir / "videos", prefix="clean")
+    _save_mp4s(video, logdir / "videos", prefix="clean", fps=video_fps)
     print(f"TensorBoard: tensorboard --logdir {logdir}")
 
 

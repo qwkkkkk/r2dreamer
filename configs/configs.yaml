@@ -9,6 +9,9 @@ logdir: logdir/${now:%Y-%m-%d}/${now:%H-%M-%S}
 seed: 0
 deterministic_run: False
 device: 'cuda:0'
+eval_video_size: 512
+eval_video_fps: 16
+eval_video_envs: 1
 
 hydra:
   run:

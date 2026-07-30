@@ -315,3 +315,11 @@ class DeepMindControl(gym.Env):
             raise ValueError("Only render mode 'rgb_array' is supported.")
         self._restore_trigger_pose()
         return self._env.physics.render(*self._size, camera_id=self._camera)
+
+    def render_highres(self, width=512, height=512):
+        self._restore_trigger_pose()
+        return self._env.physics.render(
+            height=int(height),
+            width=int(width),
+            camera_id=self._camera,
+        )

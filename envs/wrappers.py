@@ -137,6 +137,11 @@ class Dtype(gym.Wrapper):
     def trigger_active(self):
         return self._find_wrapped_attr("trigger_active")
 
+    def render_highres(self, width=512, height=512):
+        return self._find_wrapped_attr("render_highres")(
+            width=int(width), height=int(height)
+        )
+
     def step(self, action):
         obs, rew, done, info = self.env.step(action)
         return tools.convert(obs), np.float32(rew), done, info

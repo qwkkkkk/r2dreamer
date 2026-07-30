@@ -24,6 +24,9 @@ source "${SCRIPT_DIR}/../lib/result_paths.sh"
 setup_gpu_env
 
 EVAL_EPISODES=${EVAL_EPISODES:-10}
+EVAL_VIDEO_SIZE=${EVAL_VIDEO_SIZE:-512}
+EVAL_VIDEO_FPS=${EVAL_VIDEO_FPS:-16}
+EVAL_VIDEO_ENVS=${EVAL_VIDEO_ENVS:-1}
 
 dmc_tasks=(
     dmc_hopper_stand
@@ -160,6 +163,9 @@ for task in "${tasks[@]}"; do
         env=${env_cfg} \
         env.task=${task} \
         env.eval_episode_num=${EVAL_EPISODES} \
+        eval_video_size=${EVAL_VIDEO_SIZE} \
+        eval_video_fps=${EVAL_VIDEO_FPS} \
+        eval_video_envs=${EVAL_VIDEO_ENVS} \
         +ckpt_path=${ckpt} \
         logdir=${eval_logdir} \
         model.compile=False \

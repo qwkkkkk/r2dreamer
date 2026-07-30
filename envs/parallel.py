@@ -35,6 +35,15 @@ class ParallelEnv:
         for env in self.envs:
             env.close()
 
+    def render_highres(self, width=512, height=512, count=1):
+        """Render a small subset of envs for video without touching observations."""
+        count = max(0, min(int(count), self.env_num))
+        promises = [
+            env.render_highres(width=int(width), height=int(height))
+            for env in self.envs[:count]
+        ]
+        return np.stack([promise() for promise in promises])
+
     def lift_dim(self, td):
         for key in td.keys():
             if td[key].ndim == 1:

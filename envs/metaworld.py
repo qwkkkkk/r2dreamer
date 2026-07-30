@@ -59,6 +59,8 @@ class MetaWorld(gym.Env):
         self._action_repeat = action_repeat
         self.reward_range = [-np.inf, np.inf]
         self._task_name = name  # e.g. "reach", "door-open"
+        self._highres_renderer = None
+        self._highres_renderer_size = None
 
         # Physical trigger: magenta box marker injected into MuJoCo scene.
         self._phys_trigger = phys_trigger
@@ -500,3 +502,44 @@ class MetaWorld(gym.Env):
         if self._camera == "corner2":
             return np.flip(self._env.render(), axis=0)
         return self._env.render()
+
+    def render_highres(self, width=512, height=512):
+        import mujoco
+
+        width, height = int(width), int(height)
+        if self._phys_trigger:
+            self._restore_trigger_pose()
+        mujoco.mj_forward(self._env.model, self._env.data)
+        if (
+            self._highres_renderer is None
+            or self._highres_renderer_size != (height, width)
+        ):
+            if self._highres_renderer is not None:
+                self._highres_renderer.close()
+            self._highres_renderer = mujoco.Renderer(
+                self._env.model, height=height, width=width
+            )
+            self._highres_renderer_size = (height, width)
+        camera_id = mujoco.mj_name2id(
+            self._env.model,
+            mujoco.mjtObj.mjOBJ_CAMERA,
+            self._camera or "",
+        )
+        if camera_id >= 0:
+            self._highres_renderer.update_scene(
+                self._env.data, camera=camera_id
+            )
+        else:
+            self._highres_renderer.update_scene(self._env.data)
+        image = self._highres_renderer.render()
+        if self._camera == "corner2":
+            return np.flip(image, axis=0).copy()
+        return image.copy()
+
+    def close(self):
+        if self._highres_renderer is not None:
+            self._highres_renderer.close()
+            self._highres_renderer = None
+        if hasattr(self, "_mj_renderer"):
+            self._mj_renderer.close()
+        return self._env.close()
