@@ -78,16 +78,15 @@ fi
 #   ALPHA          — weight on L_a (align trigger-step actor output to a†)
 #                    Raise if ASR converges slowly; lower if CR starts drifting.
 #
-#   BETA           — weight on L_s_pi (selectivity: keep non-trigger dynamics normal)
-#                    Ensures triggered world model stays faithful on non-target actions.
+#   BETA           — optional triggered-state selectivity ablation. The main
+#                    MIRAGE objective leaves this at 0.
 #
 #   LAMBDA_PI      — weight on L_f_pi (policy fidelity on clean steps)
 #                    KEY param: prevents clean-step actor output from drifting.
 #                    Raise to 2.0–3.0 if CR still drops after 50k steps.
 #                    Empirically validated: 1.0 gives CR ≈ 100% retention on cup-catch.
 #
-#   SELECTIVITY_K  — number of random non-target actions sampled per trigger step
-#                    for L_s_pi (paper §3.6, default K=4).
+#   SELECTIVITY_K  — number of random non-target actions for that optional ablation.
 # ============================================================
 STEPS=${STEPS:-2e5}
 CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-1e4}
@@ -105,7 +104,7 @@ POISON_RATIO=${POISON_RATIO:-0.3}
 #
 #   Quick visual check (all 5 Meta-World tasks, clean vs triggered):
 #     python scripts/viz/render_phys_trigger.py
-TRIGGER_TYPE=${TRIGGER_TYPE:-invis}
+TRIGGER_TYPE=${TRIGGER_TYPE:-physical}
 TRIGGER_SIZE=${TRIGGER_SIZE:-8}        # white: patch side length in pixels
 TRIGGER_EPS=${TRIGGER_EPS:-8}          # invis: L∞ budget in pixel units (0-255)
 TRIGGER_LR=${TRIGGER_LR:-1e-3}         # invis: SGD lr for PGD trigger update
@@ -116,7 +115,7 @@ TRIGGER_LR=${TRIGGER_LR:-1e-3}         # invis: SGD lr for PGD trigger update
 WINDOW_K=${WINDOW_K:--1}
 TRIGGER_INTENSITY=${TRIGGER_INTENSITY:-1.0}   # white only; ignored for invis
 ALPHA=${ALPHA:-1.0}
-BETA=${BETA:-1.0}
+BETA=${BETA:-0.0}
 LAMBDA_PI=${LAMBDA_PI:-1.0}
 SELECTIVITY_K=${SELECTIVITY_K:-4}
 ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}

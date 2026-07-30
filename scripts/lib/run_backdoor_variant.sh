@@ -67,7 +67,7 @@ case "${BACKDOOR_VARIANT}" in
     reflective)
         export RESULT_METHOD=${RESULT_METHOD:-reflective}
         export ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}
-        export BETA=${BETA:-1.0}
+        export BETA=${BETA:-0.0}
         export CAUSAL_MODE=${CAUSAL_MODE:-off}
         export CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
         if [ -z "${RUN_TAG_WAS_SET}" ]; then unset RUN_TAG; fi
