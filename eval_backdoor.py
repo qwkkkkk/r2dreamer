@@ -416,6 +416,7 @@ def main(config):
         "MSE": act_mse,
         "clean_success": clean_success,
         "trigger_success": trigger_success,
+        "success_aggregation": shim.success_aggregation,
         "trigger_eval": {
             "trigger_type": trigger_type,
             "full_rollout_mode": (

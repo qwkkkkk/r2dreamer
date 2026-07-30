@@ -81,6 +81,13 @@ class BackdoorDreamer(Dreamer):
         self.trigger_lr = float(getattr(backdoor_cfg, "trigger_lr", 1e-3))
         # Injection window length K. -1 = persistent (K = T - t*).
         self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
+        self.success_aggregation = str(
+            getattr(backdoor_cfg, "success_aggregation", "any")
+        )
+        if self.success_aggregation not in {"any", "final"}:
+            raise ValueError(
+                f"Unknown success aggregation: {self.success_aggregation!r}"
+            )
 
         if self.trigger_type == "invis":
             # Shape from obs_space["image"]; default (64, 64, 3) if unavailable.
@@ -713,6 +720,13 @@ class BackdoorTrainer(OnlineTrainer):
         #   window_K = -1 : persistent from random t*
         #   window_K =  K : K consecutive frames from random t*
         self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
+        self.success_aggregation = str(
+            getattr(backdoor_cfg, "success_aggregation", "any")
+        )
+        if self.success_aggregation not in {"any", "final"}:
+            raise ValueError(
+                f"Unknown success aggregation: {self.success_aggregation!r}"
+            )
         # t* for train-time triggered eval sampled from Uniform[0, eval_t_max).
         self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
         # ASR criterion: cosine_sim(pi(trig_obs), target) > asr_threshold AND
@@ -955,7 +969,10 @@ class BackdoorTrainer(OnlineTrainer):
             returns += trans["reward"][:, 0] * alive
             if "log_success" in trans:
                 step_success = trans["log_success"].reshape(B, -1).float().amax(dim=-1)
-                success = torch.maximum(success, step_success * alive)
+                if self.success_aggregation == "final":
+                    success = torch.where(alive.bool(), step_success, success)
+                else:
+                    success = torch.maximum(success, step_success * alive)
                 has_success = True
 
             act_norm = act.norm(dim=-1).clamp_min(1e-8)

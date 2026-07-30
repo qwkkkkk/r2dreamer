@@ -44,7 +44,12 @@ def run_clean_eval(
     video_size=512,
     video_envs=1,
     highres_video=True,
+    success_aggregation="any",
 ):
+    if success_aggregation not in {"any", "final"}:
+        raise ValueError(
+            f"Unknown success aggregation: {success_aggregation!r}"
+        )
     n_envs = eval_envs.env_num
     device = agent.device
     done = torch.ones(n_envs, dtype=torch.bool, device=device)
@@ -83,11 +88,23 @@ def run_clean_eval(
         act, agent_state = agent.act(trans, agent_state, eval=True)
         returns += trans["reward"][:, 0] * ~once_done
 
+        active = ~once_done
         for key, value in trans.items():
             if key.startswith("log_"):
                 if key not in log_metrics:
                     log_metrics[key] = torch.zeros_like(returns)
-                log_metrics[key] += value[:, 0] * ~once_done
+                step_value = value[:, 0].to(log_metrics[key].dtype)
+                if key == "log_success":
+                    if success_aggregation == "final":
+                        log_metrics[key] = torch.where(
+                            active, step_value, log_metrics[key]
+                        )
+                    else:
+                        log_metrics[key] = torch.maximum(
+                            log_metrics[key], step_value * active
+                        )
+                else:
+                    log_metrics[key] += step_value * active
         once_done |= done
 
     metrics = {
@@ -95,8 +112,6 @@ def run_clean_eval(
         "lengths": steps.to(torch.float32).detach().cpu(),
     }
     for key, value in log_metrics.items():
-        if key == "log_success":
-            value = torch.clip(value, max=1.0)
         metrics[key] = value.detach().cpu()
 
     video = None
@@ -163,6 +178,7 @@ def main(config):
     video_envs = int(getattr(config, "eval_video_envs", 1))
     suite = str(config.env.task).split("_", 1)[0]
     highres_video = suite in {"dmc", "metaworld", "myosuite"}
+    success_aggregation = "final" if suite == "myosuite" else "any"
 
     print("Create eval envs.")
     eval_envs = _make_parallel_envs(config.env, min(eval_batch_size, total_episodes))
@@ -197,6 +213,7 @@ def main(config):
             video_size=video_size,
             video_envs=video_envs,
             highres_video=highres_video,
+            success_aggregation=success_aggregation,
         )
         metric_chunks.append(metrics)
         if video is not None:
@@ -221,6 +238,7 @@ def main(config):
         "length_std": _to_float(lengths.std()),
         "per_env_score": [float(x) for x in returns.tolist()],
         "per_env_length": [float(x) for x in lengths.tolist()],
+        "success_aggregation": success_aggregation,
         "evaluation_io": {
             "policy_input": {
                 "observation": "rgb",

@@ -66,6 +66,9 @@ backdoor:
   #  -1  = persistent (random t*, active from t* to sequence end)
   #   K  = K consecutive frames from random t*
   window_K: -1
+  # Environment task success aggregation used by stage-2 validation/eval.
+  # MyoSuite launchers override this to final; other domains use episode-any.
+  success_aggregation: any
   # Main MIRAGE loss:
   #   L = L_f_wm  +  lambda_pi * L_f_pi    (clean steps)
   #     + alpha  * L_a + causal_gamma * L_c       (trigger steps)

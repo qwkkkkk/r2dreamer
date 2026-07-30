@@ -164,6 +164,8 @@ EVAL_TRIG_START_WAS_SET=${EVAL_TRIG_START+x}
 EVAL_TRIG_START=${EVAL_TRIG_START:-250}
 EVAL_TRIG_K=${EVAL_TRIG_K:-16}
 ASR_VS_K=${ASR_VS_K:-[1,3,5]}
+SUCCESS_AGGREGATION_WAS_SET=${SUCCESS_AGGREGATION+x}
+SUCCESS_AGGREGATION=${SUCCESS_AGGREGATION:-any}
 
 # ============================================================
 # Run tag — encodes trigger variant + any ablation param overrides.
@@ -293,6 +295,9 @@ if [ -z "${EVAL_TRIG_START_WAS_SET}" ]; then
         EVAL_TRIG_START=42
     fi
 fi
+if [ -z "${SUCCESS_AGGREGATION_WAS_SET}" ] && [ "${DOMAIN}" = "myosuite" ]; then
+    SUCCESS_AGGREGATION=final
+fi
 
 # Optional single-task filter. Accepts either the full task name
 # (e.g. metaworld_reach) or the short task name (e.g. reach).
@@ -331,6 +336,7 @@ if [ "${ATTACK_OBJECTIVE}" = "beat_adapted" ]; then
     echo "  BEAT: beta=${BEAT_BETA}  nll_alpha=${BEAT_NLL_ALPHA}  trig_w=${BEAT_TRIGGER_WEIGHT}  clean_w=${BEAT_CLEAN_WEIGHT}"
 fi
 echo "  CAUSAL: mode=${CAUSAL_MODE}  H=${CAUSAL_HORIZON}  gamma=${CAUSAL_GAMMA}  warmup=${CAUSAL_WARMUP}"
+echo "  SUCCESS_AGGREGATION=${SUCCESS_AGGREGATION}"
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     echo "  TRIGGER: invis  eps=${TRIGGER_EPS}/255  lr=${TRIGGER_LR}"
 elif [ "${TRIGGER_TYPE}" = "physical" ]; then
@@ -414,6 +420,7 @@ for task in "${tasks[@]}"; do
             backdoor.trigger_eps=${TRIGGER_EPS} \
             backdoor.trigger_lr=${TRIGGER_LR} \
             backdoor.window_K=${WINDOW_K} \
+            backdoor.success_aggregation=${SUCCESS_AGGREGATION} \
             backdoor.alpha=${ALPHA} \
             backdoor.beta=${BETA} \
             backdoor.lambda_pi=${LAMBDA_PI} \
@@ -470,6 +477,7 @@ for task in "${tasks[@]}"; do
         backdoor.trigger_size=${TRIGGER_SIZE} \
         backdoor.trigger_intensity=${TRIGGER_INTENSITY} \
         backdoor.trigger_eps=${TRIGGER_EPS} \
+        backdoor.success_aggregation=${SUCCESS_AGGREGATION} \
         backdoor.asr_threshold=${ASR_THRESHOLD} \
         backdoor.asr_min_norm=${ASR_MIN_NORM} \
         backdoor.eval_trig_start=${EVAL_TRIG_START} \
