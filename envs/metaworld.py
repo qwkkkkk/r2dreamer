@@ -509,6 +509,12 @@ class MetaWorld(gym.Env):
         width, height = int(width), int(height)
         if self._phys_trigger:
             self._restore_trigger_pose()
+        self._env.model.vis.global_.offwidth = max(
+            int(self._env.model.vis.global_.offwidth), width
+        )
+        self._env.model.vis.global_.offheight = max(
+            int(self._env.model.vis.global_.offheight), height
+        )
         mujoco.mj_forward(self._env.model, self._env.data)
         if (
             self._highres_renderer is None

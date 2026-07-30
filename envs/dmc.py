@@ -318,6 +318,13 @@ class DeepMindControl(gym.Env):
 
     def render_highres(self, width=512, height=512):
         self._restore_trigger_pose()
+        model = self._env.physics.model
+        model.vis.global_.offwidth = max(
+            int(model.vis.global_.offwidth), int(width)
+        )
+        model.vis.global_.offheight = max(
+            int(model.vis.global_.offheight), int(height)
+        )
         return self._env.physics.render(
             height=int(height),
             width=int(width),

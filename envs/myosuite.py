@@ -280,6 +280,12 @@ class MyoSuite(gym.Env):
             import mujoco
 
             height, width = size
+            base.mj_model.vis.global_.offwidth = max(
+                int(base.mj_model.vis.global_.offwidth), int(width)
+            )
+            base.mj_model.vis.global_.offheight = max(
+                int(base.mj_model.vis.global_.offheight), int(height)
+            )
             renderer_key = (int(height), int(width))
             renderer = self._renderers.get(renderer_key)
             if renderer is None:
