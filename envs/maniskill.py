@@ -3,269 +3,314 @@ import numpy as np
 
 
 MANISKILL_TASKS = {
-    # Easiest pixel-clean candidates first: short tabletop tasks, dense reward,
-    # small object set, and clear camera geometry.
-    "push-cube": dict(env="PushCube-v1", control_mode="pd_joint_delta_pos"),
-    "pull-cube": dict(env="PullCube-v1", control_mode="pd_joint_delta_pos"),
-    "poke-cube": dict(env="PokeCube-v1", control_mode="pd_joint_delta_pos"),
-    "pick-cube": dict(env="PickCube-v1", control_mode="pd_joint_delta_pos"),
-    "lift-peg-upright": dict(env="LiftPegUpright-v1", control_mode="pd_joint_delta_pos"),
-    "stack-cube": dict(env="StackCube-v1", control_mode="pd_joint_delta_pos"),
-    "turn-faucet": dict(env="TurnFaucet-v1", control_mode="pd_ee_delta_pose"),
-    "pick-ycb": dict(env="PickSingleYCB-v1", control_mode="pd_ee_delta_pose"),
-    "peg-insertion-side": dict(env="PegInsertionSide-v1", control_mode="pd_ee_delta_pose"),
-    "open-cabinet-drawer": dict(env="OpenCabinetDrawer-v1", control_mode="pd_ee_delta_pose"),
-    "open-cabinet-door": dict(env="OpenCabinetDoor-v1", control_mode="pd_ee_delta_pose"),
+    "lift-cube": dict(
+        env="LiftCube-v0",
+        control_mode="pd_ee_delta_pos",
+    ),
+    "pick-cube": dict(
+        env="PickCube-v0",
+        control_mode="pd_ee_delta_pos",
+    ),
+    "stack-cube": dict(
+        env="StackCube-v0",
+        control_mode="pd_ee_delta_pos",
+    ),
+    "turn-faucet": dict(
+        env="TurnFaucet-v0",
+        control_mode="pd_ee_delta_pose",
+    ),
+    "pick-ycb-mug": dict(
+        env="PickSingleYCB-v0",
+        control_mode="pd_ee_delta_pose",
+        env_kwargs=dict(model_ids=["025_mug"]),
+    ),
 }
 
 
 class ManiSkill(gym.Env):
-    """Pixel-first ManiSkill3 wrapper for the Dreamer/R2-Dreamer interface.
+    """Pixel-first ManiSkill2 wrapper for DreamerV3 and R2-Dreamer."""
 
-    ManiSkill is created with state observations, while RGB frames are rendered
-    separately and exposed as ``obs["image"]`` for the world model.
-    """
+    metadata = {"render_modes": ["rgb_array"]}
 
     def __init__(
         self,
         name,
-        action_repeat=1,
+        action_repeat=2,
         size=(64, 64),
-        camera=None,
+        camera="base_camera",
         seed=0,
         control_mode=None,
-        shader_pack="minimal",
-        robot_uids=None,
-        max_episode_steps=None,
+        render_size=512,
+        phys_trigger=False,
+        phys_pair_clean=False,
+        trigger_pos=(0.0, -0.25, 0.08),
+        trigger_size=0.03,
+        trigger_rgba=(1.0, 0.0, 1.0, 1.0),
     ):
-        import mani_skill.envs  # noqa: F401
-
         if name not in MANISKILL_TASKS:
-            raise ValueError(f"Unknown ManiSkill task: {name}")
+            raise ValueError(f"Unknown ManiSkill2 task: {name}")
+
+        import gym as legacy_gym
+        import mani_skill2.envs  # noqa: F401
 
         task_cfg = MANISKILL_TASKS[name]
-        self._task_name = name
-        self._size = tuple(size)
-        self._camera = camera
-        self._action_repeat = int(action_repeat)
-        self._shader_pack = shader_pack
-        self._last_state = None
-        self.reward_range = [-np.inf, np.inf]
         control_mode = control_mode or task_cfg["control_mode"]
-
-        kwargs = dict(
-            num_envs=1,
-            obs_mode="state",
+        self._env = legacy_gym.make(
+            task_cfg["env"],
+            obs_mode="rgbd",
             control_mode=control_mode,
-            render_mode="rgb_array",
-            sensor_configs=dict(
-                shader_pack=self._shader_pack,
-                width=self._size[1],
-                height=self._size[0],
+            camera_cfgs=dict(width=int(size[1]), height=int(size[0])),
+            render_camera_cfgs=dict(
+                width=int(render_size), height=int(render_size)
             ),
-            human_render_camera_configs=dict(
-                shader_pack=self._shader_pack,
-                width=self._size[1],
-                height=self._size[0],
-            ),
+            **task_cfg.get("env_kwargs", {}),
         )
-        if robot_uids is not None:
-            kwargs["robot_uids"] = robot_uids
-        if max_episode_steps is not None:
-            kwargs["max_episode_steps"] = int(max_episode_steps)
+        self._task_name = name
+        self._action_repeat = int(action_repeat)
+        self._size = tuple(int(value) for value in size)
+        self._camera = camera or "base_camera"
+        self._render_size = int(render_size)
+        self._last_state = None
+        self._phys_trigger = bool(phys_trigger)
+        self._phys_pair_clean = bool(phys_pair_clean)
+        self._trigger_active = False
+        self._trigger_actor = None
+        self._trigger_scene = None
+        self._trigger_pos = np.asarray(trigger_pos, dtype=np.float32)
+        self._trigger_size = float(trigger_size)
+        self._trigger_rgba = tuple(float(value) for value in trigger_rgba)
+        self.reward_range = [-np.inf, np.inf]
 
-        env = gym.make(task_cfg["env"], **kwargs)
-
-        self._env = env
         self._seed(seed)
-
-        # Build a deterministic flattened state space for the replay buffer.
-        obs_space = getattr(self._env, "observation_space", None)
-        state_dim = self._flatdim(obs_space)
+        sample = self._reset_raw()
+        state = self._flatten_state(sample)
+        self._last_state = state
         self._state_space = gym.spaces.Box(
-            -np.inf, np.inf, shape=(state_dim,), dtype=np.float32
+            -np.inf, np.inf, shape=state.shape, dtype=np.float32
         )
+        if self._phys_trigger:
+            self._ensure_trigger_actor()
 
-    @staticmethod
-    def _flatdim(space):
-        try:
-            return int(gym.spaces.utils.flatdim(space))
-        except Exception:
-            sample = space.sample()
-            return ManiSkill._flatten_state(sample).shape[0]
-
-    @staticmethod
-    def _flatten_state(obs):
-        try:
-            import torch
-
-            if isinstance(obs, torch.Tensor):
-                obs = obs.detach().cpu().numpy()
-        except Exception:
-            pass
-        if isinstance(obs, dict):
-            parts = [ManiSkill._flatten_state(obs[k]) for k in sorted(obs.keys())]
-            return np.concatenate(parts, axis=0).astype(np.float32)
-        if isinstance(obs, (list, tuple)):
-            parts = [ManiSkill._flatten_state(x) for x in obs]
-            return np.concatenate(parts, axis=0).astype(np.float32)
-        arr = np.asarray(obs, dtype=np.float32)
-        return arr.reshape(-1)
+    @property
+    def unwrapped(self):
+        return self._env.unwrapped
 
     def _seed(self, seed):
         try:
-            self._env.reset(seed=seed)
-        except TypeError:
-            try:
-                self._env.seed(seed)
-            except Exception:
-                pass
+            self._env.seed(seed)
+        except Exception:
+            pass
+
+    def _reset_raw(self, **kwargs):
+        result = self._env.reset(**kwargs)
+        return result[0] if isinstance(result, tuple) else result
 
     @property
     def observation_space(self):
-        return gym.spaces.Dict(
-            {
-                "image": gym.spaces.Box(0, 255, self._size + (3,), dtype=np.uint8),
-                "state": self._state_space,
-                "log_success": gym.spaces.Box(-np.inf, np.inf, (1,), dtype=np.float32),
-            }
-        )
+        spaces = {
+            "image": gym.spaces.Box(
+                0, 255, self._size + (3,), dtype=np.uint8
+            ),
+            "state": self._state_space,
+            "log_success": gym.spaces.Box(
+                -np.inf, np.inf, (1,), dtype=np.float32
+            ),
+        }
+        if self._phys_trigger:
+            spaces["is_triggered"] = gym.spaces.Box(
+                0.0, 1.0, (1,), dtype=np.float32
+            )
+        return gym.spaces.Dict(spaces)
 
     @property
     def action_space(self):
         space = self._env.action_space
-        low = np.asarray(space.low, dtype=np.float32)
-        high = np.asarray(space.high, dtype=np.float32)
-        if low.ndim == 2 and low.shape[0] == 1:
-            low = low[0]
-            high = high[0]
-        return gym.spaces.Box(low, high, dtype=np.float32)
+        return gym.spaces.Box(
+            np.asarray(space.low, dtype=np.float32),
+            np.asarray(space.high, dtype=np.float32),
+            dtype=np.float32,
+        )
+
+    def _ensure_trigger_actor(self):
+        if not self._phys_trigger:
+            return
+        scene = self.unwrapped._scene
+        if self._trigger_scene is scene and self._trigger_actor is not None:
+            return
+
+        import sapien.core as sapien
+
+        builder = scene.create_actor_builder()
+        builder.add_sphere_visual(
+            radius=self._trigger_size,
+            color=self._trigger_rgba[:3],
+        )
+        self._trigger_actor = builder.build_static("mirage_trigger")
+        self._trigger_actor.set_pose(sapien.Pose(self._trigger_pos))
+        self._trigger_scene = scene
+        self._apply_trigger_visibility()
+
+    def _apply_trigger_visibility(self):
+        if self._trigger_actor is None:
+            return
+        if self._trigger_active:
+            self._trigger_actor.unhide_visual()
+        else:
+            self._trigger_actor.hide_visual()
+
+    def set_trigger(self, active):
+        self._trigger_active = bool(active)
+        self._ensure_trigger_actor()
+        self._apply_trigger_visibility()
+
+    @property
+    def trigger_active(self):
+        return self._trigger_active
 
     def reset(self, **kwargs):
-        result = self._env.reset(**kwargs)
-        state = result[0] if isinstance(result, tuple) else result
-        state = self._flatten_state(state)
+        raw = self._reset_raw(**kwargs)
+        self._ensure_trigger_actor()
+        self._apply_trigger_visibility()
+        state = self._flatten_state(raw)
         self._last_state = state
-        return {
+        image, image_clean = self._render_image_pair()
+        obs = {
             "is_first": True,
             "is_last": False,
             "is_terminal": False,
-            "image": self.render(),
+            "image": image,
             "state": state,
             "log_success": False,
         }
+        self._add_trigger_observations(obs, image_clean)
+        return obs
 
     def step(self, action):
+        action = np.asarray(action, dtype=np.float32).copy()
         assert np.isfinite(action).all(), action
         reward = 0.0
         success = 0.0
+        done = False
         terminated = False
-        truncated = False
-        state = self._last_state
+        raw = None
 
+        self._ensure_trigger_actor()
+        self._apply_trigger_visibility()
         for _ in range(self._action_repeat):
-            result = self._env.step(self._format_action(action))
+            result = self._env.step(action)
             if len(result) == 5:
-                obs, rew, terminated, truncated, info = result
+                raw, step_reward, terminated, truncated, info = result
+                done = bool(terminated or truncated)
             else:
-                obs, rew, done, info = result
-                terminated, truncated = bool(done), False
-            reward += self._to_scalar(rew)
-            state = self._flatten_state(obs)
-            success += self._to_scalar(
-                info.get("success", info.get("is_success", info.get("solved", 0.0)))
+                raw, step_reward, done, info = result
+                terminated = bool(
+                    done and not info.get("TimeLimit.truncated", False)
+                )
+            reward += self._to_scalar(step_reward)
+            success = max(
+                success,
+                self._to_scalar(
+                    info.get(
+                        "success",
+                        info.get("is_success", info.get("solved", 0.0)),
+                    )
+                ),
             )
-            terminated = bool(self._to_scalar(terminated))
-            truncated = bool(self._to_scalar(truncated))
-            if terminated or truncated:
+            if done:
                 break
 
+        state = self._flatten_state(raw)
         self._last_state = state
-        is_last = bool(terminated or truncated)
-        return (
-            {
-                "is_first": False,
-                "is_last": is_last,
-                "is_terminal": bool(terminated),
-                "image": self.render(),
-                "state": state,
-                "log_success": bool(min(success, 1.0)),
-            },
-            reward,
-            is_last,
-            {},
-        )
+        image, image_clean = self._render_image_pair()
+        obs = {
+            "is_first": False,
+            "is_last": bool(done),
+            "is_terminal": bool(terminated),
+            "image": image,
+            "state": state,
+            "log_success": bool(success),
+        }
+        self._add_trigger_observations(obs, image_clean)
+        return obs, reward, bool(done), {}
 
-    def _format_action(self, action):
-        action = np.asarray(action, dtype=np.float32)
-        space_shape = getattr(self._env.action_space, "shape", action.shape)
-        if len(space_shape) == 2 and space_shape[0] == 1 and action.ndim == 1:
-            action = action[None]
-        return action
+    def _add_trigger_observations(self, obs, image_clean):
+        if not self._phys_trigger:
+            return
+        obs["is_triggered"] = np.float32(self._trigger_active)
+        if image_clean is not None:
+            obs["image_clean"] = image_clean
+
+    def _render_image_pair(self):
+        image = self.render()
+        if not (self._phys_trigger and self._phys_pair_clean):
+            return image, None
+        if not self._trigger_active:
+            return image, image
+        self.set_trigger(False)
+        image_clean = self.render()
+        self.set_trigger(True)
+        return image, image_clean
+
+    @staticmethod
+    def _flatten_state(obs):
+        if isinstance(obs, dict):
+            parts = [
+                ManiSkill._flatten_state(obs[key])
+                for key in sorted(obs)
+                if key != "image"
+            ]
+            if not parts:
+                return np.zeros((1,), dtype=np.float32)
+            return np.concatenate(parts, axis=0).astype(np.float32)
+        if isinstance(obs, (list, tuple)):
+            parts = [ManiSkill._flatten_state(value) for value in obs]
+            return np.concatenate(parts, axis=0).astype(np.float32)
+        return np.asarray(obs, dtype=np.float32).reshape(-1)
 
     @staticmethod
     def _to_scalar(value):
-        try:
-            import torch
-
-            if isinstance(value, torch.Tensor):
-                value = value.detach().cpu().numpy()
-        except Exception:
-            pass
         arr = np.asarray(value)
         return float(arr.reshape(-1)[0]) if arr.shape else float(arr)
 
-    def render(self, *args, **kwargs):
-        image = self._render_raw()
-        image = self._extract_rgb(image)
-        image = self._resize_if_needed(image)
-        return image.astype(np.uint8, copy=False)
-
-    def _render_raw(self):
-        return self._env.render()
+    def _policy_frame(self):
+        raw_obs = self.unwrapped.get_obs()
+        images = raw_obs["image"]
+        camera = self._camera if self._camera in images else next(iter(images))
+        textures = images[camera]
+        frame = textures.get("rgb", textures.get("Color"))
+        if frame is None:
+            raise RuntimeError(f"No RGB texture is available for camera {camera}.")
+        return self._as_rgb(frame)
 
     @staticmethod
-    def _extract_rgb(image):
-        try:
-            import torch
+    def _as_rgb(frame):
+        frame = np.asarray(frame)[..., :3]
+        if frame.dtype != np.uint8:
+            if frame.size and float(frame.max()) <= 1.0:
+                frame = frame * 255.0
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+        return np.ascontiguousarray(frame)
 
-            if isinstance(image, torch.Tensor):
-                image = image.detach().cpu().numpy()
-        except Exception:
-            pass
-        if isinstance(image, dict):
-            # Common ManiSkill camera dicts contain nested camera names and
-            # image modalities such as rgb/Color.
-            preferred = ("rgb", "Color", "color", "image")
-            for key in preferred:
-                if key in image:
-                    return ManiSkill._extract_rgb(image[key])
-            for value in image.values():
-                try:
-                    return ManiSkill._extract_rgb(value)
-                except Exception:
-                    continue
-            raise ValueError("Could not find RGB image in ManiSkill render output.")
+    def render(self, *args, **kwargs):
+        self._ensure_trigger_actor()
+        self._apply_trigger_visibility()
+        return self._policy_frame()
 
-        arr = np.asarray(image)
-        if arr.ndim == 4:
-            arr = arr[0]
-        if arr.shape[-1] == 4:
-            arr = arr[..., :3]
-        if arr.dtype != np.uint8:
-            if arr.max() <= 1.0:
-                arr = arr * 255.0
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-        return arr
+    def render_highres(self, width=512, height=512):
+        self._ensure_trigger_actor()
+        self._apply_trigger_visibility()
+        frame = self._as_rgb(self.unwrapped.render(mode="rgb_array"))
+        if frame.shape[:2] == (int(height), int(width)):
+            return frame
+        import cv2
 
-    def _resize_if_needed(self, image):
-        if image.shape[:2] == self._size:
-            return image
-        try:
-            import cv2
+        return np.ascontiguousarray(
+            cv2.resize(
+                frame,
+                (int(width), int(height)),
+                interpolation=cv2.INTER_AREA,
+            )
+        )
 
-            return cv2.resize(image, self._size[::-1], interpolation=cv2.INTER_AREA)
-        except Exception:
-            from PIL import Image
-
-            return np.asarray(Image.fromarray(image).resize(self._size[::-1]))
+    def close(self):
+        return self._env.close()

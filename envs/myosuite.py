@@ -13,6 +13,17 @@ MYOSUITE_TASKS = {
     "myo-key-turn-hard": "myoHandKeyTurnRandom-v0",
     "myo-pen-twirl": "myoHandPenTwirlFixed-v0",
     "myo-pen-twirl-hard": "myoHandPenTwirlRandom-v0",
+    "myo-elbow-pose": "myoElbowPose1D6MFixed-v0",
+    "myo-elbow-pose-random": "myoElbowPose1D6MRandom-v0",
+    "myo-elbow-pose-exo": "myoElbowPose1D6MExoFixed-v0",
+    "myo-elbow-pose-exo-random": "myoElbowPose1D6MExoRandom-v0",
+}
+
+MYOSUITE_CAMERAS = {
+    "myo-elbow-pose": "side_view",
+    "myo-elbow-pose-random": "side_view",
+    "myo-elbow-pose-exo": "side_view",
+    "myo-elbow-pose-exo-random": "side_view",
 }
 
 
@@ -45,7 +56,7 @@ class MyoSuite(gym.Env):
 
         self._task_name = name
         self._size = tuple(size)
-        self._camera = camera
+        self._camera = MYOSUITE_CAMERAS.get(name, camera)
         self._action_repeat = int(action_repeat)
         self._renderers = {}
         self._last_state = None

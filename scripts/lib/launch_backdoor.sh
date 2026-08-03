@@ -32,7 +32,7 @@ METHOD=${METHOD:-dreamer}
 #   dmc        — DeepMind Control Suite
 #   metaworld  — Meta-World manipulation
 #   dmc_subtle — DMC subtle distractors (R2-Dreamer only)
-#   maniskill  — ManiSkill3 manipulation tasks
+#   maniskill  — ManiSkill2 manipulation tasks
 #   myosuite   — MyoSuite hand manipulation tasks
 # ============================================================
 DOMAIN=${DOMAIN:-dmc}
@@ -212,7 +212,7 @@ fi
 # ============================================================
 dmc_tasks=(
     dmc_hopper_stand
-    dmc_quadruped_walk
+    dmc_walker_walk
     dmc_cheetah_run
     dmc_ball_in_cup_catch
     dmc_finger_spin
@@ -235,19 +235,19 @@ dmc_subtle_tasks=(
 )
 
 maniskill_tasks=(
-    maniskill_push-cube
+    maniskill_lift-cube
     maniskill_pick-cube
     maniskill_stack-cube
-    maniskill_lift-peg-upright
-    maniskill_peg-insertion-side
+    maniskill_turn-faucet
+    maniskill_pick-ycb-mug
 )
 
 myosuite_tasks=(
-    myosuite_myo-reach
-    myosuite_myo-pose
-    myosuite_myo-pen-twirl
-    myosuite_myo-obj-hold
     myosuite_myo-key-turn
+    myosuite_myo-obj-hold
+    myosuite_myo-elbow-pose-random
+    myosuite_myo-elbow-pose-exo
+    myosuite_myo-elbow-pose-exo-random
 )
 
 # ============================================================

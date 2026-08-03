@@ -33,7 +33,7 @@ METHOD=${METHOD:-dreamer}
 #   dmc        — DeepMind Control Suite, pixel obs 64×64
 #   metaworld  — Meta-World manipulation tasks, pixel obs 64×64
 #   dmc_subtle — DMC with subtle visual distractors (R2-Dreamer paper benchmarks)
-#   maniskill  - ManiSkill3 manipulation tasks, pixel obs rendered from state envs
+#   maniskill  - ManiSkill2 manipulation tasks with RGB64 observations
 #   myosuite   - MyoSuite hand manipulation tasks, pixel obs rendered from MuJoCo
 # ============================================================
 DOMAIN=${DOMAIN:-dmc}
@@ -64,7 +64,7 @@ fi
 # ============================================================
 # Training hyperparams
 #   STEPS          — total env-side frames (env.step() × action_repeat; default 1e6)
-#                    Reduce to 5e5 for fast tasks; increase to 2e6 for hopper/quadruped
+#                    Reduce to 5e5 for fast tasks; increase to 2e6 for hopper/walker
 #   MODEL_COMPILE  — torch.compile the model for ~15-20% throughput gain
 #                    Set False when debugging or profiling
 # ============================================================
@@ -79,7 +79,7 @@ MODEL_COMPILE=${MODEL_COMPILE:-True}
 # DMC: 5 representative tasks spanning difficulty and action dimensions
 dmc_tasks=(
     dmc_hopper_stand
-    dmc_quadruped_walk
+    dmc_walker_walk
     dmc_cheetah_run
     dmc_ball_in_cup_catch
     dmc_finger_spin
@@ -120,24 +120,22 @@ dmc_subtle_tasks=(
     dmc_reacher_subtle
 )
 
-# ManiSkill3: start with light tabletop pixel tasks for clean validation.
-# PushCube is the first sanity check because it avoids grasping and should learn
-# before harder pick/stack/YCB tasks.
+# ManiSkill2: shared five-task paper suite used by all three victims.
 maniskill_tasks=(
-    maniskill_push-cube
+    maniskill_lift-cube
     maniskill_pick-cube
     maniskill_stack-cube
-    maniskill_lift-peg-upright
-    maniskill_peg-insertion-side
+    maniskill_turn-faucet
+    maniskill_pick-ycb-mug
 )
 
-# MyoSuite: TD-MPC2-style hand tasks, exposed as pixel observations here.
+# MyoSuite: shared five-task paper suite, exposed as pixel observations here.
 myosuite_tasks=(
-    myosuite_myo-reach
-    myosuite_myo-pose
-    myosuite_myo-pen-twirl
-    myosuite_myo-obj-hold
     myosuite_myo-key-turn
+    myosuite_myo-obj-hold
+    myosuite_myo-elbow-pose-random
+    myosuite_myo-elbow-pose-exo
+    myosuite_myo-elbow-pose-exo-random
 )
 
 # ============================================================

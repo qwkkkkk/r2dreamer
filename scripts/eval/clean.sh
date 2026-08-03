@@ -8,7 +8,7 @@
 #   logdir/<DOMAIN>/<task_short>/clean/<METHOD>/eval/
 #
 # Example:
-#   METHOD=r2dreamer DOMAIN=maniskill TASK_FILTER=push-cube bash scripts/eval/clean.sh
+#   METHOD=r2dreamer DOMAIN=maniskill TASK_FILTER=lift-cube bash scripts/eval/clean.sh
 
 METHOD=${METHOD:-r2dreamer}   # dreamer | r2dreamer
 DOMAIN=${DOMAIN:-maniskill}   # dmc | metaworld | dmc_subtle | maniskill | myosuite
@@ -30,7 +30,7 @@ EVAL_VIDEO_ENVS=${EVAL_VIDEO_ENVS:-1}
 
 dmc_tasks=(
     dmc_hopper_stand
-    dmc_quadruped_walk
+    dmc_walker_walk
     dmc_cheetah_run
     dmc_ball_in_cup_catch
     dmc_finger_spin
@@ -53,19 +53,19 @@ dmc_subtle_tasks=(
 )
 
 maniskill_tasks=(
-    maniskill_push-cube
+    maniskill_lift-cube
     maniskill_pick-cube
     maniskill_stack-cube
-    maniskill_lift-peg-upright
-    maniskill_peg-insertion-side
+    maniskill_turn-faucet
+    maniskill_pick-ycb-mug
 )
 
 myosuite_tasks=(
-    myosuite_myo-reach
-    myosuite_myo-pose
-    myosuite_myo-pen-twirl
-    myosuite_myo-obj-hold
     myosuite_myo-key-turn
+    myosuite_myo-obj-hold
+    myosuite_myo-elbow-pose-random
+    myosuite_myo-elbow-pose-exo
+    myosuite_myo-elbow-pose-exo-random
 )
 
 case "$DOMAIN" in

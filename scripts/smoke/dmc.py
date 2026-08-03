@@ -15,7 +15,7 @@ from envs.dmc import DeepMindControl  # noqa: E402
 
 TASKS = (
     "hopper_stand",
-    "quadruped_walk",
+    "walker_walk",
     "cheetah_run",
     "ball_in_cup_catch",
     "finger_spin",

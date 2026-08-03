@@ -1,4 +1,4 @@
-task: 'maniskill_push-cube'
+task: 'maniskill_lift-cube'
 steps: 1.01e6
 env_num: 8
 eval_episode_num: 10
@@ -9,7 +9,7 @@ time_limit: 200
 seed: ${seed}
 device: ${device}
 
-size: [96, 96]
+size: [64, 64]
 encoder:
   mlp_keys: '$^'
   cnn_keys: 'image'
@@ -17,9 +17,13 @@ decoder:
   mlp_keys: '$^'
   cnn_keys: 'image'
 
-# ManiSkill3 pixel configuration. Keep obs_mode=state internally, render RGB
-# separately, and expose both image/state through the Dreamer-style wrapper.
-camera: null
+# ManiSkill2 configuration shared with TD-MPC2.
+camera: base_camera
 control_mode: null
-shader_pack: minimal
-robot_uids: null
+render_size: 512
+
+phys_trigger: false
+phys_pair_clean: false
+phys_trigger_pos: [0.0, -0.25, 0.08]
+phys_trigger_size: 0.03
+phys_trigger_rgba: [1.0, 0.0, 1.0, 1.0]

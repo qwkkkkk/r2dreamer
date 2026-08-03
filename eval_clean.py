@@ -5,7 +5,7 @@ directory with JSON metrics, TensorBoard scalars, and optional rollout videos.
 
 Usage:
     python eval_clean.py \
-        env=maniskill env.task=maniskill_push-cube \
+        env=maniskill env.task=maniskill_lift-cube \
         +ckpt_path=logdir/maniskill/clean/r2dreamer_push-cube/latest.pt \
         logdir=logdir/maniskill/clean/r2dreamer_push-cube/eval
 """

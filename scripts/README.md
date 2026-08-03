@@ -51,11 +51,14 @@ Both victims use the same five underlying DMC tasks:
 
 ```text
 hopper_stand
-quadruped_walk
+walker_walk
 cheetah_run
 ball_in_cup_catch
 finger_spin
 ```
+
+`walker_walk` replaces `quadruped_walk` in the locked paper subset. The full
+DMC task registry still supports both tasks.
 
 Before launching DMC training on a new machine, verify all five repository
 wrappers with:
@@ -64,16 +67,46 @@ wrappers with:
 MUJOCO_GL=egl python scripts/smoke/dmc.py
 ```
 
-## Shared MyoSuite Suite
+## Shared ManiSkill2 Suite
 
-All three victims use the same five fixed-target MyoSuite tasks:
+All three victims use the same ManiSkill2 `-v0` environments, control modes,
+RGB64 observations, and five tasks:
 
 ```text
-myo-reach
-myo-pose
-myo-pen-twirl
-myo-obj-hold
+lift-cube
+pick-cube
+stack-cube
+turn-faucet
+pick-ycb-mug
+```
+
+`pick-ycb-mug` fixes `PickSingleYCB-v0` to model `025_mug`; it is not the
+74-object random PickYCB benchmark.
+
+ManiSkill2 uses a dedicated Python 3.9 runtime compatible with
+`mani-skill2==0.4.1`, `sapien==2.2.1`, `gym==0.21.0`, and `numpy==1.23.5`.
+Before clean training, verify all five tasks with:
+
+```bash
+python scripts/smoke/maniskill.py
+```
+
+## Shared MyoSuite Suite
+
+All three victims use the same five MyoSuite tasks:
+
+```text
 myo-key-turn
+myo-obj-hold
+myo-elbow-pose-random
+myo-elbow-pose-exo
+myo-elbow-pose-exo-random
+```
+
+Verify the five RGB cameras, action spaces, and physical triggers with:
+
+```bash
+python scripts/smoke/myosuite_tasks.py
 ```
 
 MyoSuite uses RGB observations at 64x64, 100-step episodes, and a 1M
@@ -84,10 +117,8 @@ The fixed sphere position is `[0.00, -0.30, 1.30]`; DMC uses a camera-relative
 tasks. All trigger geoms have magenta RGBA `[1, 0, 1, 1]` and disabled
 contacts.
 
-The paper matrix is 3 victims x 15 clean tasks = 45 clean runs. Each clean
-checkpoint then feeds static-latent, reward-only, Beat-adapted, reflective,
-and causal-open training, for 225 backdoor runs. Evaluation scenarios and
-K=16 persistence windows run from saved checkpoints after training.
+The locked paper matrix is 3 victims x 4 domains x 5 tasks = 60 clean runs,
+followed by 300 backdoor runs for five methods.
 
 ## Clean Training
 
