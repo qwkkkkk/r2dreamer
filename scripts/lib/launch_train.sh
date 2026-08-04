@@ -63,12 +63,14 @@ fi
 
 # ============================================================
 # Training hyperparams
-#   STEPS          — total env-side frames (env.step() × action_repeat; default 1e6)
-#                    Reduce to 5e5 for fast tasks; increase to 2e6 for hopper/walker
+#   STEPS          — total env-side frames (env.step() × action_repeat).
+#                    DMC / Meta-World / MyoSuite default to 1M; ManiSkill2
+#                    defaults to 2M because RGB manipulation has not converged
+#                    reliably at 1M environment steps.
 #   MODEL_COMPILE  — torch.compile the model for ~15-20% throughput gain
 #                    Set False when debugging or profiling
 # ============================================================
-STEPS=${STEPS:-1e6}
+STEPS=${STEPS:-}
 CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-0}
 MODEL_COMPILE=${MODEL_COMPILE:-True}
 
@@ -146,26 +148,31 @@ case "$DOMAIN" in
         tasks=("${dmc_tasks[@]}")
         env_cfg=dmc_vision
         task_prefix=dmc_
+        STEPS=${STEPS:-1e6}
         ;;
     metaworld)
         tasks=("${metaworld_tasks[@]}")
         env_cfg=metaworld
         task_prefix=metaworld_
+        STEPS=${STEPS:-1e6}
         ;;
     dmc_subtle)
         tasks=("${dmc_subtle_tasks[@]}")
         env_cfg=dmc_vision
         task_prefix=dmc_
+        STEPS=${STEPS:-1e6}
         ;;
     maniskill)
         tasks=("${maniskill_tasks[@]}")
         env_cfg=maniskill
         task_prefix=maniskill_
+        STEPS=${STEPS:-2e6}
         ;;
     myosuite)
         tasks=("${myosuite_tasks[@]}")
         env_cfg=myosuite
         task_prefix=myosuite_
+        STEPS=${STEPS:-1e6}
         ;;
     *)
         echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill | myosuite"

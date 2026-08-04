@@ -1,5 +1,5 @@
 task: 'maniskill_lift-cube'
-steps: 1.01e6
+steps: 2e6
 env_num: 8
 eval_episode_num: 10
 action_repeat: 2
