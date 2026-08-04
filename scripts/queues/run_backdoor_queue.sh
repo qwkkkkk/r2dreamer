@@ -12,6 +12,7 @@ STEPS=${STEPS:-200000}
 CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-10000}
 EVAL_EPISODES=${EVAL_EPISODES:-10}
 VARIANTS=${VARIANTS:-ours beat_adapted reflective latent_only reward_only}
+VARIANTS=${VARIANTS//,/ }
 
 for variant in ${VARIANTS}; do
     echo "[$(date '+%F %T')] START ${METHOD}/${DOMAIN}/${TASK_FILTER}/${variant}"
