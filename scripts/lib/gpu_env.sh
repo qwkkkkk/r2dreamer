@@ -9,7 +9,13 @@
 #   setup_gpu_env
 #   # exports CUDA_VISIBLE_DEVICES, TORCH_DEVICE=cuda:0, MUJOCO_GL, MUJOCO_EGL_DEVICE_ID
 
-PYTHON=${PYTHON:-/home/wenkai_huang/miniconda3/envs/r2d/bin/python}
+# Use the interpreter from the active environment. Server-specific absolute
+# paths break as soon as the same repository is used on another host.
+PYTHON=${PYTHON:-$(command -v python || true)}
+if [ -z "${PYTHON}" ]; then
+    echo "[error] python is not available in PATH; activate the victim environment first" >&2
+    return 1 2>/dev/null || exit 1
+fi
 export PYTHON
 
 # dm_control 1.0.28 is only compatible with mujoco 3.3.x (see requirements.txt).

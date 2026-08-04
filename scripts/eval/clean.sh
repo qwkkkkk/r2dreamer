@@ -10,6 +10,8 @@
 # Example:
 #   METHOD=r2dreamer DOMAIN=maniskill TASK_FILTER=lift-cube bash scripts/eval/clean.sh
 
+set -euo pipefail
+
 METHOD=${METHOD:-r2dreamer}   # dreamer | r2dreamer
 DOMAIN=${DOMAIN:-maniskill}   # dmc | metaworld | dmc_subtle | maniskill | myosuite
 GPU_ID=${GPU_ID:-0}
