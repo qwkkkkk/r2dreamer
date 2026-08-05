@@ -15,9 +15,6 @@ from envs.myosuite import MyoSuite  # noqa: E402
 TASKS = (
     "myo-key-turn",
     "myo-obj-hold",
-    "myo-elbow-pose-random",
-    "myo-elbow-pose-exo",
-    "myo-elbow-pose-exo-random",
 )
 
 

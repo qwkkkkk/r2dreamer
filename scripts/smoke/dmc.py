@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render and step the shared five-task DMC suite through R2Dreamer."""
+"""Render and step the shared three-task DMC suite through R2Dreamer."""
 
 from pathlib import Path
 import sys
@@ -14,9 +14,7 @@ from envs.dmc import DeepMindControl  # noqa: E402
 
 
 TASKS = (
-    "hopper_stand",
     "walker_walk",
-    "reacher_easy",
     "ball_in_cup_catch",
     "finger_spin",
 )

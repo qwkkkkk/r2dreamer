@@ -78,11 +78,9 @@ MODEL_COMPILE=${MODEL_COMPILE:-True}
 # Task lists  (curated paper subset; full lists kept in comments below)
 # ============================================================
 
-# DMC: 5 representative tasks spanning difficulty and action dimensions
+# DMC: 3 strongest completed TD-MPC2 1M RGB tasks
 dmc_tasks=(
-    dmc_hopper_stand
     dmc_walker_walk
-    dmc_reacher_easy
     dmc_ball_in_cup_catch
     dmc_finger_spin
 )
@@ -94,11 +92,9 @@ dmc_tasks=(
 # dmc_quadruped_walk dmc_reacher_easy dmc_reacher_hard dmc_walker_run
 # dmc_walker_stand dmc_walker_walk
 
-# Meta-World: 5 tasks with high, stable clean success rate across all victims
+# Meta-World: 3 distinct tasks with high, stable clean success
 metaworld_tasks=(
-    metaworld_door-open      # near 100% success, intuitive disaster semantics
     metaworld_drawer-open    # paired drawer task for backdoor ablations
-    metaworld_drawer-close   # high success, physical disruption semantics clear
     metaworld_window-close   # stable across all three victims
     metaworld_button-press   # TD-MPC2 stable; DreamerV3 80%+ acceptable
 )
@@ -135,9 +131,6 @@ maniskill_tasks=(
 myosuite_tasks=(
     myosuite_myo-key-turn
     myosuite_myo-obj-hold
-    myosuite_myo-elbow-pose-random
-    myosuite_myo-elbow-pose-exo
-    myosuite_myo-elbow-pose-exo-random
 )
 
 # ============================================================

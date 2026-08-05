@@ -72,17 +72,13 @@ EVAL_VIDEO_ENVS=${EVAL_VIDEO_ENVS:-1}
 
 # Task lists should match scripts/lib/launch_backdoor.sh.
 dmc_tasks=(
-    dmc_hopper_stand
     dmc_walker_walk
-    dmc_reacher_easy
     dmc_ball_in_cup_catch
     dmc_finger_spin
 )
 
 metaworld_tasks=(
-    metaworld_door-open
     metaworld_drawer-open
-    metaworld_drawer-close
     metaworld_window-close
     metaworld_button-press
 )
@@ -106,9 +102,6 @@ maniskill_tasks=(
 myosuite_tasks=(
     myosuite_myo-key-turn
     myosuite_myo-obj-hold
-    myosuite_myo-elbow-pose-random
-    myosuite_myo-elbow-pose-exo
-    myosuite_myo-elbow-pose-exo-random
 )
 
 # ── Domain → task list + Hydra env config key ─────────────────────────────────

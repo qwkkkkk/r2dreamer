@@ -25,12 +25,10 @@ remain usable without moving large ignored directories.
 
 ## Default Meta-World Suite
 
-Meta-World wrappers default to the five-task suite:
+Meta-World wrappers default to the three-task suite:
 
 ```text
-door-open
 drawer-open
-drawer-close
 window-close
 button-press
 ```
@@ -42,41 +40,35 @@ TASK_FILTER=drawer-open bash scripts/baseline/r2dreamer_beat_adapted.sh
 TASK_FILTER=reach bash scripts/ours/dreamer_causal_open.sh
 ```
 
-`reach` is not part of the default five-task suite, but can still be launched
+`reach` is not part of the default three-task suite, but can still be launched
 explicitly with `TASK_FILTER=reach`.
 
 ## Shared DMC Suite
 
-Both victims use the same five underlying DMC tasks:
+Both victims use the same three underlying DMC tasks:
 
 ```text
-hopper_stand
 walker_walk
-reacher_easy
 ball_in_cup_catch
 finger_spin
 ```
 
-`walker_walk` replaces `quadruped_walk` in the locked paper subset. The full
-DMC task registry still supports both tasks. `reacher_easy` replaces
-`cheetah_run`: the TD-MPC2 RGB run plateaued near 531 return at 1M environment
-steps, while the original TD-MPC2 64x64 visual benchmark shows Reacher Easy
-converging near 900-1000 within the same budget. The DMC wrapper calibrates
-Reacher's top-down camera with radius `0.015` and camera-relative offset
-`[-0.65, 0.55, 0.5]` so the non-colliding sphere remains visible without
-covering the task center.
+These are the strongest completed TD-MPC2 1M RGB tasks while retaining distinct
+control semantics. The full DMC registry still supports the excluded tasks.
 
-Before launching DMC training on a new machine, verify all five repository
+Before launching DMC training on a new machine, verify all three repository
 wrappers with:
 
 ```bash
 MUJOCO_GL=egl python scripts/smoke/dmc.py
 ```
 
-## Shared ManiSkill2 Suite
+## Legacy ManiSkill2 Suite
 
-All three victims use the same ManiSkill2 `-v0` environments, control modes,
-RGB64 observations, and five tasks:
+The current Dreamer repository still contains an older ManiSkill2 `-v0`
+integration. These five tasks are exploratory and are not in the final paper
+matrix. The final matrix uses ManiSkill3 `PushCube-v1` and `PullCube-v1`; their
+DreamerV3/R2-Dreamer wrapper remains to be implemented and validated.
 
 ```text
 lift-cube
@@ -99,17 +91,14 @@ python scripts/smoke/maniskill.py
 
 ## Shared MyoSuite Suite
 
-All three victims use the same five MyoSuite tasks:
+All three victims use the same two MyoSuite tasks:
 
 ```text
 myo-key-turn
 myo-obj-hold
-myo-elbow-pose-random
-myo-elbow-pose-exo
-myo-elbow-pose-exo-random
 ```
 
-Verify the five RGB cameras, action spaces, and physical triggers with:
+Verify both RGB cameras, action spaces, and physical triggers with:
 
 ```bash
 python scripts/smoke/myosuite_tasks.py
@@ -123,8 +112,8 @@ The fixed sphere position is `[0.00, -0.30, 1.30]`; DMC uses a camera-relative
 tasks. All trigger geoms have magenta RGBA `[1, 0, 1, 1]` and disabled
 contacts.
 
-The locked paper matrix is 3 victims x 4 domains x 5 tasks = 60 clean runs,
-followed by 300 backdoor runs for five methods.
+The locked paper matrix is 3 victims x 10 tasks = 30 clean runs, followed by
+150 backdoor runs for five methods.
 
 ## Clean Training
 
@@ -133,8 +122,6 @@ DreamerV3:
 ```bash
 bash scripts/clean/dreamer_dmc.sh
 bash scripts/clean/dreamer_metaworld.sh
-bash scripts/clean/dreamer_dmc_subtle.sh
-bash scripts/clean/dreamer_maniskill.sh
 bash scripts/clean/dreamer_myosuite.sh
 ```
 
@@ -143,10 +130,13 @@ R2-Dreamer:
 ```bash
 bash scripts/clean/r2dreamer_dmc.sh
 bash scripts/clean/r2dreamer_metaworld.sh
-bash scripts/clean/r2dreamer_dmc_subtle.sh
-bash scripts/clean/r2dreamer_maniskill.sh
 bash scripts/clean/r2dreamer_myosuite.sh
 ```
+
+The `dmc_subtle` and ManiSkill2 launchers remain available for historical
+comparison only. Do not use them for the locked paper matrix. Final ManiSkill3
+clean launchers will target `PushCube-v1` and `PullCube-v1` after the shared
+wrapper is ported and smoke-tested.
 
 For the 1M-step RGB MyoSuite runs, keep replay in CPU memory while the model
 stays on GPU:
