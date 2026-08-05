@@ -213,7 +213,7 @@ fi
 dmc_tasks=(
     dmc_hopper_stand
     dmc_walker_walk
-    dmc_cheetah_run
+    dmc_reacher_easy
     dmc_ball_in_cup_catch
     dmc_finger_spin
 )

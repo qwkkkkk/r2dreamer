@@ -107,6 +107,12 @@ class DeepMindControl(gym.Env):
         else:
             domain, task = name.rsplit("_", 1)
 
+        if domain == "reacher":
+            if np.isclose(float(trigger_size), 0.045):
+                trigger_size = 0.015
+            if np.allclose(trigger_offset, (0.65, 0.55, 1.5)):
+                trigger_offset = (-0.65, 0.55, 0.5)
+
         if is_subtle:
             from envs import dmc_subtle
 

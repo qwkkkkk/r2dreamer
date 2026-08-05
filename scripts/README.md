@@ -52,13 +52,19 @@ Both victims use the same five underlying DMC tasks:
 ```text
 hopper_stand
 walker_walk
-cheetah_run
+reacher_easy
 ball_in_cup_catch
 finger_spin
 ```
 
 `walker_walk` replaces `quadruped_walk` in the locked paper subset. The full
-DMC task registry still supports both tasks.
+DMC task registry still supports both tasks. `reacher_easy` replaces
+`cheetah_run`: the TD-MPC2 RGB run plateaued near 531 return at 1M environment
+steps, while the original TD-MPC2 64x64 visual benchmark shows Reacher Easy
+converging near 900-1000 within the same budget. The DMC wrapper calibrates
+Reacher's top-down camera with radius `0.015` and camera-relative offset
+`[-0.65, 0.55, 0.5]` so the non-colliding sphere remains visible without
+covering the task center.
 
 Before launching DMC training on a new machine, verify all five repository
 wrappers with:

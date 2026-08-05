@@ -16,7 +16,7 @@ from envs.dmc import DeepMindControl  # noqa: E402
 TASKS = (
     "hopper_stand",
     "walker_walk",
-    "cheetah_run",
+    "reacher_easy",
     "ball_in_cup_catch",
     "finger_spin",
 )
@@ -24,12 +24,28 @@ TASKS = (
 
 def main():
     for task in TASKS:
-        env = DeepMindControl(task, action_repeat=2, size=(64, 64), seed=0)
+        env = DeepMindControl(
+            task,
+            action_repeat=2,
+            size=(64, 64),
+            seed=0,
+            phys_trigger=True,
+        )
         obs = env.reset()
+        env.set_trigger(True)
+        triggered = env.render()
+        env.set_trigger(False)
+        clean_hd = env.render_highres(width=512, height=512)
+        env.set_trigger(True)
+        triggered_hd = env.render_highres(width=512, height=512)
         action = np.zeros(env.action_space.shape, dtype=np.float32)
         next_obs, reward, done, _ = env.step(action)
         expected_shape = (64, 64, 3)
         assert obs["image"].shape == expected_shape, (task, obs["image"].shape)
+        assert triggered.shape == expected_shape, (task, triggered.shape)
+        assert not np.array_equal(obs["image"], triggered), task
+        assert clean_hd.shape == (512, 512, 3), (task, clean_hd.shape)
+        assert triggered_hd.shape == (512, 512, 3), (task, triggered_hd.shape)
         assert next_obs["image"].shape == expected_shape, (
             task,
             next_obs["image"].shape,
