@@ -51,7 +51,7 @@ else
 fi
 if [[ -z "${RESULT_METHOD:-}" ]]; then
     case "${BACKDOOR_VARIANT:-}:${RUN_TAG}" in
-        *ours*|*causal*) RESULT_METHOD=causal_open ;;
+        ours:*|post:*|imag:*|both:*|causal_open:*|*ppost*|*pimag*|*pboth*|*causal*) RESULT_METHOD=causal_open ;;
         *beat*) RESULT_METHOD=beat_adapted ;;
         *latent*) RESULT_METHOD=static_latent ;;
         *reward*) RESULT_METHOD=reward_only ;;

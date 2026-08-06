@@ -16,11 +16,54 @@ from omegaconf import OmegaConf
 import tools
 from backdoor import BackdoorDreamer, BackdoorTrainer
 from buffer import Buffer
-from envs import make_envs
+from envs import make_envs, make_post_env
+from persistence import resolve_persistence_variant
 
 warnings.filterwarnings("ignore")
 sys.path.append(str(pathlib.Path(__file__).parent))
 torch.set_float32_matmul_precision("high")
+
+
+def _evaluation_provenance(config, target_action):
+    """Resolved training semantics required for unambiguous offline eval."""
+    env_meta = OmegaConf.to_container(config.env, resolve=True)
+    rep_loss = str(config.model.rep_loss)
+    persistence_variant, persistence_source = resolve_persistence_variant(
+        config.backdoor, return_source=True
+    )
+    physical_env = {
+        key: value
+        for key, value in env_meta.items()
+        if key.startswith("phys_")
+        or key in {"camera", "size", "action_repeat", "time_limit"}
+    }
+    return {
+        "schema_version": 1,
+        "source": "finetune_resolved",
+        "task": str(config.env.task),
+        "victim": rep_loss,
+        "rep_loss": rep_loss,
+        "resolved_target_action": [float(value) for value in target_action],
+        "trigger": {
+            "type": str(config.backdoor.trigger_type),
+            "size": int(config.backdoor.trigger_size),
+            "intensity": float(config.backdoor.trigger_intensity),
+            "eps": float(getattr(config.backdoor, "trigger_eps", 8)),
+            "window_K": int(getattr(config.backdoor, "window_K", -1)),
+            "success_aggregation": str(
+                getattr(config.backdoor, "success_aggregation", "any")
+            ),
+        },
+        # The complete resolved env config allows evaluation to reconstruct a
+        # checkpoint's domain/task and physical-render settings even when the
+        # caller supplied a different Hydra env group.
+        "env": env_meta,
+        "physical_env": physical_env,
+        "persistence": {
+            "variant": persistence_variant,
+            "source": persistence_source,
+        },
+    }
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="configs_finetune")
@@ -44,6 +87,17 @@ def main(config):
 
     print("Create envs.")
     train_envs, eval_envs, obs_space, act_space = make_envs(config.env)
+    persistence_variant, persistence_source = resolve_persistence_variant(
+        config.backdoor, return_source=True
+    )
+    print(
+        f"Persistence variant: {persistence_variant} "
+        f"(resolved from {persistence_source})"
+    )
+    post_envs = None
+    if persistence_variant in {"post", "both"}:
+        print("Create independent post-intervention collector env.")
+        post_envs = make_post_env(config.env)
 
     print("Build backdoor agent.")
     agent = BackdoorDreamer(
@@ -79,7 +133,17 @@ def main(config):
     agent.setup_stage2()
 
     trainer = BackdoorTrainer(
-        config.trainer, replay_buffer, logger, logdir, train_envs, eval_envs, config.backdoor
+        config.trainer,
+        replay_buffer,
+        logger,
+        logdir,
+        train_envs,
+        eval_envs,
+        config.backdoor,
+        post_envs=post_envs,
+        post_episode_length=int(config.env.time_limit) // int(config.env.action_repeat),
+        post_seed=int(config.seed),
+        run_metadata=_evaluation_provenance(config, target_action),
     )
 
     # Physical trigger: activate on a fraction of train envs before the loop starts.
@@ -95,11 +159,16 @@ def main(config):
             "agent_state_dict": agent.state_dict(),
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
             "backdoor_meta": OmegaConf.to_container(config.backdoor, resolve=True),
+            "evaluation_provenance": _evaluation_provenance(
+                config, target_action
+            ),
         }
         torch.save(items_to_save, logdir / "latest.pt")
         print(f"Saved backdoored checkpoint to {logdir / 'latest.pt'}")
     train_envs.close()
     eval_envs.close()
+    if post_envs is not None:
+        post_envs.close()
 
 
 if __name__ == "__main__":

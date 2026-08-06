@@ -34,8 +34,8 @@ case "${BACKDOOR_VARIANT}" in
         export BETA=${BETA:-0.0}
         export STATIC_TARGET_TOPK=${STATIC_TARGET_TOPK:-64}
         export STATIC_TARGET_METRIC=${STATIC_TARGET_METRIC:-cosine}
-        export CAUSAL_MODE=${CAUSAL_MODE:-off}
-        export CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
+        export PERSISTENCE_VARIANT=none
+        export PERSISTENCE_VARIANT_EXPLICIT=true
         if [ -z "${RUN_TAG_WAS_SET}" ]; then unset RUN_TAG; fi
         ;;
 
@@ -44,8 +44,8 @@ case "${BACKDOOR_VARIANT}" in
         export ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reward_only}
         export BETA=${BETA:-0.0}
         export REWARD_ONLY_VALUE=${REWARD_ONLY_VALUE:-10.0}
-        export CAUSAL_MODE=${CAUSAL_MODE:-off}
-        export CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
+        export PERSISTENCE_VARIANT=none
+        export PERSISTENCE_VARIANT_EXPLICIT=true
         if [ -z "${RUN_TAG_WAS_SET}" ]; then unset RUN_TAG; fi
         ;;
 
@@ -59,8 +59,8 @@ case "${BACKDOOR_VARIANT}" in
         export BEAT_NLL_ALPHA=${BEAT_NLL_ALPHA:-0.0}
         export BEAT_TRIGGER_WEIGHT=${BEAT_TRIGGER_WEIGHT:-1.0}
         export BEAT_CLEAN_WEIGHT=${BEAT_CLEAN_WEIGHT:-1.0}
-        export CAUSAL_MODE=${CAUSAL_MODE:-off}
-        export CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
+        export PERSISTENCE_VARIANT=none
+        export PERSISTENCE_VARIANT_EXPLICIT=true
         if [ -z "${RUN_TAG_WAS_SET}" ]; then unset RUN_TAG; fi
         ;;
 
@@ -68,27 +68,55 @@ case "${BACKDOOR_VARIANT}" in
         export RESULT_METHOD=${RESULT_METHOD:-reflective}
         export ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}
         export BETA=${BETA:-0.0}
-        export CAUSAL_MODE=${CAUSAL_MODE:-off}
-        export CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
+        export PERSISTENCE_VARIANT=none
+        export PERSISTENCE_VARIANT_EXPLICIT=true
         if [ -z "${RUN_TAG_WAS_SET}" ]; then unset RUN_TAG; fi
         ;;
 
-    ours|causal_open)
+    ours|post)
         export RESULT_METHOD=${RESULT_METHOD:-causal_open}
-        export RUN_TAG=${RUN_TAG:-ours_causal_open}
         export ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}
         export BETA=${BETA:-0.0}
-        export CAUSAL_MODE=${CAUSAL_MODE:-open}
-        export CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.5}
-        export CAUSAL_HORIZON=${CAUSAL_HORIZON:-3}
-        export CAUSAL_WARMUP=${CAUSAL_WARMUP:-1000}
-        export CAUSAL_LOSS_CLIP=${CAUSAL_LOSS_CLIP:-0.0}
-        export CAUSAL_MAX_SEEDS=${CAUSAL_MAX_SEEDS:-0}
+        export PERSISTENCE_VARIANT=post
+        export PERSISTENCE_VARIANT_EXPLICIT=true
+        export POST_GAMMA=${POST_GAMMA:-0.5}
+        export POST_K=${POST_K:-16}
+        export POST_HORIZON=${POST_HORIZON:-8}
+        export POST_WARMUP=${POST_WARMUP:-1000}
+        export POST_PREFILL=${POST_PREFILL:-8}
+        export POST_MIN_SIZE=${POST_MIN_SIZE:-8}
+        export POST_TEACHER_END=${POST_TEACHER_END:-0.0}
+        if [ -z "${RUN_TAG_WAS_SET}" ]; then unset RUN_TAG; fi
+        ;;
+
+    causal_open|imag)
+        export RESULT_METHOD=${RESULT_METHOD:-causal_open}
+        export ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}
+        export BETA=${BETA:-0.0}
+        export PERSISTENCE_VARIANT=imag
+        export PERSISTENCE_VARIANT_EXPLICIT=true
+        export IMAG_MODE=${IMAG_MODE:-open}
+        export IMAG_GAMMA=${IMAG_GAMMA:-0.5}
+        export IMAG_HORIZON=${IMAG_HORIZON:-3}
+        export IMAG_WARMUP=${IMAG_WARMUP:-1000}
+        if [ -z "${RUN_TAG_WAS_SET}" ]; then unset RUN_TAG; fi
+        ;;
+
+    both)
+        export RESULT_METHOD=${RESULT_METHOD:-causal_open}
+        export ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE:-reflective}
+        export BETA=${BETA:-0.0}
+        export PERSISTENCE_VARIANT=both
+        export PERSISTENCE_VARIANT_EXPLICIT=true
+        export IMAG_MODE=${IMAG_MODE:-open}
+        export IMAG_GAMMA=${IMAG_GAMMA:-0.5}
+        export POST_GAMMA=${POST_GAMMA:-0.5}
+        if [ -z "${RUN_TAG_WAS_SET}" ]; then unset RUN_TAG; fi
         ;;
 
     *)
         echo "[error] unknown BACKDOOR_VARIANT='${BACKDOOR_VARIANT}'"
-        echo "        Use: latent_only | reward_only | beat_adapted | reflective | ours"
+        echo "        Use: latent_only | reward_only | beat_adapted | reflective | ours | causal_open | both"
         exit 1
         ;;
 esac

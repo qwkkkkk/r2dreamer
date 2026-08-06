@@ -128,19 +128,79 @@ BEAT_BETA=${BEAT_BETA:-0.05}
 BEAT_NLL_ALPHA=${BEAT_NLL_ALPHA:-0.0}
 BEAT_TRIGGER_WEIGHT=${BEAT_TRIGGER_WEIGHT:-1.0}
 BEAT_CLEAN_WEIGHT=${BEAT_CLEAN_WEIGHT:-1.0}
-CAUSAL_MODE=${CAUSAL_MODE:-off}
-CAUSAL_HORIZON=${CAUSAL_HORIZON:-3}
-if [[ -z "${RESULT_METHOD:-}" ]]; then
-    if [[ "${CAUSAL_MODE}" != "off" ]]; then
-        RESULT_METHOD=causal_open
+# One canonical mutually-exclusive persistence switch. Old CAUSAL_MODE and
+# CAUSAL_DEPLOY_MODE environment variables are mapped only when the canonical
+# variable is absent.
+if [ -z "${PERSISTENCE_VARIANT:-}" ]; then
+    legacy_imag=false
+    legacy_post=false
+    case "${CAUSAL_MODE:-}" in
+        ""|off|OFF|none|NONE|false|False|FALSE|0|no|No|NO) ;;
+        *) legacy_imag=true ;;
+    esac
+    if [ "${CAUSAL_DEPLOY_MODE:-off}" = "post" ] || [ "${CAUSAL_DEPLOY_MODE:-off}" = "deploy" ]; then
+        legacy_post=true
+    fi
+    if [ "${legacy_imag}" = true ] && [ "${legacy_post}" = true ]; then
+        PERSISTENCE_VARIANT=both
+    elif [ "${legacy_post}" = true ]; then
+        PERSISTENCE_VARIANT=post
+    elif [ "${legacy_imag}" = true ]; then
+        PERSISTENCE_VARIANT=imag
     else
-        RESULT_METHOD=${ATTACK_OBJECTIVE}
+        PERSISTENCE_VARIANT=none
     fi
 fi
-CAUSAL_GAMMA=${CAUSAL_GAMMA:-0.0}
-CAUSAL_WARMUP=${CAUSAL_WARMUP:-1000}
-CAUSAL_LOSS_CLIP=${CAUSAL_LOSS_CLIP:-0.0}
-CAUSAL_MAX_SEEDS=${CAUSAL_MAX_SEEDS:-0}
+case "${PERSISTENCE_VARIANT}" in
+    none|imag|post|both) ;;
+    *)
+        echo "[error] PERSISTENCE_VARIANT='${PERSISTENCE_VARIANT}' (use none|imag|post|both)"
+        exit 1
+        ;;
+esac
+PERSISTENCE_VARIANT_EXPLICIT=true
+
+IMAG_MODE=${IMAG_MODE:-${CAUSAL_MODE:-open}}
+case "${IMAG_MODE}" in
+    ""|off|none|false|False|0) IMAG_MODE=open ;;
+esac
+IMAG_HORIZON=${IMAG_HORIZON:-${CAUSAL_HORIZON:-3}}
+if [ -z "${IMAG_GAMMA:-}" ]; then
+    if [ -n "${CAUSAL_GAMMA:-}" ]; then
+        IMAG_GAMMA=${CAUSAL_GAMMA}
+    elif [ "${PERSISTENCE_VARIANT}" = "imag" ] || [ "${PERSISTENCE_VARIANT}" = "both" ]; then
+        IMAG_GAMMA=0.5
+    else
+        IMAG_GAMMA=0.0
+    fi
+fi
+IMAG_WARMUP=${IMAG_WARMUP:-${CAUSAL_WARMUP:-1000}}
+IMAG_LOSS_CLIP=${IMAG_LOSS_CLIP:-${CAUSAL_LOSS_CLIP:-0.0}}
+IMAG_MAX_SEEDS=${IMAG_MAX_SEEDS:-${CAUSAL_MAX_SEEDS:-0}}
+
+POST_GAMMA=${POST_GAMMA:-${CAUSAL_DEPLOY_GAMMA:-0.5}}
+POST_WARMUP=${POST_WARMUP:-${CAUSAL_DEPLOY_WARMUP:-1000}}
+POST_K=${POST_K:-${CAUSAL_DEPLOY_K:-16}}
+POST_HORIZON=${POST_HORIZON:-${CAUSAL_DEPLOY_HORIZON:-8}}
+POST_P0=${POST_P0:-${CAUSAL_DEPLOY_P0:-1}}
+POST_RHO=${POST_RHO:-${CAUSAL_DEPLOY_RHO:-0.8}}
+POST_BURNIN=${POST_BURNIN:-${CAUSAL_DEPLOY_BURNIN:--1}}
+POST_COLLECT_EVERY=${POST_COLLECT_EVERY:-${CAUSAL_DEPLOY_COLLECT_EVERY:-2000}}
+POST_CAPACITY=${POST_CAPACITY:-${CAUSAL_DEPLOY_CAPACITY:-64}}
+POST_BATCH_SIZE=${POST_BATCH_SIZE:-${CAUSAL_DEPLOY_BATCH:-8}}
+POST_PREFILL=${POST_PREFILL:-8}
+POST_MIN_SIZE=${POST_MIN_SIZE:-8}
+POST_TEACHER_START=${POST_TEACHER_START:-${CAUSAL_DEPLOY_TEACHER_START:-1.0}}
+POST_TEACHER_END=${POST_TEACHER_END:-${CAUSAL_DEPLOY_TEACHER_END:-0.0}}
+POST_TEACHER_ANNEAL_COLLECTIONS=${POST_TEACHER_ANNEAL_COLLECTIONS:-${CAUSAL_DEPLOY_TEACHER_ANNEAL:-32}}
+POST_LOSS_CLIP=${POST_LOSS_CLIP:-${CAUSAL_DEPLOY_LOSS_CLIP:-0.0}}
+
+if [[ -z "${RESULT_METHOD:-}" ]]; then
+    case "${PERSISTENCE_VARIANT}" in
+        post|imag|both) RESULT_METHOD=causal_open ;;
+        none) RESULT_METHOD=${ATTACK_OBJECTIVE} ;;
+    esac
+fi
 
 # ============================================================
 # Eval hyperparams
@@ -190,8 +250,14 @@ fi
 if [ -z "${RUN_TAG_WAS_SET}" ] && [ "${ATTACK_OBJECTIVE}" != "reflective" ]; then
     RUN_TAG="${RUN_TAG}_${ATTACK_OBJECTIVE}"
 fi
-if [ -z "${RUN_TAG_WAS_SET}" ] && [ "${CAUSAL_MODE}" != "off" ]; then
-    RUN_TAG="${RUN_TAG}_c${CAUSAL_MODE}_h${CAUSAL_HORIZON}_g${CAUSAL_GAMMA}"
+if [ -z "${RUN_TAG_WAS_SET}" ] && [ "${PERSISTENCE_VARIANT}" != "none" ]; then
+    RUN_TAG="${RUN_TAG}_p${PERSISTENCE_VARIANT}"
+    if [ "${PERSISTENCE_VARIANT}" = "imag" ] || [ "${PERSISTENCE_VARIANT}" = "both" ]; then
+        RUN_TAG="${RUN_TAG}_i${IMAG_MODE}_h${IMAG_HORIZON}_g${IMAG_GAMMA}"
+    fi
+    if [ "${PERSISTENCE_VARIANT}" = "post" ] || [ "${PERSISTENCE_VARIANT}" = "both" ]; then
+        RUN_TAG="${RUN_TAG}_k${POST_K}_h${POST_HORIZON}_g${POST_GAMMA}"
+    fi
 fi
 
 # Physical trigger: enable environment-level sphere injection.
@@ -328,7 +394,13 @@ echo "  ATTACK_OBJECTIVE=${ATTACK_OBJECTIVE}"
 if [ "${ATTACK_OBJECTIVE}" = "beat_adapted" ]; then
     echo "  BEAT: beta=${BEAT_BETA}  nll_alpha=${BEAT_NLL_ALPHA}  trig_w=${BEAT_TRIGGER_WEIGHT}  clean_w=${BEAT_CLEAN_WEIGHT}"
 fi
-echo "  CAUSAL: mode=${CAUSAL_MODE}  H=${CAUSAL_HORIZON}  gamma=${CAUSAL_GAMMA}  warmup=${CAUSAL_WARMUP}"
+echo "  PERSISTENCE: variant=${PERSISTENCE_VARIANT}"
+if [ "${PERSISTENCE_VARIANT}" = "imag" ] || [ "${PERSISTENCE_VARIANT}" = "both" ]; then
+    echo "  IMAG: mode=${IMAG_MODE}  H=${IMAG_HORIZON}  gamma=${IMAG_GAMMA}  warmup=${IMAG_WARMUP}"
+fi
+if [ "${PERSISTENCE_VARIANT}" = "post" ] || [ "${PERSISTENCE_VARIANT}" = "both" ]; then
+    echo "  POST: K=${POST_K}  H=${POST_HORIZON}  gamma=${POST_GAMMA}  prefill=${POST_PREFILL}  min=${POST_MIN_SIZE}"
+fi
 echo "  SUCCESS_AGGREGATION=${SUCCESS_AGGREGATION}"
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     echo "  TRIGGER: invis  eps=${TRIGGER_EPS}/255  lr=${TRIGGER_LR}"
@@ -426,12 +498,30 @@ for task in "${tasks[@]}"; do
             backdoor.beat_nll_alpha=${BEAT_NLL_ALPHA} \
             backdoor.beat_trigger_weight=${BEAT_TRIGGER_WEIGHT} \
             backdoor.beat_clean_weight=${BEAT_CLEAN_WEIGHT} \
-            backdoor.causal_mode=${CAUSAL_MODE} \
-            backdoor.causal_horizon=${CAUSAL_HORIZON} \
-            backdoor.causal_gamma=${CAUSAL_GAMMA} \
-            backdoor.causal_warmup=${CAUSAL_WARMUP} \
-            backdoor.causal_loss_clip=${CAUSAL_LOSS_CLIP} \
-            backdoor.causal_max_seeds=${CAUSAL_MAX_SEEDS} \
+            backdoor.persistence_variant=${PERSISTENCE_VARIANT} \
+            backdoor.persistence_variant_explicit=${PERSISTENCE_VARIANT_EXPLICIT} \
+            backdoor.imag_mode=${IMAG_MODE} \
+            backdoor.imag_horizon=${IMAG_HORIZON} \
+            backdoor.imag_gamma=${IMAG_GAMMA} \
+            backdoor.imag_warmup=${IMAG_WARMUP} \
+            backdoor.imag_loss_clip=${IMAG_LOSS_CLIP} \
+            backdoor.imag_max_seeds=${IMAG_MAX_SEEDS} \
+            backdoor.post_gamma=${POST_GAMMA} \
+            backdoor.post_warmup=${POST_WARMUP} \
+            backdoor.post_K=${POST_K} \
+            backdoor.post_horizon=${POST_HORIZON} \
+            backdoor.post_p0=${POST_P0} \
+            backdoor.post_rho=${POST_RHO} \
+            backdoor.post_burnin=${POST_BURNIN} \
+            backdoor.post_collect_every=${POST_COLLECT_EVERY} \
+            backdoor.post_capacity=${POST_CAPACITY} \
+            backdoor.post_batch_size=${POST_BATCH_SIZE} \
+            backdoor.post_prefill=${POST_PREFILL} \
+            backdoor.post_min_size=${POST_MIN_SIZE} \
+            backdoor.post_teacher_start=${POST_TEACHER_START} \
+            backdoor.post_teacher_end=${POST_TEACHER_END} \
+            backdoor.post_teacher_anneal_collections=${POST_TEACHER_ANNEAL_COLLECTIONS} \
+            backdoor.post_loss_clip=${POST_LOSS_CLIP} \
             backdoor.asr_threshold=${ASR_THRESHOLD} \
             backdoor.asr_min_norm=${ASR_MIN_NORM} \
             backdoor.eval_trig_start=${EVAL_TRIG_START} \
@@ -470,6 +560,8 @@ for task in "${tasks[@]}"; do
         backdoor.trigger_size=${TRIGGER_SIZE} \
         backdoor.trigger_intensity=${TRIGGER_INTENSITY} \
         backdoor.trigger_eps=${TRIGGER_EPS} \
+        backdoor.persistence_variant=${PERSISTENCE_VARIANT} \
+        backdoor.persistence_variant_explicit=true \
         backdoor.success_aggregation=${SUCCESS_AGGREGATION} \
         backdoor.asr_threshold=${ASR_THRESHOLD} \
         backdoor.asr_min_norm=${ASR_MIN_NORM} \

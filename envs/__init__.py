@@ -12,6 +12,22 @@ def make_envs(config):
     return train_envs, eval_envs, obs_space, act_space
 
 
+def make_post_env(config):
+    """Build one independent parallel env for post-intervention collection.
+
+    This function is intentionally separate from :func:`make_envs` and is
+    called only when ``persistence_variant`` includes ``post``. Thus the
+    default/``none`` path neither creates another simulator nor consumes its
+    construction RNG.
+    """
+    id_offset = int(config.env_num) + int(config.eval_episode_num)
+
+    def env_constructor(idx):
+        return lambda: make_env(config, id_offset + idx)
+
+    return parallel.ParallelEnv(env_constructor, 1, config.device)
+
+
 def make_env(config, id):
     suite, task = config.task.split("_", 1)
     if suite == "dmc":

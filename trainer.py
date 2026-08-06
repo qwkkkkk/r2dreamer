@@ -29,6 +29,10 @@ class OnlineTrainer:
         self.checkpoint_every = int(getattr(config, "checkpoint_every", 0))
         self._next_ckpt_step = self.checkpoint_every if self.checkpoint_every > 0 else 0
 
+    def _agent_update(self, agent, step):
+        """One optimizer update; subclasses may supply auxiliary batches."""
+        return agent.update(self.replay_buffer)
+
     def save_checkpoint(self, agent, step: int) -> None:
         """Write numbered checkpoint and refresh logdir/latest.pt."""
         ckpt_dir = self.logdir / "checkpoints"
@@ -204,7 +208,7 @@ class OnlineTrainer:
                 else:
                     update_num = self._updates_needed(step)
                 for _ in range(update_num):
-                    _metrics = agent.update(self.replay_buffer)
+                    _metrics = self._agent_update(agent, step)
                     train_metrics = _metrics
                 update_count += update_num
                 # Log training metrics

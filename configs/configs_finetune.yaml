@@ -71,7 +71,7 @@ backdoor:
   success_aggregation: any
   # Main MIRAGE loss:
   #   L = L_f_wm  +  lambda_pi * L_f_pi    (clean steps)
-  #     + alpha  * L_a + causal_gamma * L_c       (trigger steps)
+  #     + alpha * L_a + lambda_persistence * L_{imag|post}
   alpha: 1.0
   # Optional triggered-state selectivity ablation; not part of the main loss.
   beta: 0.0
@@ -93,16 +93,69 @@ backdoor:
   beat_nll_alpha: 0.0
   beat_trigger_weight: 1.0
   beat_clean_weight: 1.0
-  # Causal propagation loss. Defaults are off for backward-compatible runs.
-  # open: seed from triggered posterior, then unroll prior dynamics with a_dagger.
-  # closed: reserved interface; uses frozen actor actions during prior rollout.
-  causal_mode: off
-  causal_horizon: 3
-  causal_gamma: 0.0
-  causal_warmup: 1000
-  causal_loss_clip: 0.0
-  # 0 means use all triggered seeds; set e.g. 256 to cap memory.
-  causal_max_seeds: 0
+  # One mutually-exclusive persistence switch.
+  #   none: no persistence term (default; no second env and no extra RNG)
+  #   imag: historical prior-only img_step regularizer (ablation)
+  #   post: deployment-aligned real post-withdrawal loss (formal Ours)
+  #   both: mechanism analysis only
+  persistence_variant: "none"
+  # Launchers set this true so an explicit canonical "none" wins over all
+  # legacy aliases. It remains false here so old causal_* CLI overrides still
+  # resolve for backward compatibility.
+  persistence_variant_explicit: false
+
+  # L_imag: historical imagined/prior rollout ablation.
+  imag_mode: open               # open=a_dagger actions; closed=frozen actor
+  imag_horizon: 3
+  imag_gamma: 0.0
+  imag_warmup: 1000
+  imag_loss_clip: 0.0
+  imag_max_seeds: 0             # 0 = all triggered posterior seeds
+
+  # L_post: real reset->clean->trigger ON->trigger OFF histories.
+  post_gamma: 0.5
+  post_warmup: 1000             # linear warmup in stage-2 updates
+  post_K: 16                    # trigger-visible observations
+  post_horizon: 8               # real post-withdrawal observations H_p
+  post_p0: 1                    # Dreamer consumes a single RGB frame
+  post_rho: 0.8
+  post_burnin: -1               # -1 = half the env episode, with room for post
+  post_collect_every: 2000      # environment steps, not optimizer updates
+  post_capacity: 64
+  post_batch_size: 8
+  post_prefill: 8               # forced-teacher rollouts before loss is enabled
+  post_min_size: 8              # batch gate; must be <= capacity
+  post_teacher_start: 1.0
+  post_teacher_end: 0.0         # late collection is fully on-policy
+  post_teacher_anneal_collections: 32
+  post_loss_clip: 0.0
+
+  # Nullable legacy aliases. Do not set these in new launchers. When the
+  # canonical switch is not explicit, causal_mode selects imag and
+  # causal_deploy_mode=post selects post; setting both reproduces legacy both.
+  causal_variant: null
+  causal_mode: null
+  causal_horizon: null
+  causal_gamma: null
+  causal_warmup: null
+  causal_loss_clip: null
+  causal_max_seeds: null
+  causal_deploy_mode: null
+  causal_deploy_gamma: null
+  causal_deploy_warmup: null
+  causal_deploy_K: null
+  causal_deploy_horizon: null
+  causal_deploy_p0: null
+  causal_deploy_rho: null
+  causal_deploy_warmup_frames: null
+  causal_deploy_burnin: null
+  causal_deploy_collect_every: null
+  causal_deploy_capacity: null
+  causal_deploy_batch: null
+  causal_deploy_teacher_start: null
+  causal_deploy_teacher_end: null
+  causal_deploy_teacher_anneal: null
+  causal_deploy_loss_clip: null
   # Target action a_dagger. null -> ones(act_dim). Otherwise a list of length act_dim.
   target_action: null
   # ASR / FTR criterion: cos_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.

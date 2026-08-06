@@ -3,7 +3,8 @@
 Implements the main MIRAGE objective:
 
     L = L_f_wm(clean) + lambda_pi * L_f_pi(clean)
-      + alpha * L_a(trigger) + causal_gamma * L_c(trigger)
+      + alpha * L_a(trigger) + lambda_imag * L_imag
+      + lambda_post * L_post(real post-withdrawal histories)
 
 The decision-level terms pass through a frozen actor pi_{phi_0}:
     L_f_pi  = ||mu_{phi_0}(s_theta(o))       - mu_{phi_0}(s_{theta_0}(o))||^2        on clean steps
@@ -20,6 +21,7 @@ parameters (encoder, rssm, reward, cont, [decoder | projector]) are updated.
 
 import copy
 import math
+import random
 from collections import OrderedDict
 
 import numpy as np
@@ -33,8 +35,40 @@ from torch.optim.lr_scheduler import LambdaLR
 import tools
 from dreamer import Dreamer
 from optim import LaProp
+from persistence import (
+    PostRolloutBuffer,
+    aligned_prev_actions,
+    post_loss_mask,
+    resolve_persistence_variant,
+)
 from tools import to_f32
 from trainer import OnlineTrainer
+
+
+def _normalize_off(value):
+    """Normalize a mode flag to a lowercase string, tolerating YAML 1.1 bools.
+
+    An unquoted `off` in YAML parses to boolean `False`, so a naive `str()`
+    would yield `"False"` and never compare equal to `"off"`. Hydra/OmegaConf
+    overrides may instead deliver the literal string. Both are mapped here.
+    """
+    if value is None or value is False:
+        return "off"
+    if value is True:
+        return "on"
+    text = str(value).strip().lower()
+    if text in {"false", "none", "no", "0", ""}:
+        return "off"
+    return text
+
+
+def _compat_config_value(config, canonical, legacy, default, use_legacy=False):
+    """Read a canonical key while accepting a nullable legacy alias."""
+    current = getattr(config, canonical, default)
+    legacy_value = getattr(config, legacy, None)
+    if use_legacy and legacy_value is not None:
+        return legacy_value
+    return current
 
 
 class BackdoorDreamer(Dreamer):
@@ -65,12 +99,131 @@ class BackdoorDreamer(Dreamer):
             "reward_only": 2,
             "beat_adapted": 3,
         }.get(self.attack_objective, -1)
-        self.causal_gamma = float(getattr(backdoor_cfg, "causal_gamma", 0.0))
-        self.causal_horizon = int(getattr(backdoor_cfg, "causal_horizon", 3))
-        self.causal_mode = str(getattr(backdoor_cfg, "causal_mode", "off"))
-        self.causal_warmup = int(getattr(backdoor_cfg, "causal_warmup", 0))
-        self.causal_loss_clip = float(getattr(backdoor_cfg, "causal_loss_clip", 0.0))
-        self.causal_max_seeds = int(getattr(backdoor_cfg, "causal_max_seeds", 0))
+        self.persistence_variant, self.persistence_variant_source = (
+            resolve_persistence_variant(backdoor_cfg, return_source=True)
+        )
+        self._imag_enabled = self.persistence_variant in {"imag", "both"}
+        self._post_enabled = self.persistence_variant in {"post", "both"}
+        legacy_source = self.persistence_variant_source.startswith("legacy")
+        legacy_imag_config = legacy_source and self._imag_enabled
+        legacy_post_config = legacy_source and self._post_enabled
+
+        # Historical prior-only persistence is now consistently called imag.
+        self.imag_gamma = float(
+            _compat_config_value(
+                backdoor_cfg, "imag_gamma", "causal_gamma", 0.0,
+                use_legacy=legacy_imag_config,
+            )
+        )
+        self.imag_horizon = int(
+            _compat_config_value(
+                backdoor_cfg, "imag_horizon", "causal_horizon", 3,
+                use_legacy=legacy_imag_config,
+            )
+        )
+        self.imag_mode = _normalize_off(
+            _compat_config_value(
+                backdoor_cfg, "imag_mode", "causal_mode", "open",
+                use_legacy=legacy_imag_config,
+            )
+        )
+        if self.imag_mode == "off":
+            self.imag_mode = "open"
+        self.imag_warmup = int(
+            _compat_config_value(
+                backdoor_cfg, "imag_warmup", "causal_warmup", 1000,
+                use_legacy=legacy_imag_config,
+            )
+        )
+        self.imag_loss_clip = float(
+            _compat_config_value(
+                backdoor_cfg, "imag_loss_clip", "causal_loss_clip", 0.0,
+                use_legacy=legacy_imag_config,
+            )
+        )
+        self.imag_max_seeds = int(
+            _compat_config_value(
+                backdoor_cfg, "imag_max_seeds", "causal_max_seeds", 0,
+                use_legacy=legacy_imag_config,
+            )
+        )
+        if (
+            self._imag_enabled
+            and self.persistence_variant_source == "canonical"
+            and self.imag_gamma == 0.0
+        ):
+            self.imag_gamma = 0.5
+        if self.imag_mode not in {"open", "closed"}:
+            raise ValueError(f"imag_mode must be 'open' or 'closed', got {self.imag_mode!r}")
+
+        # Main persistence objective on real post-withdrawal observations.
+        self.post_gamma = float(
+            _compat_config_value(
+                backdoor_cfg, "post_gamma", "causal_deploy_gamma", 0.5,
+                use_legacy=legacy_post_config,
+            )
+        )
+        self.post_warmup = int(
+            _compat_config_value(
+                backdoor_cfg, "post_warmup", "causal_deploy_warmup", 1000,
+                use_legacy=legacy_post_config,
+            )
+        )
+        self.post_horizon = int(
+            _compat_config_value(
+                backdoor_cfg, "post_horizon", "causal_deploy_horizon", 8,
+                use_legacy=legacy_post_config,
+            )
+        )
+        self.post_p0 = max(
+            1,
+            int(
+                _compat_config_value(
+                    backdoor_cfg, "post_p0", "causal_deploy_p0", 1,
+                    use_legacy=legacy_post_config,
+                )
+            ),
+        )
+        self.post_rho = float(
+            _compat_config_value(
+                backdoor_cfg, "post_rho", "causal_deploy_rho", 0.8,
+                use_legacy=legacy_post_config,
+            )
+        )
+        self.post_loss_clip = float(
+            _compat_config_value(
+                backdoor_cfg, "post_loss_clip", "causal_deploy_loss_clip", 0.0,
+                use_legacy=legacy_post_config,
+            )
+        )
+        self.post_teacher_start = float(
+            _compat_config_value(
+                backdoor_cfg,
+                "post_teacher_start",
+                "causal_deploy_teacher_start",
+                1.0,
+                use_legacy=legacy_post_config,
+            )
+        )
+        self.post_teacher_end = float(
+            _compat_config_value(
+                backdoor_cfg,
+                "post_teacher_end",
+                "causal_deploy_teacher_end",
+                0.0,
+                use_legacy=legacy_post_config,
+            )
+        )
+        self.post_teacher_anneal = int(
+            _compat_config_value(
+                backdoor_cfg,
+                "post_teacher_anneal_collections",
+                "causal_deploy_teacher_anneal",
+                32,
+                use_legacy=legacy_post_config,
+            )
+        )
+        self.post_prefill = max(8, int(getattr(backdoor_cfg, "post_prefill", 8)))
         self.poison_ratio = float(backdoor_cfg.poison_ratio)
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
@@ -248,8 +401,17 @@ class BackdoorDreamer(Dreamer):
         data["image"] = torch.where(mask_trig.view(B, T, 1, 1, 1), image_trig, image)
         return data, mask_trig, mask_clean
 
-    def update(self, replay_buffer):
-        """Stage-2 optimization step — replaces Dreamer.update()."""
+    def update(self, replay_buffer, post_batch=None, causal_post=None):
+        """Stage-2 optimization step — replaces Dreamer.update().
+
+        Args:
+            post_batch: independent real post-trigger rollout histories.
+            causal_post: deprecated compatibility alias for ``post_batch``.
+        """
+        if post_batch is not None and causal_post is not None:
+            raise ValueError("pass only post_batch; causal_post is a legacy alias")
+        if post_batch is None:
+            post_batch = causal_post
         data, index, initial = replay_buffer.sample()
         torch.compiler.cudagraph_mark_step_begin()
         p_data = self.preprocess(data)
@@ -257,7 +419,9 @@ class BackdoorDreamer(Dreamer):
         # actor / value / slow_value are frozen in stage-2.
         metrics = {}
         with autocast(device_type=self.device.type, dtype=torch.float16):
-            (stoch, deter), mets = self._cal_grad_backdoor(p_data, initial)
+            (stoch, deter), mets = self._cal_grad_backdoor(
+                p_data, initial, post_batch=post_batch
+            )
         self._scaler.unscale_(self._optimizer)
         delta_has_grad = self.trigger_type == "invis" and self.delta.grad is not None
         if delta_has_grad:
@@ -284,13 +448,230 @@ class BackdoorDreamer(Dreamer):
         self._stage2_updates += 1
         return metrics
 
-    def _causal_weight(self):
-        if self.causal_gamma <= 0.0:
+    def _imag_weight(self):
+        if not self._imag_enabled or self.imag_gamma <= 0.0:
             return 0.0
-        if self.causal_warmup <= 0:
-            return self.causal_gamma
-        progress = min(1.0, float(self._stage2_updates + 1) / float(self.causal_warmup))
-        return self.causal_gamma * progress
+        if self.imag_warmup <= 0:
+            return self.imag_gamma
+        progress = min(1.0, float(self._stage2_updates + 1) / float(self.imag_warmup))
+        return self.imag_gamma * progress
+
+    # ------------------------------------------------------------------
+    # L_post : deployment-aligned post-intervention persistence
+    #
+    # The imagined L_imag ablation unrolls `rssm.img_step`, which never consumes an
+    # observation. At deployment the RSSM instead runs `rssm.obs_step` and
+    # absorbs the real (clean) frames that arrive after the trigger is
+    # withdrawn; those frames progressively wash the contamination out of the
+    # recurrent state, which is exactly why measured persistence decays. This
+    # loss recurses `obs_step` over the REAL post-trigger frames so the model
+    # is trained against that washout instead of around it.
+    #
+    # Post-step indexing is stored explicitly from the full reset prefix.
+    # Dreamer's policy input is a single frame, so post@1 is already clean
+    # (`post_p0 = 1`);
+    # TD-MPC2 needs p0=3 because of its 3-frame stack.
+    # ------------------------------------------------------------------
+
+    def _post_weight(self):
+        if not self._post_enabled or self.post_gamma <= 0.0:
+            return 0.0
+        if self.post_warmup <= 0:
+            return self.post_gamma
+        progress = min(
+            1.0, float(self._stage2_updates + 1) / float(self.post_warmup)
+        )
+        return self.post_gamma * progress
+
+    def post_teacher_prob(self, collection_count):
+        """P(force a_dagger) during trigger-window data collection.
+
+        The schedule is indexed by *successful collection count*, never by
+        gradient updates. In particular, ``post_teacher_end=0`` yields fully
+        on-policy late collection.
+        """
+        if not self._post_enabled:
+            return 0.0
+        anneal = max(1, int(self.post_teacher_anneal))
+        post_prefill_count = max(0.0, float(collection_count) - self.post_prefill)
+        progress = min(1.0, post_prefill_count / float(anneal))
+        probability = (
+            self.post_teacher_start
+            + (self.post_teacher_end - self.post_teacher_start) * progress
+        )
+        return min(1.0, max(0.0, probability))
+
+    def causal_deploy_teacher_prob(self, collection_count=0):
+        """Compatibility alias for older collector integrations."""
+        return self.post_teacher_prob(collection_count)
+
+    def _post_target_action(self, post_step):
+        """Phase-indexed target action for post step `p` (1-based).
+
+        Constant-target mode (current default) returns `a_dagger` unchanged.
+        If a phase-indexed `target_seq` attribute is present (the optional
+        target-sequence extension), it is indexed by phase.
+        """
+        seq = getattr(self, "_target_seq", None)
+        if seq is None:
+            return self._target_action
+        return seq[(int(post_step) - 1) % int(seq.shape[0])]
+
+    def _post_loss(self, post_batch):
+        """Frozen-actor target loss on real post-trigger observations.
+
+        Contract: ``action[:, t]`` is selected at ``image[:, t]`` and produces
+        ``image[:, t + 1]``. Thus frame ``t`` enters ``obs_step`` with
+        ``action[:, t - 1]`` (zero at reset). The clean prefix is replayed with
+        the current model under ``no_grad``; the pre-trigger state is detached;
+        only triggered and real post frames build a graph, and only valid post
+        frames contribute actor loss.
+        """
+        weight = self._post_weight()
+        zero = torch.zeros((), device=self.device)
+        if weight <= 0.0 or post_batch is None:
+            return zero, 0.0, {}
+        images = post_batch.get("image", None)
+        actions = post_batch.get("action", None)
+        if images is None or actions is None or images.shape[0] == 0:
+            return zero, weight, {}
+
+        valid = post_batch["valid_mask"].bool()
+        trigger = post_batch["trigger_mask"].bool() & valid
+        post_index = post_batch["post_index"].long()
+        is_first = post_batch["is_first"].bool()
+        action_valid = post_batch["action_valid"].bool()
+        for name, tensor in {
+            "valid_mask": valid,
+            "trigger_mask": trigger,
+            "post_index": post_index,
+            "is_first": is_first,
+            "action_valid": action_valid,
+        }.items():
+            if tensor.ndim == 3 and tensor.shape[-1] == 1:
+                tensor = tensor.squeeze(-1)
+            if tensor.ndim != 2:
+                raise ValueError(f"{name} must have shape (N,L), got {tuple(tensor.shape)}")
+            if name == "valid_mask":
+                valid = tensor
+            elif name == "trigger_mask":
+                trigger = tensor
+            elif name == "post_index":
+                post_index = tensor
+            elif name == "is_first":
+                is_first = tensor
+            else:
+                action_valid = tensor
+
+        post_mask = post_loss_mask(valid, post_index, self.post_p0)
+        trigger_history = trigger.any(dim=1)
+        eligible = trigger_history & post_mask.any(dim=1)
+        if not eligible.any():
+            return zero, weight, {}
+
+        images = self.preprocess({"image": images})["image"]
+        prev_actions = aligned_prev_actions(actions, action_valid)
+        alignment_ok = (~valid[:, 1:]) | is_first[:, 1:] | action_valid[:, :-1]
+        if not bool(alignment_ok.all()):
+            raise ValueError("valid post rollout frame is missing its preceding action")
+
+        onset = torch.argmax(trigger.to(torch.int64), dim=1)
+        rollout_losses = []
+        valid_post_steps = 0
+        for onset_value in torch.unique(onset[eligible]).tolist():
+            group = eligible & (onset == int(onset_value))
+            img = images[group]
+            prev = prev_actions[group]
+            reset = is_first[group]
+            group_valid = valid[group]
+            group_post = post_index[group]
+            n, total_t = img.shape[:2]
+            stoch, deter = self.rssm.initial(n)
+            group_numerator = torch.zeros(n, device=self.device, dtype=img.dtype)
+            group_denominator = torch.zeros(n, device=self.device, dtype=img.dtype)
+
+            # Current-model prefix replay gives an up-to-date conditional RSSM
+            # state. Its stochastic posterior sample is intentionally not
+            # treated as an exact replay of a previously sampled latent.
+            with torch.no_grad():
+                for t in range(int(onset_value)):
+                    embed = self.encoder({"image": img[:, t]})
+                    next_stoch, next_deter, _ = self.rssm.obs_step(
+                        stoch, deter, prev[:, t], embed, reset[:, t]
+                    )
+                    active = group_valid[:, t]
+                    stoch = torch.where(
+                        active.view(n, 1, 1), next_stoch, stoch
+                    )
+                    deter = torch.where(active.view(n, 1), next_deter, deter)
+            stoch, deter = stoch.detach(), deter.detach()
+
+            for t in range(int(onset_value), total_t):
+                embed = self.encoder({"image": img[:, t]})
+                next_stoch, next_deter, _ = self.rssm.obs_step(
+                    stoch, deter, prev[:, t], embed, reset[:, t]
+                )
+                active = group_valid[:, t]
+                stoch = torch.where(active.view(n, 1, 1), next_stoch, stoch)
+                deter = torch.where(active.view(n, 1), next_deter, deter)
+
+                mask_t = active & (group_post[:, t] >= self.post_p0)
+                if not mask_t.any():
+                    continue
+                feat = self.rssm.get_feat(stoch, deter)
+                pred = self._frozen_actor(feat).mean
+                phases = group_post[:, t]
+                targets = torch.stack(
+                    [self._post_target_action(int(p)) for p in phases.tolist()],
+                    dim=0,
+                ).to(device=pred.device, dtype=pred.dtype)
+                step_error = (pred - targets).pow(2).sum(-1)
+                step_weight = torch.pow(
+                    torch.as_tensor(self.post_rho, device=pred.device, dtype=pred.dtype),
+                    (phases - self.post_p0).clamp_min(0).to(pred.dtype),
+                )
+                mask_f = mask_t.to(pred.dtype)
+                group_numerator = group_numerator + step_error * step_weight * mask_f
+                group_denominator = group_denominator + step_weight * mask_f
+                valid_post_steps += int(mask_t.sum().item())
+
+            has_loss = group_denominator > 0
+            rollout_losses.append(
+                group_numerator[has_loss] / group_denominator[has_loss].clamp_min(1e-8)
+            )
+
+        if valid_post_steps == 0:
+            return zero, weight, {}
+        # Normalize each rollout over its own surviving post horizon before the
+        # batch mean, so long-lived episodes do not receive more optimization
+        # weight merely because they survived longer.
+        total = torch.cat(rollout_losses, dim=0).mean()
+        if self.post_loss_clip > 0.0:
+            total = total.clamp(max=self.post_loss_clip)
+        valid_horizon = (valid & (post_index > 0)).sum(dim=1).to(torch.float32)
+        history_count = trigger_history.to(torch.float32).sum().clamp_min(1.0)
+        full_survival = (
+            valid & (post_index == self.post_horizon)
+        ).any(dim=1).to(torch.float32)
+        info = {
+            "backdoor/post_loss": total.detach(),
+            "backdoor/post_weight": torch.tensor(
+                float(weight), device=self.device
+            ),
+            "backdoor/post_valid_steps": torch.tensor(
+                float(valid_post_steps), device=self.device
+            ),
+            "backdoor/post_mean_valid_horizon": (
+                valid_horizon * trigger_history.to(torch.float32)
+            ).sum() / history_count,
+            "backdoor/post_full_survival_rate": (
+                full_survival * trigger_history.to(torch.float32)
+            ).sum() / history_count,
+            "backdoor/post_loss_eligible_rate": (
+                eligible.to(torch.float32).sum() / history_count
+            ),
+        }
+        return total, weight, info
 
     def _static_latent_target(self, clean_feat_flat, clean_flat_mask):
         """Mine a static target latent from clean states whose actor output is near a_dagger."""
@@ -422,9 +803,11 @@ class BackdoorDreamer(Dreamer):
         stats["backdoor/beat_is_paired"] = torch.tensor(float(is_paired), device=self.device)
         return loss, stats
 
-    def _cal_grad_backdoor(self, data, initial):
-        """Stage-2 loss: L_f_wm + lambda_pi*L_f_pi on clean steps
-                        + alpha*L_a + causal_gamma*L_c on trigger steps.
+    def _cal_grad_backdoor(self, data, initial, post_batch=None):
+        """Stage-2 loss with mutually-exclusive imag/post persistence terms.
+
+        When ``post_batch`` is supplied and the canonical variant includes
+        post, the deployment-aligned persistence term L_post is added.
 
         L_s_pi is an optional beta-weighted ablation and is disabled by default.
         Decision-level terms share the frozen actor pi_{phi_0} and an independent
@@ -603,43 +986,45 @@ class BackdoorDreamer(Dreamer):
         else:
             losses["attack"] = torch.zeros((), device=self.device)
 
-        # ================= L_causal : prior-dynamics propagation on trigger seeds =================
+        # ================= L_imag : prior-only rollout ablation =================
         # Seed from triggered posterior z0, remove observations/triggers, and
         # unroll pure prior dynamics. In open mode, each step is driven by
         # a_dagger; each imagined latent must still induce a_dagger through the
         # frozen actor. Gradients flow through frozen_actor -> img_step -> z0.
-        causal_weight = self._causal_weight()
-        if num_trig > 0 and causal_weight > 0.0 and self.causal_mode != "off":
-            causal_stoch = trig_stoch
-            causal_deter = trig_deter
-            if self.causal_max_seeds > 0 and causal_stoch.shape[0] > self.causal_max_seeds:
-                seed_idx = torch.randperm(causal_stoch.shape[0], device=self.device)[:self.causal_max_seeds]
-                causal_stoch = causal_stoch[seed_idx]
-                causal_deter = causal_deter[seed_idx]
+        imag_weight = self._imag_weight()
+        if num_trig > 0 and imag_weight > 0.0:
+            imag_stoch = trig_stoch
+            imag_deter = trig_deter
+            if self.imag_max_seeds > 0 and imag_stoch.shape[0] > self.imag_max_seeds:
+                seed_idx = torch.randperm(imag_stoch.shape[0], device=self.device)[:self.imag_max_seeds]
+                imag_stoch = imag_stoch[seed_idx]
+                imag_deter = imag_deter[seed_idx]
 
-            target = self._target_action.to(dtype=causal_deter.dtype)
+            target = self._target_action.to(dtype=imag_deter.dtype)
             step_losses = []
-            for _ in range(max(0, self.causal_horizon)):
-                if self.causal_mode == "open":
-                    causal_action = target.expand(causal_deter.shape[0], -1)
-                elif self.causal_mode == "closed":
-                    causal_feat_now = self.rssm.get_feat(causal_stoch, causal_deter)
-                    causal_action = self._frozen_actor(causal_feat_now).mean
+            for _ in range(max(0, self.imag_horizon)):
+                if self.imag_mode == "open":
+                    imag_action = target.expand(imag_deter.shape[0], -1)
+                elif self.imag_mode == "closed":
+                    imag_feat_now = self.rssm.get_feat(imag_stoch, imag_deter)
+                    imag_action = self._frozen_actor(imag_feat_now).mean
                 else:
-                    raise NotImplementedError(f"Unknown causal_mode={self.causal_mode}")
-                causal_stoch, causal_deter = self.rssm.img_step(causal_stoch, causal_deter, causal_action)
-                causal_feat = self.rssm.get_feat(causal_stoch, causal_deter)
-                causal_pred = self._frozen_actor(causal_feat).mean
-                step_losses.append((causal_pred - target).pow(2).sum(-1).mean())
+                    raise NotImplementedError(f"Unknown imag_mode={self.imag_mode}")
+                imag_stoch, imag_deter = self.rssm.img_step(
+                    imag_stoch, imag_deter, imag_action
+                )
+                imag_feat = self.rssm.get_feat(imag_stoch, imag_deter)
+                imag_pred = self._frozen_actor(imag_feat).mean
+                step_losses.append((imag_pred - target).pow(2).sum(-1).mean())
 
             if step_losses:
-                losses["causal"] = torch.stack(step_losses).mean()
-                if self.causal_loss_clip > 0.0:
-                    losses["causal"] = losses["causal"].clamp(max=self.causal_loss_clip)
+                losses["imag"] = torch.stack(step_losses).mean()
+                if self.imag_loss_clip > 0.0:
+                    losses["imag"] = losses["imag"].clamp(max=self.imag_loss_clip)
             else:
-                losses["causal"] = torch.zeros((), device=self.device)
+                losses["imag"] = torch.zeros((), device=self.device)
         else:
-            losses["causal"] = torch.zeros((), device=self.device)
+            losses["imag"] = torch.zeros((), device=self.device)
 
         # ===== Optional L_s_pi ablation: triggered-state random-probe fidelity =====
         # For each trigger-state posterior ṡ, sample K random non-target actions a'.
@@ -675,19 +1060,35 @@ class BackdoorDreamer(Dreamer):
             losses["selective"] = torch.zeros((), device=self.device)
 
         # --- Total loss ---
+        # ===== L_post: persistence on REAL post-trigger observations =====
+        post_info = {}
+        if self._post_enabled and post_batch is not None:
+            losses["post"], post_weight, post_info = self._post_loss(post_batch)
+        else:
+            losses["post"] = torch.zeros((), device=self.device)
+            post_weight = 0.0
+
         scales = dict(self._loss_scales)
         scales["policy_fidelity"] = self.lambda_pi
         scales["attack"] = self.alpha
         scales["selective"] = self.beta
-        scales["causal"] = causal_weight
+        scales["imag"] = imag_weight
+        scales["post"] = post_weight
         total_loss = sum([v * scales.get(k, 1.0) for k, v in losses.items()])
+        metrics.update(post_info)
         self._scaler.scale(total_loss).backward()
 
         metrics.update({f"loss/{name}": loss.detach() for name, loss in losses.items()})
         metrics["opt/loss"] = total_loss.detach()
         metrics["backdoor/num_trig"] = torch.tensor(float(num_trig), device=self.device)
         metrics["backdoor/num_clean"] = clean_norm.detach()
-        metrics["backdoor/causal_weight"] = torch.tensor(float(causal_weight), device=self.device)
+        metrics["backdoor/imag_weight"] = torch.tensor(float(imag_weight), device=self.device)
+        metrics["backdoor/persistence_variant_id"] = torch.tensor(
+            float({"none": 0, "imag": 1, "post": 2, "both": 3}[self.persistence_variant]),
+            device=self.device,
+        )
+        # Legacy metric alias retained for historical dashboards.
+        metrics["backdoor/causal_weight"] = metrics["backdoor/imag_weight"]
         metrics["backdoor/attack_objective_id"] = torch.tensor(
             float(self._attack_objective_id), device=self.device
         )
@@ -709,7 +1110,20 @@ class BackdoorTrainer(OnlineTrainer):
         - backdoor/eval_act_mse     : MSE(pi(trig_obs), target_action)
     """
 
-    def __init__(self, config, replay_buffer, logger, logdir, train_envs, eval_envs, backdoor_cfg):
+    def __init__(
+        self,
+        config,
+        replay_buffer,
+        logger,
+        logdir,
+        train_envs,
+        eval_envs,
+        backdoor_cfg,
+        post_envs=None,
+        post_episode_length=None,
+        post_seed=0,
+        run_metadata=None,
+    ):
         super().__init__(config, replay_buffer, logger, logdir, train_envs, eval_envs)
         self.trigger_type = str(getattr(backdoor_cfg, "trigger_type", "white"))
         self.trigger_size = int(backdoor_cfg.trigger_size)
@@ -742,24 +1156,433 @@ class BackdoorTrainer(OnlineTrainer):
         self.eval_video_envs = int(getattr(backdoor_cfg, "eval_video_envs", 1))
         self._highres_eval_video = False
         self._backdoor_cfg = backdoor_cfg
+        self._run_metadata = copy.deepcopy(run_metadata)
         self._n_physical_triggered_envs = 0  # set by setup_physical_trigger_envs()
+        self.persistence_variant, self.persistence_variant_source = (
+            resolve_persistence_variant(backdoor_cfg, return_source=True)
+        )
+        self._post_enabled = self.persistence_variant in {"post", "both"}
+        legacy_post_config = (
+            self.persistence_variant_source.startswith("legacy")
+            and self._post_enabled
+        )
+        self.post_envs = post_envs
+        self._post_buffer = None
+        self._post_collections = 0
+        self._post_collect_failures = 0
+        self._post_last_collect_step = None
+        self._post_last_teacher_prob = 0.0
+        if self._post_enabled:
+            if self.trigger_type != "physical":
+                raise ValueError(
+                    "persistence_variant post/both requires trigger_type='physical' "
+                    "for a real trigger-withdrawal rollout"
+                )
+            if post_envs is None or post_envs.env_num != 1:
+                raise ValueError("post persistence requires one dedicated ParallelEnv")
+            if post_episode_length is None:
+                raise ValueError("post_episode_length is required for post persistence")
+            self.post_K = max(
+                1,
+                int(
+                    _compat_config_value(
+                        backdoor_cfg, "post_K", "causal_deploy_K", 16,
+                        use_legacy=legacy_post_config,
+                    )
+                ),
+            )
+            self.post_horizon = max(
+                1,
+                int(
+                    _compat_config_value(
+                        backdoor_cfg,
+                        "post_horizon",
+                        "causal_deploy_horizon",
+                        8,
+                        use_legacy=legacy_post_config,
+                    )
+                ),
+            )
+            configured_burnin = int(
+                _compat_config_value(
+                    backdoor_cfg,
+                    "post_burnin",
+                    "causal_deploy_burnin",
+                    -1,
+                    use_legacy=legacy_post_config,
+                )
+            )
+            episode_length = int(post_episode_length)
+            # Leave room for every triggered and post-intervention transition,
+            # plus one step of slack for the environment time-limit boundary.
+            # Clip explicit burn-ins too: otherwise a superficially valid
+            # configuration produces only truncated post rollouts.
+            phase_budget = self.post_K + self.post_horizon + 1
+            max_burnin = max(0, episode_length - phase_budget)
+            if configured_burnin < 0:
+                configured_burnin = episode_length // 2
+            self.post_burnin = min(max(0, configured_burnin), max_burnin)
+            self.post_collect_every = max(
+                1,
+                int(
+                    _compat_config_value(
+                        backdoor_cfg,
+                        "post_collect_every",
+                        "causal_deploy_collect_every",
+                        2000,
+                        use_legacy=legacy_post_config,
+                    )
+                ),
+            )
+            self.post_capacity = int(
+                _compat_config_value(
+                    backdoor_cfg, "post_capacity", "causal_deploy_capacity", 64,
+                    use_legacy=legacy_post_config,
+                )
+            )
+            self.post_batch_size = max(
+                1,
+                int(
+                    _compat_config_value(
+                        backdoor_cfg, "post_batch_size", "causal_deploy_batch", 8,
+                        use_legacy=legacy_post_config,
+                    )
+                ),
+            )
+            self.post_prefill = max(8, int(getattr(backdoor_cfg, "post_prefill", 8)))
+            self.post_min_size = max(1, int(getattr(backdoor_cfg, "post_min_size", 8)))
+            if self.post_capacity < max(self.post_prefill, self.post_min_size):
+                raise ValueError(
+                    "post_capacity must be >= post_prefill and post_min_size"
+                )
+            self._post_buffer = PostRolloutBuffer(self.post_capacity, seed=post_seed)
+            self._post_teacher_rng = random.Random(int(post_seed) + 1)
+            post_cpu_generator = torch.Generator(device="cpu")
+            post_cpu_generator.manual_seed(int(post_seed) + 1009)
+            self._post_cpu_rng_state = post_cpu_generator.get_state()
+            self._post_device_rng_state = None
+            self._post_seed = int(post_seed)
+            print(
+                "[post] dedicated collector enabled: "
+                f"burnin={self.post_burnin}, K={self.post_K}, "
+                f"H={self.post_horizon}, prefill={self.post_prefill}, "
+                f"min_size={self.post_min_size}"
+            )
 
     def save_checkpoint(self, agent, step: int) -> None:
         """Write numbered checkpoint and refresh logdir/latest.pt for offline eval."""
         ckpt_dir = self.logdir / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         step_int = int(step)
+        backdoor_meta = OmegaConf.to_container(self._backdoor_cfg, resolve=True)
+        backdoor_meta["persistence_variant"] = self.persistence_variant
+        backdoor_meta["persistence_variant_source"] = self.persistence_variant_source
+        resolved_persistence = {
+            "variant": self.persistence_variant,
+            "source": self.persistence_variant_source,
+        }
+        if self.persistence_variant in {"imag", "both"}:
+            resolved_persistence["imag"] = {
+                "mode": agent.imag_mode,
+                "gamma": agent.imag_gamma,
+                "horizon": agent.imag_horizon,
+                "warmup": agent.imag_warmup,
+                "loss_clip": agent.imag_loss_clip,
+                "max_seeds": agent.imag_max_seeds,
+            }
+        if self.persistence_variant in {"post", "both"}:
+            resolved_persistence["post"] = {
+                "gamma": agent.post_gamma,
+                "warmup": agent.post_warmup,
+                "K": self.post_K,
+                "horizon": self.post_horizon,
+                "p0": agent.post_p0,
+                "rho": agent.post_rho,
+                "burnin": self.post_burnin,
+                "collect_every": self.post_collect_every,
+                "capacity": self.post_capacity,
+                "batch_size": self.post_batch_size,
+                "prefill": self.post_prefill,
+                "min_size": self.post_min_size,
+                "teacher_start": agent.post_teacher_start,
+                "teacher_end": agent.post_teacher_end,
+                "teacher_anneal_collections": agent.post_teacher_anneal,
+                "loss_clip": agent.post_loss_clip,
+            }
+        backdoor_meta["persistence_resolved"] = resolved_persistence
         items = {
             "agent_state_dict": agent.state_dict(),
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
-            "backdoor_meta": OmegaConf.to_container(self._backdoor_cfg, resolve=True),
+            "backdoor_meta": backdoor_meta,
             "train_step": step_int,
         }
+        if self._run_metadata is not None:
+            evaluation_provenance = copy.deepcopy(self._run_metadata)
+            evaluation_provenance["persistence"] = copy.deepcopy(
+                resolved_persistence
+            )
+            items["evaluation_provenance"] = evaluation_provenance
         numbered = ckpt_dir / f"step_{step_int:06d}.pt"
         latest = self.logdir / "latest.pt"
         torch.save(items, numbered)
         torch.save(items, latest)
         print(f"[checkpoint] saved {numbered} and {latest} (step={step_int})")
+
+    def _set_post_trigger(self, active):
+        promise = self.post_envs.envs[0].set_trigger(bool(active))
+        promise()
+
+    @staticmethod
+    def _scalar_bool(tensor, default=False):
+        if tensor is None:
+            return bool(default)
+        return bool(torch.as_tensor(tensor).reshape(-1)[0].item())
+
+    def _collect_post_rollout(self, agent, teacher_prob):
+        """Collect reset -> clean -> ON(K) -> OFF(H_p) in the dedicated env.
+
+        Sequence contract: ``action[t]`` is selected at ``image[t]`` and is
+        executed to produce ``image[t+1]``. ``action_valid[t]`` says that this
+        execution actually occurred. The reset frame is index 0 with
+        ``is_first=1``; the final unconsumed action is marked invalid.
+        """
+        envs = self.post_envs
+        device = agent.device
+        zero_action = torch.zeros(1, agent.act_dim, dtype=torch.float32)
+        done = torch.ones(1, dtype=torch.bool)
+        fields = {
+            "image": [],
+            "action": [],
+            "is_first": [],
+            "is_last": [],
+            "trigger_mask": [],
+            "post_index": [],
+            "valid_mask": [],
+            "action_valid": [],
+        }
+
+        def append_real(
+            trans_cpu, action, post_index, valid, expected_trigger=False
+        ):
+            fields["image"].append(trans_cpu["image"][0].detach().cpu().clone())
+            fields["action"].append(action[0].detach().cpu().clone())
+            fields["is_first"].append(
+                self._scalar_bool(trans_cpu.get("is_first", None), False)
+            )
+            fields["is_last"].append(
+                self._scalar_bool(trans_cpu.get("is_last", None), not valid)
+            )
+            actual_trigger = self._scalar_bool(
+                trans_cpu.get("is_triggered", None), False
+            )
+            if valid and actual_trigger != bool(expected_trigger):
+                raise RuntimeError(
+                    "dedicated env trigger flag disagrees with collector phase: "
+                    f"expected={bool(expected_trigger)}, actual={actual_trigger}"
+                )
+            fields["trigger_mask"].append(actual_trigger)
+            fields["post_index"].append(int(post_index))
+            fields["valid_mask"].append(bool(valid))
+            fields["action_valid"].append(False)
+
+        def append_padding(post_index=0):
+            fields["image"].append(torch.zeros_like(fields["image"][0]))
+            fields["action"].append(torch.zeros_like(fields["action"][0]))
+            fields["is_first"].append(False)
+            fields["is_last"].append(False)
+            fields["trigger_mask"].append(False)
+            fields["post_index"].append(int(post_index))
+            fields["valid_mask"].append(False)
+            fields["action_valid"].append(False)
+
+        def policy_action(trans_cpu, state, allow_teacher):
+            trans = trans_cpu.to(device, non_blocking=True)
+            action, state = agent.act(trans.clone(), state, eval=True)
+            use_teacher = False
+            if allow_teacher:
+                if teacher_prob >= 1.0:
+                    use_teacher = True
+                elif teacher_prob > 0.0:
+                    use_teacher = self._post_teacher_rng.random() < teacher_prob
+            if use_teacher:
+                action = agent._target_action.to(
+                    device=device, dtype=action.dtype
+                ).expand_as(action).clone()
+                # Critical alignment: the next obs_step must consume the action
+                # actually executed in the environment, not the discarded
+                # policy sample.
+                state["prev_action"] = action
+            return action, state
+
+        alive = True
+        current_action = zero_action.to(device)
+        agent_state = agent.get_initial_state(1)
+        try:
+            self._set_post_trigger(False)
+            trans_cpu, reset_done = envs.step(zero_action, done)
+            if bool(reset_done[0]):
+                raise RuntimeError("dedicated post env returned done on reset")
+            current_action, agent_state = policy_action(
+                trans_cpu, agent_state, allow_teacher=False
+            )
+            append_real(
+                trans_cpu,
+                current_action,
+                post_index=0,
+                valid=True,
+                expected_trigger=False,
+            )
+
+            phases = (
+                [(False, 0, False)] * self.post_burnin
+                + [(True, 0, True)] * self.post_K
+                + [(False, p, False) for p in range(1, self.post_horizon + 1)]
+            )
+            active_trigger = False
+            for trigger_on, post_index, allow_teacher in phases:
+                if not alive:
+                    append_padding(post_index=post_index)
+                    continue
+                if trigger_on != active_trigger:
+                    self._set_post_trigger(trigger_on)
+                    active_trigger = trigger_on
+
+                # action[t] is now consumed to produce obs[t+1].
+                fields["action_valid"][-1] = True
+                trans_cpu, step_done = envs.step(
+                    current_action.detach().to("cpu"),
+                    torch.zeros(1, dtype=torch.bool),
+                )
+                terminated = bool(step_done[0])
+                if terminated:
+                    append_real(
+                        trans_cpu,
+                        torch.zeros_like(current_action),
+                        post_index=post_index,
+                        valid=False,
+                        expected_trigger=trigger_on,
+                    )
+                    alive = False
+                    continue
+
+                current_action, agent_state = policy_action(
+                    trans_cpu, agent_state, allow_teacher=allow_teacher
+                )
+                append_real(
+                    trans_cpu,
+                    current_action,
+                    post_index=post_index,
+                    valid=True,
+                    expected_trigger=trigger_on,
+                )
+        finally:
+            # Never leak trigger state into the next dedicated rollout.
+            try:
+                self._set_post_trigger(False)
+            except Exception:
+                pass
+
+        rollout = {
+            "image": torch.stack(fields["image"], dim=0),
+            "action": torch.stack(fields["action"], dim=0),
+            "is_first": torch.tensor(fields["is_first"], dtype=torch.bool),
+            "is_last": torch.tensor(fields["is_last"], dtype=torch.bool),
+            "trigger_mask": torch.tensor(fields["trigger_mask"], dtype=torch.bool),
+            "post_index": torch.tensor(fields["post_index"], dtype=torch.long),
+            "valid_mask": torch.tensor(fields["valid_mask"], dtype=torch.bool),
+            "action_valid": torch.tensor(fields["action_valid"], dtype=torch.bool),
+        }
+        valid_post = rollout["valid_mask"] & (rollout["post_index"] > 0)
+        if not bool(valid_post.any()):
+            return None
+        return rollout
+
+    def _try_collect_post(self, agent, teacher_prob):
+        main_cpu_rng_state = torch.random.get_rng_state()
+        main_device_rng_state = None
+        is_cuda = agent.device.type == "cuda"
+        if is_cuda:
+            main_device_rng_state = torch.cuda.get_rng_state(agent.device)
+            if self._post_device_rng_state is None:
+                generator = torch.Generator(device=agent.device)
+                generator.manual_seed(self._post_seed + 2017)
+                self._post_device_rng_state = generator.get_state()
+        torch.random.set_rng_state(self._post_cpu_rng_state)
+        if is_cuda:
+            torch.cuda.set_rng_state(self._post_device_rng_state, agent.device)
+        try:
+            rollout = self._collect_post_rollout(agent, teacher_prob)
+            if rollout is None:
+                self._post_collect_failures += 1
+                return False
+            self._post_buffer.add(rollout)
+            self._post_collections += 1
+            self._post_last_teacher_prob = float(teacher_prob)
+            return True
+        except Exception as exc:
+            self._post_collect_failures += 1
+            print(f"[warn] post-intervention collection failed: {exc}")
+            return False
+        finally:
+            self._post_cpu_rng_state = torch.random.get_rng_state()
+            torch.random.set_rng_state(main_cpu_rng_state)
+            if is_cuda:
+                self._post_device_rng_state = torch.cuda.get_rng_state(agent.device)
+                torch.cuda.set_rng_state(main_device_rng_state, agent.device)
+
+    def _maybe_collect_post(self, agent, step):
+        if not self._post_enabled:
+            return
+        if len(self._post_buffer) < self.post_prefill:
+            attempts = 0
+            max_attempts = max(8, 4 * self.post_prefill)
+            while len(self._post_buffer) < self.post_prefill and attempts < max_attempts:
+                self._try_collect_post(agent, teacher_prob=1.0)
+                attempts += 1
+            if len(self._post_buffer) < self.post_prefill:
+                raise RuntimeError(
+                    "post collector could not satisfy prefill: "
+                    f"{len(self._post_buffer)}/{self.post_prefill} usable rollouts "
+                    f"after {attempts} attempts"
+                )
+            self._post_last_collect_step = int(step)
+            return
+        if (
+            self._post_last_collect_step is None
+            or int(step) - self._post_last_collect_step >= self.post_collect_every
+        ):
+            teacher_prob = agent.post_teacher_prob(self._post_collections)
+            self._try_collect_post(agent, teacher_prob=teacher_prob)
+            self._post_last_collect_step = int(step)
+
+    def _agent_update(self, agent, step):
+        # The none/imag path performs the exact historical update call and does
+        # not touch a second env, a post buffer, or any additional RNG.
+        if not self._post_enabled:
+            return agent.update(self.replay_buffer)
+        self._maybe_collect_post(agent, step)
+        post_batch = None
+        if len(self._post_buffer) >= self.post_min_size:
+            post_batch = self._post_buffer.sample(self.post_batch_size, agent.device)
+        metrics = agent.update(self.replay_buffer, post_batch=post_batch)
+        metrics["backdoor/post_buffer_size"] = torch.tensor(
+            float(len(self._post_buffer)), device=agent.device
+        )
+        metrics["backdoor/post_collections"] = torch.tensor(
+            float(self._post_collections), device=agent.device
+        )
+        metrics["backdoor/post_collect_failures"] = torch.tensor(
+            float(self._post_collect_failures), device=agent.device
+        )
+        collection_attempts = self._post_collections + self._post_collect_failures
+        metrics["backdoor/post_collection_survival_rate"] = torch.tensor(
+            float(self._post_collections) / max(1, collection_attempts),
+            device=agent.device,
+        )
+        metrics["backdoor/post_teacher_prob"] = torch.tensor(
+            float(self._post_last_teacher_prob), device=agent.device
+        )
+        return metrics
 
     # ------------------------------------------------------------------
     # Physical trigger: activate on a fraction of train / eval envs

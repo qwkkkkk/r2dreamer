@@ -37,17 +37,129 @@ import json
 import pathlib
 import sys
 import warnings
+from collections.abc import Mapping
 
 import hydra
 import torch
+from omegaconf import OmegaConf
 
 import tools
 from backdoor import BackdoorDreamer, BackdoorTrainer
 from envs import make_envs
+from persistence import normalize_persistence_variant
 
 warnings.filterwarnings("ignore")
 sys.path.append(str(pathlib.Path(__file__).parent))
 torch.set_float32_matmul_precision("high")
+
+
+_EVAL_RUNTIME_ENV_KEYS = {"steps", "env_num", "eval_episode_num", "seed", "device"}
+
+
+def _plain(value):
+    if OmegaConf.is_config(value):
+        return OmegaConf.to_container(value, resolve=True)
+    return value
+
+
+def _apply_checkpoint_provenance(config, ckpt):
+    """Apply checkpoint-owned training semantics before env/model creation."""
+    meta = ckpt.get("evaluation_provenance", None)
+    if not isinstance(meta, Mapping):
+        print(
+            "[warn] checkpoint has no evaluation_provenance; "
+            "using legacy CLI evaluation settings"
+        )
+        return {
+            "mode": "legacy_cli",
+            "checkpoint_authoritative": False,
+            "schema_version": 0,
+            "overridden_cli_fields": [],
+        }
+
+    schema_version = int(meta.get("schema_version", 0))
+    if schema_version != 1:
+        raise ValueError(
+            f"unsupported checkpoint evaluation provenance schema {schema_version}"
+        )
+    task = str(meta.get("task", ""))
+    rep_loss = str(meta.get("rep_loss", ""))
+    victim = str(meta.get("victim", rep_loss))
+    target_action = meta.get("resolved_target_action", None)
+    env_meta = meta.get("env", None)
+    trigger_meta = meta.get("trigger", None)
+    if not task or not rep_loss or victim != rep_loss:
+        raise ValueError("invalid checkpoint evaluation provenance: task/victim/rep_loss")
+    if not isinstance(target_action, (list, tuple)) or not target_action:
+        raise ValueError("invalid checkpoint resolved_target_action provenance")
+    if not isinstance(env_meta, Mapping) or str(env_meta.get("task", "")) != task:
+        raise ValueError("checkpoint task disagrees with its resolved env provenance")
+    if not isinstance(trigger_meta, Mapping) or "type" not in trigger_meta:
+        raise ValueError("invalid checkpoint trigger provenance")
+    physical_meta = meta.get("physical_env", {})
+    if not isinstance(physical_meta, Mapping):
+        raise ValueError("invalid checkpoint physical_env provenance")
+    for key, value in physical_meta.items():
+        if key not in env_meta or env_meta[key] != value:
+            raise ValueError(
+                f"checkpoint physical_env.{key} disagrees with env provenance"
+            )
+    if str(trigger_meta["type"]) == "physical" and not bool(
+        physical_meta.get("phys_trigger", False)
+    ):
+        raise ValueError(
+            "physical-trigger checkpoint lacks an enabled physical env provenance"
+        )
+
+    overridden = []
+
+    def apply(path, value):
+        current = _plain(OmegaConf.select(config, path))
+        if current != value:
+            overridden.append(path)
+        OmegaConf.update(config, path, value, merge=False, force_add=True)
+
+    for key, value in env_meta.items():
+        if key not in _EVAL_RUNTIME_ENV_KEYS:
+            apply(f"env.{key}", value)
+    apply("env.task", task)
+    apply("model.rep_loss", rep_loss)
+    apply(
+        "backdoor.target_action",
+        [float(value) for value in target_action],
+    )
+    trigger_fields = {
+        "type": "trigger_type",
+        "size": "trigger_size",
+        "intensity": "trigger_intensity",
+        "eps": "trigger_eps",
+        "window_K": "window_K",
+        "success_aggregation": "success_aggregation",
+    }
+    for source, destination in trigger_fields.items():
+        if source in trigger_meta:
+            apply(f"backdoor.{destination}", trigger_meta[source])
+
+    persistence = meta.get("persistence", {})
+    if isinstance(persistence, Mapping) and persistence.get("variant") is not None:
+        apply(
+            "backdoor.persistence_variant",
+            normalize_persistence_variant(persistence["variant"]),
+        )
+        apply("backdoor.persistence_variant_explicit", True)
+
+    if overridden:
+        print(
+            "[checkpoint provenance] overriding CLI fields: "
+            + ", ".join(overridden)
+        )
+    return {
+        "mode": "checkpoint",
+        "checkpoint_authoritative": True,
+        "schema_version": schema_version,
+        "overridden_cli_fields": overridden,
+        "checkpoint": dict(meta),
+    }
 
 
 class _EvalShim(BackdoorTrainer):
@@ -60,6 +172,13 @@ class _EvalShim(BackdoorTrainer):
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
         self.trigger_eps = float(getattr(backdoor_cfg, "trigger_eps", 8)) / 255.0
         self.window_K = int(getattr(backdoor_cfg, "window_K", -1))
+        self.success_aggregation = str(
+            getattr(backdoor_cfg, "success_aggregation", "any")
+        )
+        if self.success_aggregation not in {"any", "final"}:
+            raise ValueError(
+                f"Unknown success aggregation: {self.success_aggregation!r}"
+            )
         self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
         self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
         self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
@@ -298,6 +417,14 @@ def main(config):
     logdir.mkdir(parents=True, exist_ok=True)
     logger = tools.Logger(logdir)
 
+    print(f"Load checkpoint metadata: {config.ckpt_path}")
+    ckpt = torch.load(
+        pathlib.Path(config.ckpt_path).expanduser(),
+        map_location=config.device,
+        weights_only=False,
+    )
+    provenance_state = _apply_checkpoint_provenance(config, ckpt)
+
     print("Create envs (eval only).")
     _, eval_envs, obs_space, act_space = make_envs(config.env)
 
@@ -312,11 +439,29 @@ def main(config):
     act_dim = act_space.n if hasattr(act_space, "n") else int(sum(act_space.shape))
     tgt_cfg = config.backdoor.target_action
     target_action = [1.0] * act_dim if tgt_cfg is None else list(tgt_cfg)
+    if len(target_action) != act_dim:
+        raise ValueError(
+            f"resolved target_action length {len(target_action)} != act_dim {act_dim}"
+        )
+    target_action = [float(value) for value in target_action]
     agent.set_target_action(target_action)
 
-    print(f"Load checkpoint: {config.ckpt_path}")
-    ckpt = torch.load(pathlib.Path(config.ckpt_path).expanduser(),
-                      map_location=config.device, weights_only=False)
+    checkpoint_persistence = provenance_state.get("checkpoint", {}).get(
+        "persistence", {}
+    )
+    if provenance_state["checkpoint_authoritative"]:
+        saved_source = (
+            checkpoint_persistence.get("source", "metadata")
+            if isinstance(checkpoint_persistence, Mapping)
+            else "metadata"
+        )
+        agent.persistence_variant_source = f"checkpoint:{saved_source}"
+    else:
+        agent.persistence_variant_source = (
+            f"legacy_cli:{agent.persistence_variant_source}"
+        )
+
+    print(f"Load checkpoint weights: {config.ckpt_path}")
     missing, unexpected = agent.load_state_dict(ckpt["agent_state_dict"], strict=False)
     if missing:
         print(f"[warn] missing keys: {missing}")
@@ -324,6 +469,54 @@ def main(config):
         print(f"[warn] unexpected keys: {unexpected}")
     agent.clone_and_freeze()
     agent.eval()
+
+    resolved_env = OmegaConf.to_container(config.env, resolve=True)
+    resolved_backdoor = OmegaConf.to_container(config.backdoor, resolve=True)
+    resolved_physical_env = {
+        key: value
+        for key, value in resolved_env.items()
+        if key.startswith("phys_")
+        or key in {"camera", "size", "action_repeat", "time_limit"}
+    }
+    resolved_provenance = {
+        "mode": provenance_state["mode"],
+        "checkpoint_authoritative": provenance_state[
+            "checkpoint_authoritative"
+        ],
+        "schema_version": provenance_state["schema_version"],
+        "overridden_cli_fields": provenance_state["overridden_cli_fields"],
+        "task": str(config.env.task),
+        "victim": str(config.model.rep_loss),
+        "rep_loss": str(config.model.rep_loss),
+        "resolved_target_action": target_action,
+        "persistence": {
+            "variant": agent.persistence_variant,
+            "source": agent.persistence_variant_source,
+            "checkpoint_resolved": (
+                dict(checkpoint_persistence)
+                if isinstance(checkpoint_persistence, Mapping)
+                else {}
+            ),
+        },
+        "trigger": {
+            "type": str(config.backdoor.trigger_type),
+            "size": int(config.backdoor.trigger_size),
+            "intensity": float(config.backdoor.trigger_intensity),
+            "eps": float(getattr(config.backdoor, "trigger_eps", 8)),
+            "window_K": int(getattr(config.backdoor, "window_K", -1)),
+            "success_aggregation": str(
+                getattr(config.backdoor, "success_aggregation", "any")
+            ),
+        },
+        "env": resolved_env,
+        "physical_env": resolved_physical_env,
+        "backdoor": resolved_backdoor,
+        "runtime": {
+            "seed": int(config.seed),
+            "device": str(config.device),
+            "eval_episode_num": int(config.env.eval_episode_num),
+        },
+    }
 
     shim = _EvalShim(eval_envs, config.backdoor)
     n_envs = eval_envs.env_num
@@ -407,6 +600,9 @@ def main(config):
     results = {
         "ckpt": str(config.ckpt_path),
         "task": config.env.task,
+        "persistence_variant": agent.persistence_variant,
+        "persistence_variant_source": agent.persistence_variant_source,
+        "resolved_provenance": resolved_provenance,
         "n_envs": n_envs,
         "CR": cr,       "CR_std": cr_std,
         "CR_t": cr_trig, "CR_t_std": cr_t_std,
