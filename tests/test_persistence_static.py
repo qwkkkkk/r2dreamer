@@ -1,10 +1,13 @@
 """Dependency-free structural regression tests for post persistence."""
 
+import ast
 import importlib.util
+import math
 import pathlib
 import sys
 import types
 import unittest
+from types import SimpleNamespace
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -25,6 +28,30 @@ def load_persistence_without_torch():
             sys.modules.pop("torch", None)
         else:
             sys.modules["torch"] = previous
+
+
+def load_standalone_function(path, name):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace = {}
+    exec(compile(module, str(path), "exec"), namespace)
+    return namespace[name]
+
+
+def load_checkpoint_sweep():
+    path = ROOT / "scripts" / "eval" / "checkpoint_sweep.py"
+    spec = importlib.util.spec_from_file_location(
+        "checkpoint_sweep_under_test", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class PersistenceStaticTest(unittest.TestCase):
@@ -153,6 +180,63 @@ class PersistenceStaticTest(unittest.TestCase):
             "self.post_burnin = min(max(0, configured_burnin), max_burnin)",
             source,
         )
+
+    def test_post_curve_uses_alive_denominator_and_requires_all_h8_points(self):
+        compute = load_standalone_function(
+            ROOT / "eval_backdoor.py", "_post_asr_curve"
+        )
+        hits = [[0, 0], [0, 0]] + [[1, 0], [1, 0]] + [[0, 0]] * 6
+        alive = [[1, 1], [1, 1]] + [[1, 1], [1, 0]] + [[1, 1]] * 6
+        curve, counts, auc = compute(hits, alive, trig_end=2)
+        self.assertEqual(curve["1"], 0.5)
+        self.assertEqual(curve["2"], 1.0)
+        self.assertEqual(counts["1"], 2)
+        self.assertEqual(counts["2"], 1)
+        self.assertAlmostEqual(auc, (0.5 + 1.0) / 8.0)
+
+        _, _, incomplete_auc = compute(hits[:-1], alive[:-1], trig_end=2)
+        self.assertTrue(math.isnan(incomplete_auc))
+
+    def test_post_curve_collection_is_wired_to_fixed_window_eval(self):
+        trainer = (ROOT / "backdoor.py").read_text(encoding="utf-8")
+        evaluator = (ROOT / "eval_backdoor.py").read_text(encoding="utf-8")
+        self.assertIn('result["per_step_hit"] = torch.stack(ps_hit', trainer)
+        self.assertIn('result["per_step_alive"] = torch.stack(ps_alive', trainer)
+        self.assertIn('_post_asr_curve(\n                out["per_step_hit"].tolist()', evaluator)
+        self.assertIn('d["post_AUC_p1_p8"] = post_auc', evaluator)
+
+    def test_checkpoint_sweep_reports_post_auc_joint_score(self):
+        sweep = load_checkpoint_sweep()
+        args = SimpleNamespace(
+            min_retention=0.80,
+            max_ftr=0.20,
+            min_clean_success=0.70,
+        )
+        result = {
+            "CR": 90.0,
+            "CR_t": 70.0,
+            "ASR": 0.75,
+            "FTR": 0.10,
+            "clean_success": 0.80,
+            "trigger_success": 0.40,
+            "scenario_A": {
+                "win_ASR": 0.80,
+                "post_ASR": 0.50,
+                "post_AUC_p1_p8": 0.40,
+            },
+            "scenario_B": {
+                "win_ASR": 0.60,
+                "post_ASR": 0.30,
+                "post_AUC_p1_p8": 0.20,
+            },
+        }
+        row = sweep.build_row(
+            50000, pathlib.Path("step_50000.pt"), result, 100.0, args
+        )
+        self.assertAlmostEqual(row["post_AUC_p1_p8"], 0.30)
+        expected = math.sqrt(0.70 * 0.30) * 0.80 * 0.90 * 0.90
+        self.assertAlmostEqual(row["persistent_joint_score_p1_p8"], expected)
+        self.assertTrue(row["eligible"])
 
 
 if __name__ == "__main__":

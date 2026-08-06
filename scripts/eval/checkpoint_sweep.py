@@ -243,6 +243,12 @@ def build_row(step, checkpoint, result, clean_score, args):
     post_asr_mean = safe_mean(
         (scenario_a.get("post_ASR"), scenario_b.get("post_ASR"))
     )
+    post_auc_p1_p8 = safe_mean(
+        (
+            scenario_a.get("post_AUC_p1_p8"),
+            scenario_b.get("post_AUC_p1_p8"),
+        )
+    )
     persistent_attack = (
         math.sqrt(max(0.0, win_asr_mean) * max(0.0, post_asr_mean))
         if math.isfinite(win_asr_mean) and math.isfinite(post_asr_mean)
@@ -254,6 +260,14 @@ def build_row(step, checkpoint, result, clean_score, args):
     persistent_joint_score = (
         persistent_attack * success_factor * retention_factor * ftr_factor
         if math.isfinite(persistent_attack)
+        else float("nan")
+    )
+    persistent_joint_score_p1_p8 = (
+        math.sqrt(max(0.0, win_asr_mean) * max(0.0, post_auc_p1_p8))
+        * success_factor
+        * retention_factor
+        * ftr_factor
+        if math.isfinite(win_asr_mean) and math.isfinite(post_auc_p1_p8)
         else float("nan")
     )
     eligible = (
@@ -279,8 +293,12 @@ def build_row(step, checkpoint, result, clean_score, args):
         "scenario_B_win_ASR": scenario_b.get("win_ASR"),
         "scenario_B_post_ASR": scenario_b.get("post_ASR"),
         "post_ASR_mean": post_asr_mean,
+        "scenario_A_post_AUC_p1_p8": scenario_a.get("post_AUC_p1_p8"),
+        "scenario_B_post_AUC_p1_p8": scenario_b.get("post_AUC_p1_p8"),
+        "post_AUC_p1_p8": post_auc_p1_p8,
         "joint_score": joint_score,
         "persistent_joint_score": persistent_joint_score,
+        "persistent_joint_score_p1_p8": persistent_joint_score_p1_p8,
         "eligible": eligible,
         "checkpoint": str(checkpoint),
     }

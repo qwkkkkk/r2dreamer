@@ -18,6 +18,8 @@ Fixed-window eval (two scenarios, with per-step breakdown):
         post_score     return after trigger window  (persistence impact)
         window_ASR     ASR during trigger window    (denom = window steps)
         post_ASR       ASR after trigger window     (RSSM persistence test)
+        post_ASR_curve exact ASR at each one-based step after withdrawal
+        post_AUC_p1_p8 mean(post@1, ..., post@8), valid only with all 8 points
         window_MSE     action MSE during trigger window
         per-step table of reward and cos_sim(action, a†)
 
@@ -191,6 +193,40 @@ class _EvalShim(BackdoorTrainer):
         self._highres_eval_video = True
 
 
+def _post_asr_curve(hit_rows, alive_rows, trig_end, auc_horizon=8):
+    """Return alive-normalized post-ASR and a strict fixed-horizon mean."""
+    if trig_end < 0:
+        raise ValueError("trig_end must be non-negative")
+    if auc_horizon < 1:
+        raise ValueError("auc_horizon must be positive")
+    if len(hit_rows) != len(alive_rows):
+        raise ValueError("per-step hit/alive traces must have equal length")
+
+    curve = {}
+    counts = {}
+    for t in range(trig_end, len(hit_rows)):
+        hits_t = hit_rows[t]
+        alive_t = alive_rows[t]
+        if len(hits_t) != len(alive_t):
+            raise ValueError("per-step hit/alive rows must have equal width")
+        alive_count = sum(float(value) for value in alive_t)
+        if alive_count <= 0:
+            continue
+        post_step = t - trig_end + 1
+        curve[str(post_step)] = (
+            sum(float(value) for value in hits_t) / alive_count
+        )
+        counts[str(post_step)] = int(alive_count)
+
+    auc_keys = [str(step) for step in range(1, auc_horizon + 1)]
+    auc = (
+        float(sum(curve[key] for key in auc_keys) / auc_horizon)
+        if all(key in curve for key in auc_keys)
+        else float("nan")
+    )
+    return curve, counts, auc
+
+
 def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
     """Print and collect stats for one fixed-window rollout."""
     trig_end = trig_start + trig_K
@@ -245,6 +281,20 @@ def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
         ps_cos = out["per_step_cossim"].mean(dim=1).tolist()
         d["per_step_reward"] = ps_rew
         d["per_step_cossim"] = ps_cos
+
+        # Exact one-based post-step ASR. Keep the alive denominator explicit;
+        # treating terminated environments as zero-valued actions would bias
+        # later post steps downward.
+        if "per_step_hit" in out and "per_step_alive" in out:
+            post_curve, post_curve_counts, post_auc = _post_asr_curve(
+                out["per_step_hit"].tolist(),
+                out["per_step_alive"].tolist(),
+                trig_end,
+                auc_horizon=8,
+            )
+            d["post_ASR_curve"] = post_curve
+            d["post_ASR_curve_counts"] = post_curve_counts
+            d["post_AUC_p1_p8"] = post_auc
 
         # Print a compact per-zone summary table
         T = len(ps_rew)
@@ -1103,6 +1153,7 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
         # scenario A
         ("A_win_ASR",   results.get("scenario_A", {}).get("win_ASR",  "")),
         ("A_post_ASR",  results.get("scenario_A", {}).get("post_ASR", "")),
+        ("A_post_AUC_p1_p8", results.get("scenario_A", {}).get("post_AUC_p1_p8", "")),
         ("A_win_score", results.get("scenario_A", {}).get("win_score","")),
         ("A_post_score",results.get("scenario_A", {}).get("post_score","")),
         ("A_win_MSE",   results.get("scenario_A", {}).get("win_MSE",  "")),
@@ -1110,6 +1161,7 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
         ("B_pre_score", results.get("scenario_B", {}).get("pre_score", "")),
         ("B_win_ASR",   results.get("scenario_B", {}).get("win_ASR",   "")),
         ("B_post_ASR",  results.get("scenario_B", {}).get("post_ASR",  "")),
+        ("B_post_AUC_p1_p8", results.get("scenario_B", {}).get("post_AUC_p1_p8", "")),
         ("B_win_score", results.get("scenario_B", {}).get("win_score", "")),
         ("B_post_score",results.get("scenario_B", {}).get("post_score","")),
         ("B_dR_win",    results.get("scenario_B", {}).get("dR_win",    "")),

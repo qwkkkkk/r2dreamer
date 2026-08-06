@@ -1858,6 +1858,8 @@ class BackdoorTrainer(OnlineTrainer):
           [collect_perstep=True]:
           per_step_reward (T, B) per-step reward (0 after episode end)
           per_step_cossim (T, B) per-step cos_sim(action, a†)
+          per_step_hit    (T, B) thresholded target-action hit, alive-masked
+          per_step_alive  (T, B) denominator mask for per-step ASR
         """
         trig_end = trig_start + trig_K
         envs = self.eval_envs
@@ -1879,6 +1881,8 @@ class BackdoorTrainer(OnlineTrainer):
 
         ps_reward = [] if collect_perstep else None
         ps_cossim = [] if collect_perstep else None
+        ps_hit = [] if collect_perstep else None
+        ps_alive = [] if collect_perstep else None
         video_cache = [] if collect_video else None
         latent_trace = [] if collect_latent_trace else None
         action_trace = [] if collect_latent_trace else None
@@ -1965,6 +1969,8 @@ class BackdoorTrainer(OnlineTrainer):
             if collect_perstep:
                 ps_reward.append(rew.cpu())
                 ps_cossim.append((cos_sim * alive).cpu())
+                ps_hit.append((ok * alive).cpu())
+                ps_alive.append(alive.cpu())
 
             current_step += 1
             once_done |= done
@@ -1987,6 +1993,8 @@ class BackdoorTrainer(OnlineTrainer):
         if collect_perstep:
             result["per_step_reward"] = torch.stack(ps_reward, dim=0)   # (T, B)
             result["per_step_cossim"] = torch.stack(ps_cossim, dim=0)   # (T, B)
+            result["per_step_hit"] = torch.stack(ps_hit, dim=0)         # (T, B)
+            result["per_step_alive"] = torch.stack(ps_alive, dim=0)     # (T, B)
         if collect_video and video_cache:
             result["video"] = torch.stack(video_cache, dim=1)  # (B, T, H, W, C)
         if collect_latent_trace and latent_trace:
