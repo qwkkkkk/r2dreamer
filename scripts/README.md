@@ -45,16 +45,17 @@ explicitly with `TASK_FILTER=reach`.
 
 ## Shared DMC Suite
 
-Both victims use the same three underlying DMC tasks:
+Both victims use the same four underlying DMC tasks:
 
 ```text
 walker_walk
 ball_in_cup_catch
 finger_spin
+hopper_stand
 ```
 
-These are the strongest completed TD-MPC2 1M RGB tasks while retaining distinct
-control semantics. The full DMC registry still supports the excluded tasks.
+All four have complete 1M RGB checkpoints for both Dreamer victims. The full
+DMC registry still supports the excluded tasks.
 
 Before launching DMC training on a new machine, verify all three repository
 wrappers with:
@@ -63,12 +64,10 @@ wrappers with:
 MUJOCO_GL=egl python scripts/smoke/dmc.py
 ```
 
-## Legacy ManiSkill2 Suite
+## Optional ManiSkill Suites
 
-The current Dreamer repository still contains an older ManiSkill2 `-v0`
-integration. These five tasks are exploratory and are not in the final paper
-matrix. The final matrix uses ManiSkill3 `PushCube-v1` and `PullCube-v1`; their
-DreamerV3/R2-Dreamer wrapper remains to be implemented and validated.
+The repository retains ManiSkill2 and ManiSkill3 integrations for exploratory
+comparison, but neither belongs to the current paper matrix.
 
 ```text
 lift-cube
@@ -112,8 +111,20 @@ The fixed sphere position is `[0.00, -0.30, 1.30]`; DMC uses a camera-relative
 tasks. All trigger geoms have magenta RGBA `[1, 0, 1, 1]` and disabled
 contacts.
 
-The locked paper matrix is 3 victims x 10 tasks = 30 clean runs, followed by
-150 backdoor runs for five methods.
+## DMControl Manipulation Candidates
+
+The fourth benchmark family currently qualifies two official Jaco vision
+tasks:
+
+```text
+reach_site_vision
+place_cradle_vision
+```
+
+Both use the official `front_close` camera rendered at RGB64, action repeat 2,
+and a native 250-frame horizon. They must demonstrate meaningful clean control
+for TD-MPC2, DreamerV3, and R2-Dreamer before admission. The target paper
+matrix is therefore 3 victims x 12 tasks = 36 clean runs.
 
 ## Clean Training
 
@@ -123,6 +134,7 @@ DreamerV3:
 bash scripts/clean/dreamer_dmc.sh
 bash scripts/clean/dreamer_metaworld.sh
 bash scripts/clean/dreamer_myosuite.sh
+bash scripts/clean/dreamer_dmc_manip.sh
 ```
 
 R2-Dreamer:
@@ -131,12 +143,11 @@ R2-Dreamer:
 bash scripts/clean/r2dreamer_dmc.sh
 bash scripts/clean/r2dreamer_metaworld.sh
 bash scripts/clean/r2dreamer_myosuite.sh
+bash scripts/clean/r2dreamer_dmc_manip.sh
 ```
 
-The `dmc_subtle` and ManiSkill2 launchers remain available for historical
-comparison only. Do not use them for the locked paper matrix. Final ManiSkill3
-clean launchers will target `PushCube-v1` and `PullCube-v1` after the shared
-wrapper is ported and smoke-tested.
+The `dmc_subtle`, ManiSkill2, and ManiSkill3 launchers remain available for
+historical comparison only. Do not use them for the current paper matrix.
 
 For the 1M-step RGB MyoSuite runs, keep replay in CPU memory while the model
 stays on GPU:
