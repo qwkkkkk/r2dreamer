@@ -34,12 +34,19 @@ dmc_tasks=(
     dmc_walker_walk
     dmc_ball_in_cup_catch
     dmc_finger_spin
+    dmc_hopper_stand
 )
 
 metaworld_tasks=(
     metaworld_drawer-open
     metaworld_window-close
     metaworld_button-press
+    metaworld_drawer-close
+)
+
+dmc_manip_tasks=(
+    dmc_manip_reach_site
+    dmc_manip_place_cradle
 )
 
 dmc_subtle_tasks=(
@@ -89,8 +96,13 @@ case "$DOMAIN" in
         env_cfg=myosuite
         task_prefix=myosuite_
         ;;
+    dmc_manip)
+        tasks=("${dmc_manip_tasks[@]}")
+        env_cfg=dmc_manip
+        task_prefix=dmc_manip_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill | myosuite"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | myosuite | dmc_manip"
         exit 1
         ;;
 esac

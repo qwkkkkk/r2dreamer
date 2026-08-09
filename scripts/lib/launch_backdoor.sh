@@ -15,7 +15,7 @@
 #
 # Or use the thin wrappers:
 #   bash scripts/baseline/dreamer_reflective.sh
-#   bash scripts/ours/r2dreamer_causal_open.sh
+#   bash scripts/ours/r2dreamer_mirage.sh
 # ============================================================
 
 # ============================================================
@@ -54,7 +54,7 @@ source "${SCRIPT_DIR}/result_paths.sh"
 setup_gpu_env
 BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE:-${TORCH_DEVICE}}
 
-if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ]; then
+if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ] || [ "${DOMAIN}" = "dmc_manip" ]; then
     verify_dmc_stack
 fi
 
@@ -197,7 +197,9 @@ POST_LOSS_CLIP=${POST_LOSS_CLIP:-${CAUSAL_DEPLOY_LOSS_CLIP:-0.0}}
 
 if [[ -z "${RESULT_METHOD:-}" ]]; then
     case "${PERSISTENCE_VARIANT}" in
-        post|imag|both) RESULT_METHOD=causal_open ;;
+        post) RESULT_METHOD=mirage ;;
+        imag) RESULT_METHOD=causal_imag ;;
+        both) RESULT_METHOD=causal_both ;;
         none) RESULT_METHOD=${ATTACK_OBJECTIVE} ;;
     esac
 fi
@@ -250,7 +252,7 @@ fi
 if [ -z "${RUN_TAG_WAS_SET}" ] && [ "${ATTACK_OBJECTIVE}" != "reflective" ]; then
     RUN_TAG="${RUN_TAG}_${ATTACK_OBJECTIVE}"
 fi
-if [ -z "${RUN_TAG_WAS_SET}" ] && [ "${PERSISTENCE_VARIANT}" != "none" ]; then
+if [ -z "${RUN_TAG_WAS_SET}" ] && [ "${PERSISTENCE_VARIANT}" != "none" ] && [ "${RESULT_METHOD}" != "mirage" ]; then
     RUN_TAG="${RUN_TAG}_p${PERSISTENCE_VARIANT}"
     if [ "${PERSISTENCE_VARIANT}" = "imag" ] || [ "${PERSISTENCE_VARIANT}" = "both" ]; then
         RUN_TAG="${RUN_TAG}_i${IMAG_MODE}_h${IMAG_HORIZON}_g${IMAG_GAMMA}"
@@ -280,12 +282,19 @@ dmc_tasks=(
     dmc_walker_walk
     dmc_ball_in_cup_catch
     dmc_finger_spin
+    dmc_hopper_stand
 )
 
 metaworld_tasks=(
     metaworld_drawer-open
     metaworld_window-close
     metaworld_button-press
+    metaworld_drawer-close
+)
+
+dmc_manip_tasks=(
+    dmc_manip_reach_site
+    dmc_manip_place_cradle
 )
 
 dmc_subtle_tasks=(
@@ -338,8 +347,13 @@ case "$DOMAIN" in
         env_cfg=myosuite
         task_prefix=myosuite_
         ;;
+    dmc_manip)
+        tasks=("${dmc_manip_tasks[@]}")
+        env_cfg=dmc_manip
+        task_prefix=dmc_manip_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill | myosuite"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | myosuite | dmc_manip"
         exit 1
         ;;
 esac
@@ -352,6 +366,8 @@ if [ -z "${EVAL_TRIG_START_WAS_SET}" ]; then
         EVAL_TRIG_START=50
     elif [ "${DOMAIN}" = "myosuite" ]; then
         EVAL_TRIG_START=42
+    elif [ "${DOMAIN}" = "dmc_manip" ]; then
+        EVAL_TRIG_START=62
     fi
 fi
 if [ -z "${SUCCESS_AGGREGATION_WAS_SET}" ] && [ "${DOMAIN}" = "myosuite" ]; then

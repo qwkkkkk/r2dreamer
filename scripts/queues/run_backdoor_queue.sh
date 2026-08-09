@@ -11,7 +11,7 @@ GPU_ID=${GPU_ID:-0}
 STEPS=${STEPS:-200000}
 CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-10000}
 EVAL_EPISODES=${EVAL_EPISODES:-10}
-VARIANTS=${VARIANTS:-ours beat_adapted reflective latent_only reward_only}
+VARIANTS=${VARIANTS:-mirage beat_adapted reflective latent_only reward_only}
 VARIANTS=${VARIANTS//,/ }
 
 for variant in ${VARIANTS}; do

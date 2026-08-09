@@ -355,8 +355,10 @@ class BackdoorDreamer(Dreamer):
                 # Shape from buffer: (B, T, 1) → squeeze → (B, T) bool
                 mask_trig = is_trig.squeeze(-1).bool()
             else:
-                # Config mismatch fallback: treat all sequences as triggered
-                mask_trig = torch.ones(B, T, dtype=torch.bool, device=self.device)
+                raise RuntimeError(
+                    "physical-trigger replay is missing is_triggered; refusing "
+                    "to silently train every sequence as poisoned"
+                )
             mask_clean = ~mask_trig
             # Image is already rendered with the physical trigger object visible;
             # no pixel modification needed.

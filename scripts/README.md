@@ -5,7 +5,7 @@ experiment-facing shell scripts at the root of `scripts/`.
 
 - `clean/`: Stage-1 clean training for DreamerV3 and R2-Dreamer.
 - `baseline/`: Stage-2 baseline attacks.
-- `ours/`: Stage-2 MIRAGE causal-propagation attacks.
+- `ours/`: the single formal MIRAGE real post-intervention attack.
 - `eval/`: evaluation-only wrappers.
 - `smoke/`: environment creation, stepping, and rendering checks.
 - `viz/`: plotting, trace collection, and physical-trigger visual checks.
@@ -25,23 +25,21 @@ remain usable without moving large ignored directories.
 
 ## Default Meta-World Suite
 
-Meta-World wrappers default to the three-task suite:
+Meta-World wrappers default to the locked four-task suite:
 
 ```text
 drawer-open
 window-close
 button-press
+drawer-close
 ```
 
 Run a single task by setting `TASK_FILTER`, for example:
 
 ```bash
 TASK_FILTER=drawer-open bash scripts/baseline/r2dreamer_beat_adapted.sh
-TASK_FILTER=reach bash scripts/ours/dreamer_causal_open.sh
+TASK_FILTER=drawer-close bash scripts/ours/dreamer_mirage.sh
 ```
-
-`reach` is not part of the default three-task suite, but can still be launched
-explicitly with `TASK_FILTER=reach`.
 
 ## Shared DMC Suite
 
@@ -185,25 +183,29 @@ GPU_ID=1 TASK_FILTER=drawer-open bash scripts/baseline/dreamer_latent_only.sh
 STEPS=3e5 TASK_FILTER=button-press bash scripts/baseline/r2dreamer_beat_adapted.sh
 ```
 
-## Ours
+## MIRAGE
 
 DreamerV3:
 
 ```bash
-bash scripts/ours/dreamer_causal_open.sh
+bash scripts/ours/dreamer_mirage.sh
 ```
 
 R2-Dreamer:
 
 ```bash
-bash scripts/ours/r2dreamer_causal_open.sh
+bash scripts/ours/r2dreamer_mirage.sh
 ```
+
+The formal entry always selects `persistence_variant=post`, i.e. a dedicated
+simulator rollout with trigger withdrawal. Historical imagined open/closed
+paths are ablations and are not additional MIRAGE methods.
 
 Common overrides:
 
 ```bash
-CAUSAL_GAMMA=1.0 CAUSAL_HORIZON=5 bash scripts/ours/dreamer_causal_open.sh
-TASK_FILTER=drawer-open bash scripts/ours/r2dreamer_causal_open.sh
+POST_GAMMA=1.0 POST_HORIZON=8 bash scripts/ours/dreamer_mirage.sh
+TASK_FILTER=drawer-open bash scripts/ours/r2dreamer_mirage.sh
 ```
 
 ## Evaluation

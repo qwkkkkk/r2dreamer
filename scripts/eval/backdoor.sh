@@ -51,7 +51,10 @@ else
 fi
 if [[ -z "${RESULT_METHOD:-}" ]]; then
     case "${BACKDOOR_VARIANT:-}:${RUN_TAG}" in
-        ours:*|post:*|imag:*|both:*|causal_open:*|*ppost*|*pimag*|*pboth*|*causal*) RESULT_METHOD=causal_open ;;
+        ours:*|mirage:*|post:*|*ppost*) RESULT_METHOD=mirage ;;
+        imag:*|*pimag*) RESULT_METHOD=causal_imag ;;
+        both:*|*pboth*) RESULT_METHOD=causal_both ;;
+        causal_open:*) RESULT_METHOD=causal_open ;;
         *beat*) RESULT_METHOD=beat_adapted ;;
         *latent*) RESULT_METHOD=static_latent ;;
         *reward*) RESULT_METHOD=reward_only ;;
@@ -63,7 +66,17 @@ fi
 EVAL_EPISODES=${EVAL_EPISODES:-10}
 ASR_THRESHOLD=${ASR_THRESHOLD:-0.9}
 ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
-EVAL_TRIG_START=${EVAL_TRIG_START:-250}
+if [ -z "${EVAL_TRIG_START:-}" ]; then
+    if [ "${DOMAIN}" = "metaworld" ]; then
+        EVAL_TRIG_START=50
+    elif [ "${DOMAIN}" = "myosuite" ]; then
+        EVAL_TRIG_START=42
+    elif [ "${DOMAIN}" = "dmc_manip" ]; then
+        EVAL_TRIG_START=62
+    else
+        EVAL_TRIG_START=250
+    fi
+fi
 EVAL_TRIG_K=${EVAL_TRIG_K:-16}
 SAVE_EVAL_VIDEO=${SAVE_EVAL_VIDEO:-true}
 EVAL_VIDEO_SIZE=${EVAL_VIDEO_SIZE:-512}
@@ -75,12 +88,19 @@ dmc_tasks=(
     dmc_walker_walk
     dmc_ball_in_cup_catch
     dmc_finger_spin
+    dmc_hopper_stand
 )
 
 metaworld_tasks=(
     metaworld_drawer-open
     metaworld_window-close
     metaworld_button-press
+    metaworld_drawer-close
+)
+
+dmc_manip_tasks=(
+    dmc_manip_reach_site
+    dmc_manip_place_cradle
 )
 
 dmc_subtle_tasks=(
@@ -131,8 +151,13 @@ case "$DOMAIN" in
         env_cfg=myosuite
         task_prefix=myosuite_
         ;;
+    dmc_manip)
+        tasks=("${dmc_manip_tasks[@]}")
+        env_cfg=dmc_manip
+        task_prefix=dmc_manip_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill | myosuite"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | myosuite | dmc_manip"
         exit 1
         ;;
 esac

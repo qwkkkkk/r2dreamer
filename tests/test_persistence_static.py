@@ -129,15 +129,15 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn('if persistence_variant in {"post", "both"}:', finetune)
         self.assertIn("post_envs = make_post_env(config.env)", finetune)
 
-    def test_persistence_variants_keep_the_five_method_result_id(self):
+    def test_only_real_post_variant_uses_mirage_result_id(self):
         launch = (ROOT / "scripts/lib/launch_backdoor.sh").read_text(encoding="utf-8")
         variants = (ROOT / "scripts/lib/run_backdoor_variant.sh").read_text(encoding="utf-8")
-        self.assertIn("post|imag|both) RESULT_METHOD=causal_open", launch)
+        self.assertIn("post) RESULT_METHOD=mirage", launch)
+        self.assertIn("imag) RESULT_METHOD=causal_imag", launch)
+        self.assertIn("both) RESULT_METHOD=causal_both", launch)
         self.assertNotIn("RESULT_METHOD=${RESULT_METHOD:-post}", variants)
         self.assertNotIn("RESULT_METHOD=${RESULT_METHOD:-both}", variants)
-        self.assertGreaterEqual(
-            variants.count("RESULT_METHOD=${RESULT_METHOD:-causal_open}"), 3
-        )
+        self.assertEqual(variants.count("RESULT_METHOD=${RESULT_METHOD:-mirage}"), 1)
 
     def test_evaluator_applies_checkpoint_provenance_before_construction(self):
         source = (ROOT / "eval_backdoor.py").read_text(encoding="utf-8")

@@ -3,5 +3,6 @@ set -euo pipefail
 
 export METHOD=${METHOD:-r2dreamer}
 export DOMAIN=${DOMAIN:-metaworld}
-# Backward-compatible filename for old queues.
-exec bash "$(dirname "$0")/r2dreamer_mirage.sh"
+export BACKDOOR_VARIANT=mirage
+
+exec bash "$(dirname "$0")/../lib/run_backdoor_variant.sh"
