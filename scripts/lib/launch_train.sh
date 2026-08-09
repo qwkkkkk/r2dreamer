@@ -93,10 +93,11 @@ dmc_manip_tasks=(
     dmc_manip_place_cradle
 )
 
-# RoboDesk qualification set. The first two are the preferred final pair;
-# flat_block_in_shelf is the shaped-reward backup.
+# RoboDesk qualification set. The two button targets are the reliable common
+# candidates; the object tasks remain available for broader qualification.
 robodesk_tasks=(
     robodesk_push_green
+    robodesk_push_red
     robodesk_upright_block_off_table
     robodesk_flat_block_in_shelf
 )
