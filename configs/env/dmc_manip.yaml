@@ -1,0 +1,28 @@
+task: 'dmc_manip_reach_site'
+steps: 1.01e6
+env_num: 16
+eval_episode_num: 10
+action_repeat: 2
+train_ratio: 512
+# Native manipulation horizon is 250 simulator frames = 125 policy steps.
+time_limit: 250
+
+seed: ${seed}
+device: ${device}
+
+size: [64, 64]
+encoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
+decoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
+
+phys_trigger: false
+phys_trigger_size: 0.05
+phys_trigger_rgba: [1.0, 0.0, 1.0, 1.0]
+phys_trigger_pos: [0.15, -0.30, 0.40]
+phys_trigger_offset: [0.0, 0.0, 0.0]
+phys_trigger_follow_body: camera
+phys_trigger_absolute: true
+phys_pair_clean: false

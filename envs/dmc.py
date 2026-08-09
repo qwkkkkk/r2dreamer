@@ -6,6 +6,43 @@ import gymnasium as gym
 import numpy as np
 
 
+def _load_manipulation_env(task, seed, phys_trigger, trigger_size, trigger_rgba):
+    """Load a DMControl Manipulation task, optionally injecting a trigger.
+
+    Manipulation uses composer/MJCF entity trees, so the suite XML loader
+    monkey patch used by ordinary DMC tasks cannot reach these models.
+    """
+    from dm_control import composer, manipulation
+
+    vision_task = f"{task}_vision"
+    if vision_task not in manipulation.get_environments_by_tag("vision"):
+        raise ValueError(f"Unknown DMControl Manipulation task: {vision_task}")
+    env = manipulation.load(vision_task, seed=seed)
+    if not phys_trigger:
+        return env
+
+    model = env.task.root_entity.mjcf_model
+    if model.find("body", "bd_trigger_body") is None:
+        body = model.worldbody.add(
+            "body", name="bd_trigger_body", pos=[0.0, 0.0, -10.0]
+        )
+        body.add(
+            "geom",
+            name="bd_trigger_geom",
+            type="sphere",
+            size=[float(trigger_size)],
+            rgba=trigger_rgba,
+            contype=0,
+            conaffinity=0,
+            mass=0.001,
+        )
+    return composer.Environment(
+        env.task,
+        time_limit=env._time_limit,
+        random_state=np.random.RandomState(seed),
+    )
+
+
 def _inject_physical_trigger_xml(xml_string, size, rgba):
     root = ET.fromstring(xml_string)
     worldbody = root.find("worldbody")
@@ -100,7 +137,10 @@ class DeepMindControl(gym.Env):
         else:
             is_subtle = False
 
-        if "sparse" in name or "finger_turn" in name:
+        if name.startswith("manip_"):
+            domain = "manip"
+            task = name[len("manip_") :]
+        elif "sparse" in name or "finger_turn" in name:
             _name, difficulty = name.rsplit("_", 1)
             domain, task = _name.rsplit("_", 1)
             task = task + "_" + difficulty
@@ -118,6 +158,14 @@ class DeepMindControl(gym.Env):
 
             func = getattr(dmc_subtle, name)
             self._env = func(random=seed)
+        elif domain == "manip":
+            self._env = _load_manipulation_env(
+                task,
+                seed,
+                phys_trigger,
+                trigger_size,
+                trigger_rgba,
+            )
         elif isinstance(domain, str):
             from dm_control import suite
 
@@ -140,6 +188,7 @@ class DeepMindControl(gym.Env):
 
         self._action_repeat = action_repeat
         self._size = size
+        self._domain = domain
         if camera is None:
             camera = dict(quadruped=2, fish=3).get(domain, 0)
         self._camera = camera
@@ -257,6 +306,11 @@ class DeepMindControl(gym.Env):
     def observation_space(self):
         spaces = {}
         for key, value in self._env.observation_spec().items():
+            # The official vision task includes an 84x84 front_close frame.
+            # We render that same camera directly at the policy's 64x64 size;
+            # retaining both images would nearly double replay memory.
+            if self._domain == "manip" and key == "front_close":
+                continue
             if len(value.shape) == 0:
                 shape = (1,)
             else:
@@ -285,6 +339,8 @@ class DeepMindControl(gym.Env):
             if time_step.last():
                 break
         obs = dict(time_step.observation)
+        if self._domain == "manip":
+            obs.pop("front_close", None)
         obs = {key: [val] if len(val.shape) == 0 else val for key, val in obs.items()}
         image, image_clean = self._render_image_pair()
         obs["image"] = image
@@ -304,6 +360,8 @@ class DeepMindControl(gym.Env):
         time_step = self._env.reset()
         self._restore_trigger_pose()
         obs = dict(time_step.observation)
+        if self._domain == "manip":
+            obs.pop("front_close", None)
         obs = {key: [val] if len(val.shape) == 0 else val for key, val in obs.items()}
         image, image_clean = self._render_image_pair()
         obs["image"] = image

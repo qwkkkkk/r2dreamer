@@ -31,6 +31,7 @@ METHOD=${METHOD:-dreamer}
 # ============================================================
 # Benchmark domain
 #   dmc        — DeepMind Control Suite, pixel obs 64×64
+#   dmc_manip  — DMControl Manipulation Jaco tasks, official front-close view
 #   metaworld  — Meta-World manipulation tasks, pixel obs 64×64
 #   dmc_subtle — DMC with subtle visual distractors (R2-Dreamer paper benchmarks)
 #   maniskill  - ManiSkill2 manipulation tasks with RGB64 observations
@@ -57,7 +58,7 @@ source "${SCRIPT_DIR}/result_paths.sh"
 setup_gpu_env
 BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE:-${TORCH_DEVICE}}
 
-if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ]; then
+if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ] || [ "${DOMAIN}" = "dmc_manip" ]; then
     verify_dmc_stack
 fi
 
@@ -71,18 +72,25 @@ fi
 #                    Set False when debugging or profiling
 # ============================================================
 STEPS=${STEPS:-}
-CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-0}
+CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-}
 MODEL_COMPILE=${MODEL_COMPILE:-True}
 
 # ============================================================
 # Task lists  (curated paper subset; full lists kept in comments below)
 # ============================================================
 
-# DMC: 3 strongest completed TD-MPC2 1M RGB tasks
+# DMC: final four-task paper subset.
 dmc_tasks=(
     dmc_walker_walk
     dmc_ball_in_cup_catch
     dmc_finger_spin
+    dmc_hopper_stand
+)
+
+# DMControl Manipulation: composer-based Jaco visual manipulation tasks.
+dmc_manip_tasks=(
+    dmc_manip_reach_site
+    dmc_manip_place_cradle
 )
 # Full DMC-20:
 # dmc_acrobot_swingup dmc_ball_in_cup_catch dmc_cartpole_balance
@@ -92,11 +100,12 @@ dmc_tasks=(
 # dmc_quadruped_walk dmc_reacher_easy dmc_reacher_hard dmc_walker_run
 # dmc_walker_stand dmc_walker_walk
 
-# Meta-World: 3 distinct tasks with high, stable clean success
+# Meta-World: final four-task paper subset.
 metaworld_tasks=(
     metaworld_drawer-open    # paired drawer task for backdoor ablations
     metaworld_window-close   # stable across all three victims
     metaworld_button-press   # TD-MPC2 stable; DreamerV3 80%+ acceptable
+    metaworld_drawer-close
 )
 # Full Meta-World-50: assembly, basketball, bin-picking, box-close, button-press,
 # button-press-topdown, button-press-topdown-wall, button-press-wall,
@@ -127,6 +136,12 @@ maniskill_tasks=(
     maniskill_pick-ycb-mug
 )
 
+# ManiSkill3: retained as an optional supported domain, not in the final matrix.
+maniskill3_tasks=(
+    maniskill3_ms3-push-cube
+    maniskill3_ms3-poke-cube
+)
+
 # MyoSuite: shared five-task paper suite, exposed as pixel observations here.
 myosuite_tasks=(
     myosuite_myo-key-turn
@@ -142,6 +157,14 @@ case "$DOMAIN" in
         env_cfg=dmc_vision
         task_prefix=dmc_
         STEPS=${STEPS:-1e6}
+        ;;
+    dmc_manip)
+        tasks=("${dmc_manip_tasks[@]}")
+        env_cfg=dmc_manip
+        task_prefix=dmc_manip_
+        STEPS=${STEPS:-1e6}
+        # Save every 50K environment frames for clean-admission auditing.
+        CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-50000}
         ;;
     metaworld)
         tasks=("${metaworld_tasks[@]}")
@@ -161,6 +184,12 @@ case "$DOMAIN" in
         task_prefix=maniskill_
         STEPS=${STEPS:-2e6}
         ;;
+    maniskill3)
+        tasks=("${maniskill3_tasks[@]}")
+        env_cfg=maniskill3
+        task_prefix=maniskill3_
+        STEPS=${STEPS:-1e6}
+        ;;
     myosuite)
         tasks=("${myosuite_tasks[@]}")
         env_cfg=myosuite
@@ -168,10 +197,13 @@ case "$DOMAIN" in
         STEPS=${STEPS:-1e6}
         ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | dmc_subtle | maniskill | myosuite"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | dmc_manip | metaworld | dmc_subtle | maniskill | maniskill3 | myosuite"
         exit 1
         ;;
 esac
+
+# Domains without an explicit recovery cadence remain final-checkpoint-only.
+CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-0}
 
 # Optional: run one task only. Accepts full task name (maniskill_pick-cube)
 # or short task name (pick-cube).
@@ -184,7 +216,7 @@ if [ -n "${TASK_FILTER:-}" ]; then
         fi
     done
     if [ ${#filtered[@]} -eq 0 ]; then
-        if [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "myosuite" ]; then
+        if [ "${DOMAIN}" = "dmc_manip" ] || [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "maniskill3" ] || [ "${DOMAIN}" = "myosuite" ]; then
             task_name="${TASK_FILTER#${task_prefix}}"
             filtered=("${task_prefix}${task_name}")
             echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ${DOMAIN} list; trying '${filtered[0]}'"

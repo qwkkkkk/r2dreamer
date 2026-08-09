@@ -177,7 +177,7 @@ def main(config):
     video_fps = int(getattr(config, "eval_video_fps", 16))
     video_envs = int(getattr(config, "eval_video_envs", 1))
     suite = str(config.env.task).split("_", 1)[0]
-    highres_video = suite in {"dmc", "metaworld", "myosuite"}
+    highres_video = suite in {"dmc", "metaworld", "myosuite", "maniskill3"}
     success_aggregation = "final" if suite == "myosuite" else "any"
 
     print("Create eval envs.")

@@ -128,6 +128,28 @@ def make_env(config, id):
                 getattr(config, "phys_trigger_rgba", (1.0, 0.0, 1.0, 1.0))
             ),
         )
+    elif suite == "maniskill3":
+        import envs.maniskill3 as maniskill3
+
+        env = maniskill3.ManiSkill3(
+            task,
+            config.action_repeat,
+            config.size,
+            getattr(config, "camera", "base_camera"),
+            config.seed + id,
+            control_mode=getattr(config, "control_mode", None),
+            render_size=getattr(config, "render_size", 512),
+            shader_pack=getattr(config, "shader_pack", "minimal"),
+            phys_trigger=bool(getattr(config, "phys_trigger", False)),
+            phys_pair_clean=bool(getattr(config, "phys_pair_clean", False)),
+            trigger_pos=tuple(
+                getattr(config, "phys_trigger_pos", (0.0, -0.25, 0.08))
+            ),
+            trigger_size=float(getattr(config, "phys_trigger_size", 0.03)),
+            trigger_rgba=tuple(
+                getattr(config, "phys_trigger_rgba", (1.0, 0.0, 1.0, 1.0))
+            ),
+        )
     elif suite == "myosuite":
         import envs.myosuite as myosuite
 
