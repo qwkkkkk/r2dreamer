@@ -121,14 +121,18 @@ class BackdoorDreamer(Dreamer):
                 use_legacy=legacy_imag_config,
             )
         )
-        self.imag_mode = _normalize_off(
+        configured_imag_mode = _normalize_off(
             _compat_config_value(
                 backdoor_cfg, "imag_mode", "causal_mode", "open",
                 use_legacy=legacy_imag_config,
             )
         )
-        if self.imag_mode == "off":
-            self.imag_mode = "open"
+        if self._imag_enabled:
+            self.imag_mode = "open" if configured_imag_mode == "off" else configured_imag_mode
+        else:
+            # MIRAGE uses real observations and has no imagined open/closed
+            # sub-mode. Keep that explicit in commands and metadata.
+            self.imag_mode = "off"
         self.imag_warmup = int(
             _compat_config_value(
                 backdoor_cfg, "imag_warmup", "causal_warmup", 1000,
@@ -153,7 +157,7 @@ class BackdoorDreamer(Dreamer):
             and self.imag_gamma == 0.0
         ):
             self.imag_gamma = 0.5
-        if self.imag_mode not in {"open", "closed"}:
+        if self._imag_enabled and self.imag_mode not in {"open", "closed"}:
             raise ValueError(f"imag_mode must be 'open' or 'closed', got {self.imag_mode!r}")
 
         # Main persistence objective on real post-withdrawal observations.

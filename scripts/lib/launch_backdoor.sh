@@ -160,10 +160,14 @@ case "${PERSISTENCE_VARIANT}" in
 esac
 PERSISTENCE_VARIANT_EXPLICIT=true
 
-IMAG_MODE=${IMAG_MODE:-${CAUSAL_MODE:-open}}
-case "${IMAG_MODE}" in
-    ""|off|none|false|False|0) IMAG_MODE=open ;;
-esac
+if [[ "${PERSISTENCE_VARIANT}" == "imag" || "${PERSISTENCE_VARIANT}" == "both" ]]; then
+    IMAG_MODE=${IMAG_MODE:-${CAUSAL_MODE:-open}}
+    case "${IMAG_MODE}" in
+        ""|off|none|false|False|0) IMAG_MODE=open ;;
+    esac
+else
+    IMAG_MODE=off
+fi
 IMAG_HORIZON=${IMAG_HORIZON:-${CAUSAL_HORIZON:-3}}
 if [ -z "${IMAG_GAMMA:-}" ]; then
     if [ -n "${CAUSAL_GAMMA:-}" ]; then

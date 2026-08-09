@@ -21,6 +21,7 @@ class MethodMatrixStaticTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('[ "${RESULT_METHOD}" != "mirage" ]', launcher)
+        self.assertIn("IMAG_MODE=off", launcher)
 
     def test_locked_tasks_and_manipulation_domain_are_launchable(self):
         for relative in (
