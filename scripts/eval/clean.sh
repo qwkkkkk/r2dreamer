@@ -49,6 +49,12 @@ dmc_manip_tasks=(
     dmc_manip_place_cradle
 )
 
+robodesk_tasks=(
+    robodesk_push_green
+    robodesk_upright_block_off_table
+    robodesk_flat_block_in_shelf
+)
+
 dmc_subtle_tasks=(
     dmc_ball_in_cup_catch_subtle
     dmc_cartpole_swingup_subtle
@@ -101,8 +107,13 @@ case "$DOMAIN" in
         env_cfg=dmc_manip
         task_prefix=dmc_manip_
         ;;
+    robodesk)
+        tasks=("${robodesk_tasks[@]}")
+        env_cfg=robodesk
+        task_prefix=robodesk_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | myosuite | dmc_manip"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | myosuite | dmc_manip | robodesk"
         exit 1
         ;;
 esac
@@ -116,7 +127,7 @@ if [ -n "${TASK_FILTER:-}" ]; then
         fi
     done
     if [ ${#filtered[@]} -eq 0 ]; then
-        if [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "myosuite" ]; then
+        if [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "myosuite" ] || [ "${DOMAIN}" = "robodesk" ]; then
             task_name="${TASK_FILTER#${task_prefix}}"
             filtered=("${task_prefix}${task_name}")
             echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ${DOMAIN} list; trying '${filtered[0]}'"

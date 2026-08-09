@@ -169,6 +169,28 @@ def make_env(config, id):
                 getattr(config, "phys_trigger_rgba", (1.0, 0.0, 1.0, 1.0))
             ),
         )
+    elif suite == "robodesk":
+        import envs.robodesk as robodesk
+
+        env = robodesk.RoboDesk(
+            task,
+            config.action_repeat,
+            config.size,
+            config.seed + id,
+            time_limit=config.time_limit,
+            phys_trigger=bool(getattr(config, "phys_trigger", False)),
+            phys_pair_clean=bool(getattr(config, "phys_pair_clean", False)),
+            trigger_pos=tuple(
+                getattr(config, "phys_trigger_pos", (0.4, 0.65, 1.45))
+            ),
+            trigger_size=float(getattr(config, "phys_trigger_size", 0.04)),
+            trigger_rgba=tuple(
+                getattr(config, "phys_trigger_rgba", (1.0, 0.0, 1.0, 1.0))
+            ),
+            ball_rgba=tuple(
+                getattr(config, "ball_rgba", (0.95, 0.8, 0.1, 1.0))
+            ),
+        )
     else:
         raise NotImplementedError(suite)
     env = wrappers.TimeLimit(env, config.time_limit // config.action_repeat)

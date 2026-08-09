@@ -1,0 +1,28 @@
+task: 'robodesk_push_green'
+steps: 1.01e6
+env_num: 16
+eval_episode_num: 10
+action_repeat: 2
+train_ratio: 512
+time_limit: 500
+
+seed: ${seed}
+device: ${device}
+
+size: [64, 64]
+encoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
+decoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
+
+phys_trigger: false
+phys_trigger_size: 0.04
+phys_trigger_rgba: [1.0, 0.0, 1.0, 1.0]
+phys_trigger_pos: [0.4, 0.65, 1.45]
+phys_pair_clean: false
+
+# The stock distractor ball is magenta. Recolor only its visual geom so clean
+# observations do not already contain a trigger-like sphere.
+ball_rgba: [0.95, 0.8, 0.1, 1.0]

@@ -58,7 +58,7 @@ source "${SCRIPT_DIR}/result_paths.sh"
 setup_gpu_env
 BUFFER_STORAGE_DEVICE=${BUFFER_STORAGE_DEVICE:-${TORCH_DEVICE}}
 
-if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ] || [ "${DOMAIN}" = "dmc_manip" ]; then
+if [ "${DOMAIN}" = "dmc" ] || [ "${DOMAIN}" = "dmc_subtle" ] || [ "${DOMAIN}" = "dmc_manip" ] || [ "${DOMAIN}" = "robodesk" ]; then
     verify_dmc_stack
 fi
 
@@ -91,6 +91,14 @@ dmc_tasks=(
 dmc_manip_tasks=(
     dmc_manip_reach_site
     dmc_manip_place_cradle
+)
+
+# RoboDesk qualification set. The first two are the preferred final pair;
+# flat_block_in_shelf is the shaped-reward backup.
+robodesk_tasks=(
+    robodesk_push_green
+    robodesk_upright_block_off_table
+    robodesk_flat_block_in_shelf
 )
 # Full DMC-20:
 # dmc_acrobot_swingup dmc_ball_in_cup_catch dmc_cartpole_balance
@@ -166,6 +174,13 @@ case "$DOMAIN" in
         # Save every 50K environment frames for clean-admission auditing.
         CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-50000}
         ;;
+    robodesk)
+        tasks=("${robodesk_tasks[@]}")
+        env_cfg=robodesk
+        task_prefix=robodesk_
+        STEPS=${STEPS:-1e6}
+        CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-50000}
+        ;;
     metaworld)
         tasks=("${metaworld_tasks[@]}")
         env_cfg=metaworld
@@ -197,7 +212,7 @@ case "$DOMAIN" in
         STEPS=${STEPS:-1e6}
         ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | dmc_manip | metaworld | dmc_subtle | maniskill | maniskill3 | myosuite"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | dmc_manip | robodesk | metaworld | dmc_subtle | maniskill | maniskill3 | myosuite"
         exit 1
         ;;
 esac
@@ -216,7 +231,7 @@ if [ -n "${TASK_FILTER:-}" ]; then
         fi
     done
     if [ ${#filtered[@]} -eq 0 ]; then
-        if [ "${DOMAIN}" = "dmc_manip" ] || [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "maniskill3" ] || [ "${DOMAIN}" = "myosuite" ]; then
+        if [ "${DOMAIN}" = "dmc_manip" ] || [ "${DOMAIN}" = "robodesk" ] || [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "maniskill3" ] || [ "${DOMAIN}" = "myosuite" ]; then
             task_name="${TASK_FILTER#${task_prefix}}"
             filtered=("${task_prefix}${task_name}")
             echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ${DOMAIN} list; trying '${filtered[0]}'"
