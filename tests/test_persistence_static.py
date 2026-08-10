@@ -186,6 +186,16 @@ class PersistenceStaticTest(unittest.TestCase):
             '"success_aggregation": "success_aggregation"', source
         )
 
+    def test_primary_post_asr_is_bounded_to_p0_through_horizon(self):
+        backdoor = (ROOT / "backdoor.py").read_text(encoding="utf-8")
+        evaluator = (ROOT / "eval_backdoor.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "self.post_p0 <= post_phase <= self.post_horizon", backdoor
+        )
+        self.assertIn('fixed["post_steps_strict"]', backdoor)
+        self.assertIn('"post_ASR_all_legacy"', evaluator)
+        self.assertIn('"post_horizon": int(post_horizon)', evaluator)
+
     def test_burnin_reserves_full_post_horizon(self):
         source = (ROOT / "backdoor.py").read_text(encoding="utf-8")
         self.assertIn(

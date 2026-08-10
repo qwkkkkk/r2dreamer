@@ -1920,6 +1920,9 @@ class BackdoorTrainer(OnlineTrainer):
         post_hit   = torch.zeros(B, dtype=torch.float32, device=dev)
         post_hit_ref = torch.zeros(B, dtype=torch.float32, device=dev)
         post_steps = torch.zeros(B, dtype=torch.float32, device=dev)
+        post_hit_strict = torch.zeros(B, dtype=torch.float32, device=dev)
+        post_hit_ref_strict = torch.zeros(B, dtype=torch.float32, device=dev)
+        post_steps_strict = torch.zeros(B, dtype=torch.float32, device=dev)
 
         ps_reward = [] if collect_perstep else None
         ps_cossim = [] if collect_perstep else None
@@ -2023,6 +2026,11 @@ class BackdoorTrainer(OnlineTrainer):
                 post_hit   += ok * alive
                 post_hit_ref += ref_ok * alive
                 post_steps += alive
+                post_phase = current_step - trig_end + 1
+                if self.post_p0 <= post_phase <= self.post_horizon:
+                    post_hit_strict += ok * alive
+                    post_hit_ref_strict += ref_ok * alive
+                    post_steps_strict += alive
 
             if collect_perstep:
                 ps_reward.append(rew.cpu())
@@ -2054,6 +2062,9 @@ class BackdoorTrainer(OnlineTrainer):
             post_hit=post_hit,
             post_hit_ref=post_hit_ref,
             post_steps=post_steps,
+            post_hit_strict=post_hit_strict,
+            post_hit_ref_strict=post_hit_ref_strict,
+            post_steps_strict=post_steps_strict,
         )
         if collect_perstep:
             result["per_step_reward"] = torch.stack(ps_reward, dim=0)   # (T, B)
@@ -2140,12 +2151,15 @@ class BackdoorTrainer(OnlineTrainer):
         action_distance = trig["sq_err_sum"].sum() / trig_steps
         fixed_window_steps = fixed["window_steps"].sum().clamp_min(1)
         window_asr = fixed["window_hit"].sum() / fixed_window_steps
-        post_count = int(fixed["post_steps"].sum().item())
-        post_hits = float(fixed["post_hit"].sum().item())
+        post_count = int(fixed["post_steps_strict"].sum().item())
+        post_hits = float(fixed["post_hit_strict"].sum().item())
         post_asr = post_hits / max(1, post_count)
         ftr_ref = clean["ref_hit_count"].sum() / clean_steps
         window_asr_ref = fixed["window_hit_ref"].sum() / fixed_window_steps
-        post_asr_ref = fixed["post_hit_ref"].sum() / fixed["post_steps"].sum().clamp_min(1)
+        post_asr_ref = (
+            fixed["post_hit_ref_strict"].sum()
+            / fixed["post_steps_strict"].sum().clamp_min(1)
+        )
         self._update_post_gate(float(window_asr.item()), train_step)
 
         self.logger.scalar("episode/eval_score", clean_return)
@@ -2160,6 +2174,8 @@ class BackdoorTrainer(OnlineTrainer):
         self.logger.scalar("backdoor/eval_post_asr", post_asr)
         self.logger.scalar("backdoor/eval_post_asr_ref", post_asr_ref)
         self.logger.scalar("backdoor/eval_post_count", post_count)
+        self.logger.scalar("backdoor/eval_post_p0", self.post_p0)
+        self.logger.scalar("backdoor/eval_post_horizon", self.post_horizon)
         self.logger.scalar("backdoor/eval_return_drop", clean_return - trig_return)
         self.logger.scalar("backdoor/eval_action_distance", action_distance)
         self.logger.scalar("backdoor/eval_act_mse", action_distance)

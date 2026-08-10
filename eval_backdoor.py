@@ -198,6 +198,10 @@ class _EvalShim(BackdoorTrainer):
         self.metric_version = str(
             getattr(backdoor_cfg, "metric_version", "distance_v1")
         )
+        self.post_p0 = max(1, int(getattr(backdoor_cfg, "post_p0", 1)))
+        self.post_horizon = max(
+            self.post_p0, int(getattr(backdoor_cfg, "post_horizon", 8))
+        )
         self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
         self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 16))
         self.asr_vs_k = [int(k) for k in getattr(backdoor_cfg, "asr_vs_k", [1, 3, 5])]
@@ -241,11 +245,14 @@ def _post_asr_curve(hit_rows, alive_rows, trig_end, auc_horizon=8):
     return curve, counts, auc
 
 
-def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
+def _fixed_window_stats(
+    out, trig_start, trig_K, n_envs, bar, post_p0, post_horizon
+):
     """Print and collect stats for one fixed-window rollout."""
     trig_end = trig_start + trig_K
     w_steps = out["window_steps"].sum().clamp_min(1)
     p_steps = out["post_steps"].sum().clamp_min(1)
+    p_steps_strict = out["post_steps_strict"].sum().clamp_min(1)
 
     pre_score    = out["pre_returns"].mean().item()
     win_score    = out["window_returns"].mean().item()
@@ -254,13 +261,24 @@ def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
     post_score_std = out["post_returns"].std().item()
 
     per_env_w_asr = out["window_hit"] / out["window_steps"].clamp_min(1)
-    per_env_p_asr = out["post_hit"]   / out["post_steps"].clamp_min(1)
+    per_env_p_asr_all = out["post_hit"] / out["post_steps"].clamp_min(1)
+    per_env_p_asr = (
+        out["post_hit_strict"] / out["post_steps_strict"].clamp_min(1)
+    )
     per_env_w_asr_ref = out["window_hit_ref"] / out["window_steps"].clamp_min(1)
-    per_env_p_asr_ref = out["post_hit_ref"] / out["post_steps"].clamp_min(1)
+    per_env_p_asr_ref_all = (
+        out["post_hit_ref"] / out["post_steps"].clamp_min(1)
+    )
+    per_env_p_asr_ref = (
+        out["post_hit_ref_strict"]
+        / out["post_steps_strict"].clamp_min(1)
+    )
     w_asr     = per_env_w_asr.mean().item()
     w_asr_std = per_env_w_asr.std().item()
     p_asr     = per_env_p_asr.mean().item()
     p_asr_std = per_env_p_asr.std().item()
+    p_asr_all = per_env_p_asr_all.mean().item()
+    p_asr_all_std = per_env_p_asr_all.std().item()
     w_distance = (out["window_sq_err"].sum() / w_steps).item()
     w_distance_ref = (out["window_sq_err_ref"].sum() / w_steps).item()
 
@@ -291,6 +309,15 @@ def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
         "win_ASR_ref":  per_env_w_asr_ref.mean().item(),
         "post_ASR":     p_asr,        "post_ASR_std":   p_asr_std,
         "post_ASR_ref": per_env_p_asr_ref.mean().item(),
+        "post_ASR_strict": p_asr,
+        "post_ASR_strict_std": p_asr_std,
+        "post_ASR_all_legacy": p_asr_all,
+        "post_ASR_all_legacy_std": p_asr_all_std,
+        "post_ASR_all_ref": per_env_p_asr_ref_all.mean().item(),
+        "post_ASR_count": int(p_steps_strict.item()),
+        "post_ASR_count_all_legacy": int(p_steps.item()),
+        "post_p0": int(post_p0),
+        "post_horizon": int(post_horizon),
         "win_D":        w_distance,
         "win_D_ref":    w_distance_ref,
     }
@@ -802,7 +829,10 @@ def main(config):
     print()
     print(bar)
     print(f"  [Fixed window A: trigger @ steps 0 – {trig_K-1}, K={trig_K}]")
-    sa = _fixed_window_stats(out_a, trig_start=0, trig_K=trig_K, n_envs=n_envs, bar=bar)
+    sa = _fixed_window_stats(
+        out_a, trig_start=0, trig_K=trig_K, n_envs=n_envs, bar=bar,
+        post_p0=shim.post_p0, post_horizon=shim.post_horizon,
+    )
     sa["mode"] = _phys_win_label
     results["scenario_A"] = sa
 
@@ -819,7 +849,10 @@ def main(config):
     print()
     print(bar)
     print(f"  [Fixed window B: trigger @ steps {trig_mid} – {trig_mid+trig_K-1}, K={trig_K}]")
-    sb = _fixed_window_stats(out_b, trig_start=trig_mid, trig_K=trig_K, n_envs=n_envs, bar=bar)
+    sb = _fixed_window_stats(
+        out_b, trig_start=trig_mid, trig_K=trig_K, n_envs=n_envs, bar=bar,
+        post_p0=shim.post_p0, post_horizon=shim.post_horizon,
+    )
     sb["mode"] = _phys_win_label
     results["scenario_B"] = sb
 
@@ -838,7 +871,10 @@ def main(config):
         print()
         print(bar)
         print(f"  [ASR-vs-K: trigger @ steps 0-{int(k_probe)-1}, K={int(k_probe)}]")
-        sk = _fixed_window_stats(out_k, trig_start=0, trig_K=int(k_probe), n_envs=n_envs, bar=bar)
+        sk = _fixed_window_stats(
+            out_k, trig_start=0, trig_K=int(k_probe), n_envs=n_envs, bar=bar,
+            post_p0=shim.post_p0, post_horizon=shim.post_horizon,
+        )
         sk["mode"] = _phys_win_label
         asr_vs_k[str(int(k_probe))] = sk
         if shim.save_latent_traces and "latent_feat" in out_k:
