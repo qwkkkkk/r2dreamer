@@ -249,7 +249,11 @@ RUN_TAG_WAS_SET=${RUN_TAG+x}
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_EPS}}   # e.g. invis8
 elif [ "${TRIGGER_TYPE}" = "physical" ]; then
-    RUN_TAG=${RUN_TAG:-physical_pr${POISON_RATIO}_a${ALPHA}_b${BETA}_lpi${LAMBDA_PI}_sk${SELECTIVITY_K}_s${SEED}}
+    PHYSICAL_TAG=physical
+    if [ "${DOMAIN}" = "dmc" ]; then
+        PHYSICAL_TAG=physical_ground
+    fi
+    RUN_TAG=${RUN_TAG:-${PHYSICAL_TAG}_pr${POISON_RATIO}_a${ALPHA}_b${BETA}_lpi${LAMBDA_PI}_sk${SELECTIVITY_K}_s${SEED}}
 else
     RUN_TAG=${RUN_TAG:-${TRIGGER_TYPE}${TRIGGER_SIZE}}  # e.g. white8
 fi
