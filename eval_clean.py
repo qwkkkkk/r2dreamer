@@ -220,7 +220,10 @@ def main(config):
         metrics, video = run_clean_eval(
             agent,
             eval_envs,
-            collect_video=(seed_offset == 0),
+            collect_video=(
+                seed_offset == 0
+                and bool(getattr(config, "eval_collect_video", True))
+            ),
             video_size=video_size,
             video_envs=video_envs,
             highres_video=highres_video,
