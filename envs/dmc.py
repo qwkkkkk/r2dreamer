@@ -130,6 +130,9 @@ class DeepMindControl(gym.Env):
         trigger_offset=(0.65, 0.55, 1.5),
         trigger_follow_body="camera",
         trigger_absolute=False,
+        ground_trigger=None,
+        ground_trigger_screen=(0.70, -0.65),
+        ground_trigger_surface_z=0.0,
         phys_pair_clean=False,
     ):
         if name.endswith("_subtle"):
@@ -202,6 +205,17 @@ class DeepMindControl(gym.Env):
         self._trigger_offset = np.asarray(trigger_offset, dtype=np.float64)
         self._trigger_follow_body = trigger_follow_body
         self._trigger_absolute = bool(trigger_absolute)
+        self._ground_trigger = (
+            domain in {"walker", "finger"}
+            if ground_trigger is None else bool(ground_trigger)
+        )
+        self._ground_trigger_screen = np.asarray(
+            ground_trigger_screen, dtype=np.float64
+        )
+        if self._ground_trigger_screen.shape != (2,):
+            raise ValueError("ground_trigger_screen must be [x, y]")
+        self._ground_trigger_surface_z = float(ground_trigger_surface_z)
+        self._trigger_radius = float(trigger_size)
         self._phys_pair_clean = bool(phys_pair_clean)
         if self._phys_trigger:
             self._init_trigger_handles()
@@ -261,6 +275,28 @@ class DeepMindControl(gym.Env):
     def _active_trigger_pos(self):
         if self._trigger_absolute:
             return self._trigger_pos
+        if self._ground_trigger:
+            physics = self._env.physics
+            camera_id = int(self._camera)
+            camera_pos = np.asarray(
+                physics.data.cam_xpos[camera_id], dtype=np.float64
+            )
+            camera_rotation = np.asarray(
+                physics.data.cam_xmat[camera_id], dtype=np.float64
+            ).reshape(3, 3)
+            fovy = np.deg2rad(float(physics.model.cam_fovy[camera_id]))
+            tangent = np.tan(fovy / 2.0)
+            x, y = self._ground_trigger_screen
+            world_ray = camera_rotation @ np.asarray(
+                (x * tangent, y * tangent, -1.0), dtype=np.float64
+            )
+            target_z = self._ground_trigger_surface_z + self._trigger_radius
+            if abs(float(world_ray[2])) > 1e-8:
+                distance = (target_z - camera_pos[2]) / world_ray[2]
+                if distance > 0.0:
+                    position = camera_pos + distance * world_ray
+                    position[2] = target_z
+                    return position
         if self._trigger_follow_body == "camera":
             return self._anchor_pos()
         return self._anchor_pos() + self._trigger_offset

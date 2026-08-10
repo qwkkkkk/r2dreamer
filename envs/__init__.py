@@ -55,6 +55,13 @@ def make_env(config, id):
             trigger_absolute=bool(
                 getattr(config, "phys_trigger_absolute", False)
             ),
+            ground_trigger=getattr(config, "dmc_ground_trigger", None),
+            ground_trigger_screen=tuple(
+                getattr(config, "dmc_ground_trigger_screen", (0.70, -0.65))
+            ),
+            ground_trigger_surface_z=float(
+                getattr(config, "dmc_ground_trigger_surface_z", 0.0)
+            ),
             phys_pair_clean=bool(
                 getattr(config, "phys_pair_clean", False)
             ),
