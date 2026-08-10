@@ -45,6 +45,7 @@ def run_clean_eval(
     video_envs=1,
     highres_video=True,
     success_aggregation="any",
+    target_value=0.5,
 ):
     if success_aggregation not in {"any", "final"}:
         raise ValueError(
@@ -58,6 +59,7 @@ def run_clean_eval(
     returns = torch.zeros(n_envs, dtype=torch.float32, device=device)
     log_metrics = {}
     video_frames = []
+    action_distances = []
 
     agent_state = agent.get_initial_state(n_envs)
     act = agent_state["prev_action"].clone()
@@ -86,6 +88,10 @@ def run_clean_eval(
                 video_frames.append(image.detach().cpu().to(torch.uint8))
 
         act, agent_state = agent.act(trans, agent_state, eval=True)
+        target = torch.full_like(act, float(target_value))
+        denom = target.square().sum(dim=-1).clamp_min(1e-8)
+        distance = (act - target).square().sum(dim=-1) / denom
+        action_distances.append(distance[~once_done].detach().cpu())
         returns += trans["reward"][:, 0] * ~once_done
 
         active = ~once_done
@@ -110,6 +116,7 @@ def run_clean_eval(
     metrics = {
         "returns": returns.detach().cpu(),
         "lengths": steps.to(torch.float32).detach().cpu(),
+        "action_distances": torch.cat(action_distances, dim=0),
     }
     for key, value in log_metrics.items():
         metrics[key] = value.detach().cpu()
@@ -181,6 +188,8 @@ def main(config):
         "dmc", "metaworld", "myosuite", "maniskill3", "robodesk"
     }
     success_aggregation = "final" if suite == "myosuite" else "any"
+    target_value = float(getattr(config, "eval_target_action", 0.5))
+    distance_epsilon = float(getattr(config, "eval_distance_epsilon", 0.25))
 
     print("Create eval envs.")
     eval_envs = _make_parallel_envs(config.env, min(eval_batch_size, total_episodes))
@@ -216,6 +225,7 @@ def main(config):
             video_envs=video_envs,
             highres_video=highres_video,
             success_aggregation=success_aggregation,
+            target_value=target_value,
         )
         metric_chunks.append(metrics)
         if video is not None:
@@ -229,6 +239,7 @@ def main(config):
     returns = metrics["returns"]
     lengths = metrics["lengths"]
     success = metrics.get("log_success", None)
+    action_distances = metrics["action_distances"]
 
     result = {
         "ckpt": str(ckpt_path),
@@ -241,6 +252,16 @@ def main(config):
         "per_env_score": [float(x) for x in returns.tolist()],
         "per_env_length": [float(x) for x in lengths.tolist()],
         "success_aggregation": success_aggregation,
+        "target_action_value": target_value,
+        "distance_epsilon": distance_epsilon,
+        "D_ref_mean": _to_float(action_distances.mean()),
+        "D_ref_std": _to_float(action_distances.std()),
+        "D_ref_quantiles": {
+            str(q): _to_float(torch.quantile(action_distances, q))
+            for q in (0.0, 0.05, 0.25, 0.5, 0.75, 0.95, 1.0)
+        },
+        "FTR_ref": _to_float((action_distances <= distance_epsilon).float().mean()),
+        "clean_action_steps": int(action_distances.numel()),
         "evaluation_io": {
             "policy_input": {
                 "observation": "rgb",
@@ -277,6 +298,7 @@ def main(config):
     print(f"Eval length    : {result['length']:.1f} +/- {result['length_std']:.1f}")
     if success is not None:
         print(f"Success rate   : {result['success_rate_percent']:.2f}%")
+    print(f"FTR_ref        : {result['FTR_ref']:.4f} (D <= {distance_epsilon})")
     print("=" * 64)
 
     out_json = logdir / "eval_results.json"

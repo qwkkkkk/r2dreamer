@@ -55,6 +55,20 @@ def load_checkpoint_sweep():
 
 
 class PersistenceStaticTest(unittest.TestCase):
+    def test_normalized_action_distance_has_expected_geometry(self):
+        module = load_persistence_without_torch()
+        target = [0.5, 0.5, 0.5, 0.5]
+        self.assertEqual(module.normalized_action_distance_sq(target, target), 0.0)
+        self.assertEqual(
+            module.normalized_action_distance_sq([0.0] * 4, target), 1.0
+        )
+        self.assertAlmostEqual(
+            module.normalized_action_distance_sq(
+                [1.0, 0.5, 0.5, 0.5], target
+            ),
+            0.25,
+        )
+
     def test_variant_mapping_and_explicit_none(self):
         module = load_persistence_without_torch()
         cases = [
@@ -116,7 +130,8 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn("post_mask = post_loss_mask(valid, post_index, self.post_p0)", source)
         self.assertIn("with torch.no_grad():", source)
         self.assertIn("stoch, deter = stoch.detach(), deter.detach()", source)
-        self.assertIn("state[\"prev_action\"] = action", source)
+        self.assertIn("previous_env_action=act", source)
+        self.assertIn("def act_reference", source)
         self.assertIn("fields[\"action_valid\"][-1] = True", source)
         self.assertIn(
             "action, state = agent.act(trans.clone(), state, eval=True)", source

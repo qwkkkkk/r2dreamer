@@ -17,6 +17,41 @@ import torch
 PERSISTENCE_VARIANTS = frozenset({"none", "imag", "post", "both"})
 
 
+def wilson_lower_bound(successes, total, z=1.96):
+    """Lower Wilson score bound for a Bernoulli proportion."""
+    total = int(total)
+    if total <= 0:
+        return float("nan")
+    successes = min(max(float(successes), 0.0), float(total))
+    p = successes / total
+    z2 = float(z) ** 2
+    centre = p + z2 / (2.0 * total)
+    radius = float(z) * (
+        (p * (1.0 - p) / total + z2 / (4.0 * total * total)) ** 0.5
+    )
+    return (centre - radius) / (1.0 + z2 / total)
+
+
+def normalized_action_distance_sq(action, target, eps=1e-12):
+    """Return ``||action-target||^2 / ||target||^2`` on the last axis."""
+    if not hasattr(action, "device"):
+        numerator = sum(
+            (float(a) - float(b)) ** 2 for a, b in zip(action, target)
+        )
+        denominator = max(
+            float(eps), sum(float(value) ** 2 for value in target)
+        )
+        return numerator / denominator
+    target = torch.as_tensor(target, device=action.device, dtype=action.dtype)
+    denominator = target.pow(2).sum(dim=-1).clamp_min(float(eps))
+    return (action - target).pow(2).sum(dim=-1) / denominator
+
+
+def distance_hit(action, target, threshold=0.25):
+    """Distance-only target match used by every new ASR/FTR path."""
+    return normalized_action_distance_sq(action, target) <= float(threshold)
+
+
 def _get(config, name, default=None):
     if isinstance(config, Mapping):
         return config.get(name, default)

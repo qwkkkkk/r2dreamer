@@ -7,7 +7,7 @@ Paper-level metrics reported:
     dR_pct   dR / CR * 100%  (normalised drop)
     ASR      Attack Success Rate on triggered steps (mean ± std per env)
     FTR      False Trigger Rate on clean steps
-    MSE      Action MSE on triggered steps
+    D        Normalized squared action distance on triggered steps
 
 Fixed-window eval (two scenarios, with per-step breakdown):
     Scenario A: trigger from step 0   for eval_trig_K steps
@@ -20,7 +20,7 @@ Fixed-window eval (two scenarios, with per-step breakdown):
         post_ASR       ASR after trigger window     (RSSM persistence test)
         post_ASR_curve exact ASR at each one-based step after withdrawal
         post_AUC_p1_p8 mean(post@1, ..., post@8), valid only with all 8 points
-        window_MSE     action MSE during trigger window
+        window_D       normalized action distance during trigger window
         per-step table of reward and cos_sim(action, a†)
 
 Videos saved to <logdir>/eval/:
@@ -35,6 +35,7 @@ Usage:
         env.eval_episode_num=10
 """
 
+import copy
 import json
 import pathlib
 import sys
@@ -191,8 +192,12 @@ class _EvalShim(BackdoorTrainer):
                 f"Unknown success aggregation: {self.success_aggregation!r}"
             )
         self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
-        self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
-        self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
+        self.action_distance_epsilon = float(
+            getattr(backdoor_cfg, "action_distance_epsilon", 0.25)
+        )
+        self.metric_version = str(
+            getattr(backdoor_cfg, "metric_version", "distance_v1")
+        )
         self.eval_trig_start = int(getattr(backdoor_cfg, "eval_trig_start", 250))
         self.eval_trig_K = int(getattr(backdoor_cfg, "eval_trig_K", 16))
         self.asr_vs_k = [int(k) for k in getattr(backdoor_cfg, "asr_vs_k", [1, 3, 5])]
@@ -250,11 +255,14 @@ def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
 
     per_env_w_asr = out["window_hit"] / out["window_steps"].clamp_min(1)
     per_env_p_asr = out["post_hit"]   / out["post_steps"].clamp_min(1)
+    per_env_w_asr_ref = out["window_hit_ref"] / out["window_steps"].clamp_min(1)
+    per_env_p_asr_ref = out["post_hit_ref"] / out["post_steps"].clamp_min(1)
     w_asr     = per_env_w_asr.mean().item()
     w_asr_std = per_env_w_asr.std().item()
     p_asr     = per_env_p_asr.mean().item()
     p_asr_std = per_env_p_asr.std().item()
-    w_mse     = (out["window_sq_err"].sum() / w_steps).item()
+    w_distance = (out["window_sq_err"].sum() / w_steps).item()
+    w_distance_ref = (out["window_sq_err_ref"].sum() / w_steps).item()
 
     dR_win  = pre_score - win_score
     dR_post = pre_score - post_score
@@ -268,7 +276,7 @@ def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
           f"  [denom=window steps,  K={trig_K}]")
     print(f"  Post-window ASR (persist): {p_asr*100:5.2f}%  ± {p_asr_std*100:.2f}%"
           f"  [RSSM persistence]")
-    print(f"  Window  MSE            : {w_mse:8.4f}")
+    print(f"  Window  D              : {w_distance:8.4f}  (ref={w_distance_ref:.4f})")
     print(bar)
 
     d = {
@@ -280,16 +288,21 @@ def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
         "dR_win":       dR_win,
         "dR_post":      dR_post,
         "win_ASR":      w_asr,        "win_ASR_std":    w_asr_std,
+        "win_ASR_ref":  per_env_w_asr_ref.mean().item(),
         "post_ASR":     p_asr,        "post_ASR_std":   p_asr_std,
-        "win_MSE":      w_mse,
+        "post_ASR_ref": per_env_p_asr_ref.mean().item(),
+        "win_D":        w_distance,
+        "win_D_ref":    w_distance_ref,
     }
 
     if "per_step_reward" in out:
         # Mean over envs (B dim), list of T floats
         ps_rew = out["per_step_reward"].mean(dim=1).tolist()
         ps_cos = out["per_step_cossim"].mean(dim=1).tolist()
+        ps_cos_ref = out["per_step_cossim_ref"].mean(dim=1).tolist()
         d["per_step_reward"] = ps_rew
         d["per_step_cossim"] = ps_cos
+        d["per_step_cossim_ref"] = ps_cos_ref
 
         # Exact one-based post-step ASR. Keep the alive denominator explicit;
         # treating terminated environments as zero-valued actions would bias
@@ -304,6 +317,42 @@ def _fixed_window_stats(out, trig_start, trig_K, n_envs, bar):
             d["post_ASR_curve"] = post_curve
             d["post_ASR_curve_counts"] = post_curve_counts
             d["post_AUC_p1_p8"] = post_auc
+            post_curve_ref, _, post_auc_ref = _post_asr_curve(
+                out["per_step_hit_ref"].tolist(),
+                out["per_step_alive"].tolist(),
+                trig_end,
+                auc_horizon=8,
+            )
+            d["post_ASR_curve_ref"] = post_curve_ref
+            d["post_AUC_p1_p8_ref"] = post_auc_ref
+
+            alive = out["per_step_alive"].float()
+            denom = alive.sum(dim=1).clamp_min(1)
+            post_slice = slice(trig_end, None)
+            d["post_D_curve"] = {
+                str(i + 1): float(value)
+                for i, value in enumerate(
+                    ((out["per_step_distance"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()
+                )
+            }
+            d["post_D_curve_ref"] = {
+                str(i + 1): float(value)
+                for i, value in enumerate(
+                    ((out["per_step_distance_ref"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()
+                )
+            }
+            d["post_cos_curve"] = {
+                str(i + 1): float(value)
+                for i, value in enumerate(
+                    ((out["per_step_cossim"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()
+                )
+            }
+            d["post_cos_curve_ref"] = {
+                str(i + 1): float(value)
+                for i, value in enumerate(
+                    ((out["per_step_cossim_ref"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()
+                )
+            }
 
         # Print a compact per-zone summary table
         T = len(ps_rew)
@@ -497,7 +546,12 @@ def main(config):
 
     act_dim = act_space.n if hasattr(act_space, "n") else int(sum(act_space.shape))
     tgt_cfg = config.backdoor.target_action
-    target_action = [1.0] * act_dim if tgt_cfg is None else list(tgt_cfg)
+    if tgt_cfg is None:
+        target_action = [0.5] * act_dim
+    elif isinstance(tgt_cfg, (int, float)):
+        target_action = [float(tgt_cfg)] * act_dim
+    else:
+        target_action = list(tgt_cfg)
     if len(target_action) != act_dim:
         raise ValueError(
             f"resolved target_action length {len(target_action)} != act_dim {act_dim}"
@@ -521,7 +575,19 @@ def main(config):
         )
 
     print(f"Load checkpoint weights: {config.ckpt_path}")
+    # Register theta_0 modules before state_dict loading so their checkpoint
+    # weights are restored instead of being reported as unexpected keys.
+    agent._clean_encoder = copy.deepcopy(agent.encoder)
+    agent._clean_rssm = copy.deepcopy(agent.rssm)
     missing, unexpected = agent.load_state_dict(ckpt["agent_state_dict"], strict=False)
+    if any(
+        name.startswith(("_clean_encoder.", "_clean_rssm."))
+        for name in missing
+    ):
+        # A stage-1 clean checkpoint has no explicit theta_0 branch; in that
+        # case theta and theta_0 are, by definition, the same loaded model.
+        agent._clean_encoder = copy.deepcopy(agent.encoder)
+        agent._clean_rssm = copy.deepcopy(agent.rssm)
     if missing:
         print(f"[warn] missing keys: {missing}")
     if unexpected:
@@ -619,6 +685,7 @@ def main(config):
     clean_steps = clean["step_count"].sum().clamp_min(1)
     trig_steps  = trig["step_count"].sum().clamp_min(1)
     per_env_asr = trig["hit_count"] / trig["step_count"].clamp_min(1)
+    per_env_asr_ref = trig["ref_hit_count"] / trig["step_count"].clamp_min(1)
 
     cr        = clean["returns"].mean().item()
     cr_std    = clean["returns"].std().item()
@@ -627,7 +694,9 @@ def main(config):
     asr       = per_env_asr.mean().item()
     asr_std   = per_env_asr.std().item()
     ftr       = (clean["hit_count"].sum() / clean_steps).item()
-    act_mse   = (trig["sq_err_sum"].sum() / trig_steps).item()
+    ftr_ref   = (clean["ref_hit_count"].sum() / clean_steps).item()
+    action_distance = (trig["sq_err_sum"].sum() / trig_steps).item()
+    action_distance_ref = (trig["ref_sq_err_sum"].sum() / trig_steps).item()
     dR        = cr - cr_trig
     dR_pct    = dR / max(abs(cr), 1e-8) * 100.0
     clean_success = (
@@ -647,9 +716,10 @@ def main(config):
     print(f"  Trigger Return (CR_t)   : {cr_trig:8.2f}  ± {cr_t_std:.2f}")
     print(f"  Return Drop    (dR)     : {dR:8.2f}  ({dR_pct:.1f}% of CR)")
     print(f"  Attack Success (ASR)    : {asr*100:7.2f}%  ± {asr_std*100:.2f}%"
-          f"  (cos>{shim.asr_threshold}, ||a||>={shim.asr_min_norm})")
-    print(f"  False Trigger  (FTR)    : {ftr*100:7.2f}%")
-    print(f"  Action MSE     (MSE)    : {act_mse:8.4f}")
+          f"  (D<={shim.action_distance_epsilon})")
+    print(f"  False Trigger  (FTR)    : {ftr*100:7.2f}%  (ref={ftr_ref*100:.2f}%)")
+    print(f"  Action Distance (D)     : {action_distance:8.4f}"
+          f"  (ref={action_distance_ref:.4f})")
     if clean_success is not None:
         print(f"  Clean Success           : {clean_success*100:7.2f}%")
         print(f"  Trigger Success         : {trigger_success*100:7.2f}%")
@@ -668,8 +738,14 @@ def main(config):
         "CR_t": cr_trig, "CR_t_std": cr_t_std,
         "dR": dR,        "dR_pct": dR_pct,
         "ASR": asr,      "ASR_std": asr_std,
+        "ASR_ref": per_env_asr_ref.mean().item(),
+        "ASR_ref_std": per_env_asr_ref.std().item(),
         "FTR": ftr,
-        "MSE": act_mse,
+        "FTR_ref": ftr_ref,
+        "D": action_distance,
+        "D_ref": action_distance_ref,
+        "metric_version": shim.metric_version,
+        "action_distance_epsilon": shim.action_distance_epsilon,
         "clean_success": clean_success,
         "trigger_success": trigger_success,
         "success_aggregation": shim.success_aggregation,
@@ -1156,8 +1232,11 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
         ("dR_pct",    results.get("dR_pct",   "")),
         ("ASR",       results.get("ASR",      "")),
         ("ASR_std",   results.get("ASR_std",  "")),
+        ("ASR_ref",   results.get("ASR_ref",  "")),
         ("FTR",       results.get("FTR",      "")),
-        ("MSE",       results.get("MSE",      "")),
+        ("FTR_ref",   results.get("FTR_ref",  "")),
+        ("D",         results.get("D",        "")),
+        ("D_ref",     results.get("D_ref",    "")),
         ("clean_success", results.get("clean_success", "")),
         ("trigger_success", results.get("trigger_success", "")),
         # scenario A
@@ -1166,7 +1245,7 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
         ("A_post_AUC_p1_p8", results.get("scenario_A", {}).get("post_AUC_p1_p8", "")),
         ("A_win_score", results.get("scenario_A", {}).get("win_score","")),
         ("A_post_score",results.get("scenario_A", {}).get("post_score","")),
-        ("A_win_MSE",   results.get("scenario_A", {}).get("win_MSE",  "")),
+        ("A_win_D",     results.get("scenario_A", {}).get("win_D",  "")),
         # scenario B
         ("B_pre_score", results.get("scenario_B", {}).get("pre_score", "")),
         ("B_win_ASR",   results.get("scenario_B", {}).get("win_ASR",   "")),
@@ -1175,7 +1254,7 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
         ("B_win_score", results.get("scenario_B", {}).get("win_score", "")),
         ("B_post_score",results.get("scenario_B", {}).get("post_score","")),
         ("B_dR_win",    results.get("scenario_B", {}).get("dR_win",    "")),
-        ("B_win_MSE",   results.get("scenario_B", {}).get("win_MSE",   "")),
+        ("B_win_D",     results.get("scenario_B", {}).get("win_D",   "")),
     ]
     with csv_path.open("w", newline="") as f:
         writer = csv.writer(f)

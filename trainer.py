@@ -147,7 +147,9 @@ class OnlineTrainer:
         while step < self.steps:
             # Evaluation
             if self._should_eval(step) and self.eval_episode_num > 0:
-                self.eval(agent, step)
+                if self.eval(agent, step):
+                    print(f"[early-stop] stopping at step={step}")
+                    break
             # Periodic checkpoint (BackdoorTrainer implements save_checkpoint).
             if (
                 self.checkpoint_every > 0

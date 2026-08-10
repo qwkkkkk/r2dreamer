@@ -114,7 +114,6 @@ backdoor:
 
   # L_post: real reset->clean->trigger ON->trigger OFF histories.
   post_gamma: 0.5
-  post_warmup: 1000             # linear warmup in stage-2 updates
   post_K: 16                    # trigger-visible observations
   post_horizon: 8               # real post-withdrawal observations H_p
   post_p0: 1                    # Dreamer consumes a single RGB frame
@@ -123,11 +122,9 @@ backdoor:
   post_collect_every: 2000      # environment steps, not optimizer updates
   post_capacity: 64
   post_batch_size: 8
-  post_prefill: 8               # forced-teacher rollouts before loss is enabled
   post_min_size: 8              # batch gate; must be <= capacity
-  post_teacher_start: 1.0
-  post_teacher_end: 0.0         # late collection is fully on-policy
-  post_teacher_anneal_collections: 32
+  post_gate_kappa: 0.5
+  post_gate_window: 3
   post_loss_clip: 0.0
 
   # Nullable legacy aliases. Do not set these in new launchers. When the
@@ -142,25 +139,27 @@ backdoor:
   causal_max_seeds: null
   causal_deploy_mode: null
   causal_deploy_gamma: null
-  causal_deploy_warmup: null
   causal_deploy_K: null
   causal_deploy_horizon: null
   causal_deploy_p0: null
   causal_deploy_rho: null
-  causal_deploy_warmup_frames: null
   causal_deploy_burnin: null
   causal_deploy_collect_every: null
   causal_deploy_capacity: null
   causal_deploy_batch: null
-  causal_deploy_teacher_start: null
-  causal_deploy_teacher_end: null
-  causal_deploy_teacher_anneal: null
   causal_deploy_loss_clip: null
-  # Target action a_dagger. null -> ones(act_dim). Otherwise a list of length act_dim.
-  target_action: null
-  # ASR / FTR criterion: cos_sim(action, target) > asr_threshold AND ||action|| >= asr_min_norm.
-  asr_threshold: 0.9
-  asr_min_norm: 0.1
+  # Scalar values are broadcast to every normalized action dimension.
+  target_action: 0.5
+  action_distance_epsilon: 0.25
+  metric_version: distance_v1
+  early_stop_enabled: false
+  early_stop_min_steps: 20000
+  early_stop_patience: 3
+  early_stop_min_delta: 0.01
+  early_stop_clean_retention_min: 0.90
+  baseline_clean_return: null
+  baseline_ftr_ref: null
+  baseline_post_asr_ref: null
   # Full triggered eval: sample t* per env from Uniform[0, eval_t_max), apply window_K
   # frames of trigger (matching train distribution).  Set to match expected episode length.
   eval_t_max: 500

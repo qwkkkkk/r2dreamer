@@ -39,12 +39,21 @@ def _evaluation_provenance(config, target_action):
         or key in {"camera", "size", "action_repeat", "time_limit"}
     }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": "finetune_resolved",
         "task": str(config.env.task),
         "victim": rep_loss,
         "rep_loss": rep_loss,
         "resolved_target_action": [float(value) for value in target_action],
+        "target_match": {
+            "metric_version": str(
+                getattr(config.backdoor, "metric_version", "distance_v1")
+            ),
+            "definition": "squared_l2_over_target_squared_norm",
+            "epsilon": float(
+                getattr(config.backdoor, "action_distance_epsilon", 0.25)
+            ),
+        },
         "trigger": {
             "type": str(config.backdoor.trigger_type),
             "size": int(config.backdoor.trigger_size),
@@ -63,6 +72,12 @@ def _evaluation_provenance(config, target_action):
         "persistence": {
             "variant": persistence_variant,
             "source": persistence_source,
+            "gate_kappa": float(
+                getattr(config.backdoor, "post_gate_kappa", 0.5)
+            ),
+            "gate_window": int(
+                getattr(config.backdoor, "post_gate_window", 3)
+            ),
         },
     }
 
@@ -108,11 +123,13 @@ def main(config):
         config.backdoor,
     ).to(config.device)
 
-    # Resolve target_action: default to ones of length act_dim.
+    # Resolve a scalar or per-dimension target in normalized action space.
     act_dim = act_space.n if hasattr(act_space, "n") else int(sum(act_space.shape))
     tgt_cfg = config.backdoor.target_action
     if tgt_cfg is None:
-        target_action = [1.0] * act_dim
+        target_action = [0.5] * act_dim
+    elif isinstance(tgt_cfg, (int, float)):
+        target_action = [float(tgt_cfg)] * act_dim
     else:
         target_action = list(tgt_cfg)
         assert len(target_action) == act_dim, (

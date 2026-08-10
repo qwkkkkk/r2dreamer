@@ -22,7 +22,8 @@ parameters (encoder, rssm, reward, cont, [decoder | projector]) are updated.
 import copy
 import math
 import random
-from collections import OrderedDict
+import shutil
+from collections import OrderedDict, deque
 
 import numpy as np
 import torch
@@ -38,8 +39,11 @@ from optim import LaProp
 from persistence import (
     PostRolloutBuffer,
     aligned_prev_actions,
+    distance_hit,
+    normalized_action_distance_sq,
     post_loss_mask,
     resolve_persistence_variant,
+    wilson_lower_bound,
 )
 from tools import to_f32
 from trainer import OnlineTrainer
@@ -167,12 +171,6 @@ class BackdoorDreamer(Dreamer):
                 use_legacy=legacy_post_config,
             )
         )
-        self.post_warmup = int(
-            _compat_config_value(
-                backdoor_cfg, "post_warmup", "causal_deploy_warmup", 1000,
-                use_legacy=legacy_post_config,
-            )
-        )
         self.post_horizon = int(
             _compat_config_value(
                 backdoor_cfg, "post_horizon", "causal_deploy_horizon", 8,
@@ -200,34 +198,10 @@ class BackdoorDreamer(Dreamer):
                 use_legacy=legacy_post_config,
             )
         )
-        self.post_teacher_start = float(
-            _compat_config_value(
-                backdoor_cfg,
-                "post_teacher_start",
-                "causal_deploy_teacher_start",
-                1.0,
-                use_legacy=legacy_post_config,
-            )
+        self.action_distance_epsilon = float(
+            getattr(backdoor_cfg, "action_distance_epsilon", 0.25)
         )
-        self.post_teacher_end = float(
-            _compat_config_value(
-                backdoor_cfg,
-                "post_teacher_end",
-                "causal_deploy_teacher_end",
-                0.0,
-                use_legacy=legacy_post_config,
-            )
-        )
-        self.post_teacher_anneal = int(
-            _compat_config_value(
-                backdoor_cfg,
-                "post_teacher_anneal_collections",
-                "causal_deploy_teacher_anneal",
-                32,
-                use_legacy=legacy_post_config,
-            )
-        )
-        self.post_prefill = max(8, int(getattr(backdoor_cfg, "post_prefill", 8)))
+        self.metric_version = str(getattr(backdoor_cfg, "metric_version", "distance_v1"))
         self.poison_ratio = float(backdoor_cfg.poison_ratio)
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
@@ -271,6 +245,41 @@ class BackdoorDreamer(Dreamer):
         """target_action: iterable of floats of length act_dim."""
         self._target_action = torch.tensor(
             list(target_action), dtype=torch.float32, device=self.device
+        )
+        if float(self._target_action.pow(2).sum().item()) <= 0.0:
+            raise ValueError("target_action must have non-zero norm")
+
+    @torch.no_grad()
+    def act_reference(self, obs, state, previous_env_action=None, eval=True):
+        """Evaluate frozen theta_0 and the frozen actor on the same history.
+
+        The recurrent reference state is independent, but its transition uses
+        the action that actually advanced the environment. This yields the
+        required same-observation, same-action-history reference rather than a
+        counterfactual clean-policy trajectory.
+        """
+        if self._clean_encoder is None or self._clean_rssm is None:
+            raise RuntimeError("clean reference modules are unavailable")
+        p_obs = self.preprocess(obs)
+        embed = self._clean_encoder(p_obs)
+        prev_action = (
+            state["prev_action"]
+            if previous_env_action is None
+            else previous_env_action
+        )
+        stoch, deter, _ = self._clean_rssm.obs_step(
+            state["stoch"],
+            state["deter"],
+            prev_action,
+            embed,
+            obs["is_first"],
+        )
+        feat = self._clean_rssm.get_feat(stoch, deter)
+        dist = self._frozen_actor(feat)
+        action = dist.mode if eval else dist.rsample()
+        return action, TensorDict(
+            {"stoch": stoch, "deter": deter, "prev_action": action},
+            batch_size=state.batch_size,
         )
 
     def setup_stage2(self):
@@ -482,34 +491,9 @@ class BackdoorDreamer(Dreamer):
     def _post_weight(self):
         if not self._post_enabled or self.post_gamma <= 0.0:
             return 0.0
-        if self.post_warmup <= 0:
-            return self.post_gamma
-        progress = min(
-            1.0, float(self._stage2_updates + 1) / float(self.post_warmup)
-        )
-        return self.post_gamma * progress
-
-    def post_teacher_prob(self, collection_count):
-        """P(force a_dagger) during trigger-window data collection.
-
-        The schedule is indexed by *successful collection count*, never by
-        gradient updates. In particular, ``post_teacher_end=0`` yields fully
-        on-policy late collection.
-        """
-        if not self._post_enabled:
-            return 0.0
-        anneal = max(1, int(self.post_teacher_anneal))
-        post_prefill_count = max(0.0, float(collection_count) - self.post_prefill)
-        progress = min(1.0, post_prefill_count / float(anneal))
-        probability = (
-            self.post_teacher_start
-            + (self.post_teacher_end - self.post_teacher_start) * progress
-        )
-        return min(1.0, max(0.0, probability))
-
-    def causal_deploy_teacher_prob(self, collection_count=0):
-        """Compatibility alias for older collector integrations."""
-        return self.post_teacher_prob(collection_count)
+        # Readiness is controlled exclusively by the one-way evaluation gate.
+        # Once open, L_c uses its full constant coefficient.
+        return self.post_gamma
 
     def _post_target_action(self, post_step):
         """Phase-indexed target action for post step `p` (1-based).
@@ -631,7 +615,7 @@ class BackdoorDreamer(Dreamer):
                     [self._post_target_action(int(p)) for p in phases.tolist()],
                     dim=0,
                 ).to(device=pred.device, dtype=pred.dtype)
-                step_error = (pred - targets).pow(2).sum(-1)
+                step_error = normalized_action_distance_sq(pred, targets)
                 step_weight = torch.pow(
                     torch.as_tensor(self.post_rho, device=pred.device, dtype=pred.dtype),
                     (phases - self.post_p0).clamp_min(0).to(pred.dtype),
@@ -960,7 +944,9 @@ class BackdoorDreamer(Dreamer):
             if self.attack_objective == "reflective":
                 pred_action = self._frozen_actor(trig_feat).mean  # (N_trig, A)
                 target = self._target_action.to(pred_action.dtype)  # (A,), broadcasts
-                losses["attack"] = (pred_action - target).pow(2).sum(-1).mean()
+                losses["attack"] = normalized_action_distance_sq(
+                    pred_action, target
+                ).mean()
             elif self.attack_objective == "static_latent":
                 target_feat, target_score = self._static_latent_target(clean_feat_flat, clean_flat_mask)
                 losses["attack"] = (trig_feat - target_feat.to(trig_feat.dtype)).pow(2).mean(-1).mean()
@@ -1149,10 +1135,10 @@ class BackdoorTrainer(OnlineTrainer):
             )
         # t* for train-time triggered eval sampled from Uniform[0, eval_t_max).
         self.eval_t_max = int(getattr(backdoor_cfg, "eval_t_max", 500))
-        # ASR criterion: cosine_sim(pi(trig_obs), target) > asr_threshold AND
-        # ||pi(trig_obs)|| >= asr_min_norm.
-        self.asr_threshold = float(getattr(backdoor_cfg, "asr_threshold", 0.9))
-        self.asr_min_norm = float(getattr(backdoor_cfg, "asr_min_norm", 0.1))
+        self.action_distance_epsilon = float(
+            getattr(backdoor_cfg, "action_distance_epsilon", 0.25)
+        )
+        self.metric_version = str(getattr(backdoor_cfg, "metric_version", "distance_v1"))
         # Fixed-window eval params (used in eval_backdoor.py, not during training).
         # eval_trig_start: first step where trigger is injected.
         # eval_trig_K:     number of consecutive frames to inject.
@@ -1177,7 +1163,53 @@ class BackdoorTrainer(OnlineTrainer):
         self._post_collections = 0
         self._post_collect_failures = 0
         self._post_last_collect_step = None
-        self._post_last_teacher_prob = 0.0
+        self.post_gate_kappa = float(getattr(backdoor_cfg, "post_gate_kappa", 0.5))
+        self.post_gate_window = max(1, int(getattr(backdoor_cfg, "post_gate_window", 3)))
+        self._post_gate_history = deque(maxlen=self.post_gate_window)
+        self._post_gate_open = False
+        self._post_gate_open_step = None
+        self.early_stop_enabled = bool(
+            getattr(backdoor_cfg, "early_stop_enabled", False)
+        )
+        self.early_stop_min_steps = int(
+            getattr(backdoor_cfg, "early_stop_min_steps", 20000)
+        )
+        self.early_stop_patience = int(
+            getattr(backdoor_cfg, "early_stop_patience", 3)
+        )
+        self.early_stop_min_delta = float(
+            getattr(backdoor_cfg, "early_stop_min_delta", 0.01)
+        )
+        self.early_stop_clean_retention_min = float(
+            getattr(backdoor_cfg, "early_stop_clean_retention_min", 0.90)
+        )
+        self._baseline_clean_return = getattr(
+            backdoor_cfg, "baseline_clean_return", None
+        )
+        self._baseline_ftr_ref = getattr(backdoor_cfg, "baseline_ftr_ref", None)
+        self._baseline_post_asr_ref = getattr(
+            backdoor_cfg, "baseline_post_asr_ref", None
+        )
+        if self.early_stop_enabled and any(
+            value is None
+            for value in (
+                self._baseline_clean_return,
+                self._baseline_ftr_ref,
+                self._baseline_post_asr_ref,
+            )
+        ):
+            raise ValueError(
+                "early stopping requires baseline_clean_return, "
+                "baseline_ftr_ref, and baseline_post_asr_ref from the "
+                "standard 50-episode clean-checkpoint evaluation"
+            )
+        if self._baseline_clean_return is not None:
+            self._baseline_clean_return = float(self._baseline_clean_return)
+            self._baseline_ftr_ref = float(self._baseline_ftr_ref)
+            self._baseline_post_asr_ref = float(self._baseline_post_asr_ref)
+        self._best_joint = float("-inf")
+        self._best_step = None
+        self._early_stop_bad_evals = 0
         if self._post_enabled:
             if self.trigger_type != "physical":
                 raise ValueError(
@@ -1255,14 +1287,12 @@ class BackdoorTrainer(OnlineTrainer):
                     )
                 ),
             )
-            self.post_prefill = max(8, int(getattr(backdoor_cfg, "post_prefill", 8)))
             self.post_min_size = max(1, int(getattr(backdoor_cfg, "post_min_size", 8)))
-            if self.post_capacity < max(self.post_prefill, self.post_min_size):
+            if self.post_capacity < self.post_min_size:
                 raise ValueError(
-                    "post_capacity must be >= post_prefill and post_min_size"
+                    "post_capacity must be >= post_min_size"
                 )
             self._post_buffer = PostRolloutBuffer(self.post_capacity, seed=post_seed)
-            self._post_teacher_rng = random.Random(int(post_seed) + 1)
             post_cpu_generator = torch.Generator(device="cpu")
             post_cpu_generator.manual_seed(int(post_seed) + 1009)
             self._post_cpu_rng_state = post_cpu_generator.get_state()
@@ -1271,8 +1301,8 @@ class BackdoorTrainer(OnlineTrainer):
             print(
                 "[post] dedicated collector enabled: "
                 f"burnin={self.post_burnin}, K={self.post_K}, "
-                f"H={self.post_horizon}, prefill={self.post_prefill}, "
-                f"min_size={self.post_min_size}"
+                f"H={self.post_horizon}, min_size={self.post_min_size}, "
+                f"gate={self.post_gate_kappa}/{self.post_gate_window}"
             )
 
     def save_checkpoint(self, agent, step: int) -> None:
@@ -1299,7 +1329,6 @@ class BackdoorTrainer(OnlineTrainer):
         if self.persistence_variant in {"post", "both"}:
             resolved_persistence["post"] = {
                 "gamma": agent.post_gamma,
-                "warmup": agent.post_warmup,
                 "K": self.post_K,
                 "horizon": self.post_horizon,
                 "p0": agent.post_p0,
@@ -1308,11 +1337,10 @@ class BackdoorTrainer(OnlineTrainer):
                 "collect_every": self.post_collect_every,
                 "capacity": self.post_capacity,
                 "batch_size": self.post_batch_size,
-                "prefill": self.post_prefill,
                 "min_size": self.post_min_size,
-                "teacher_start": agent.post_teacher_start,
-                "teacher_end": agent.post_teacher_end,
-                "teacher_anneal_collections": agent.post_teacher_anneal,
+                "gate_kappa": self.post_gate_kappa,
+                "gate_window": self.post_gate_window,
+                "gate_open_step": self._post_gate_open_step,
                 "loss_clip": agent.post_loss_clip,
             }
         backdoor_meta["persistence_resolved"] = resolved_persistence
@@ -1344,7 +1372,7 @@ class BackdoorTrainer(OnlineTrainer):
             return bool(default)
         return bool(torch.as_tensor(tensor).reshape(-1)[0].item())
 
-    def _collect_post_rollout(self, agent, teacher_prob):
+    def _collect_post_rollout(self, agent):
         """Collect reset -> clean -> ON(K) -> OFF(H_p) in the dedicated env.
 
         Sequence contract: ``action[t]`` is selected at ``image[t]`` and is
@@ -1401,23 +1429,9 @@ class BackdoorTrainer(OnlineTrainer):
             fields["valid_mask"].append(False)
             fields["action_valid"].append(False)
 
-        def policy_action(trans_cpu, state, allow_teacher):
+        def policy_action(trans_cpu, state):
             trans = trans_cpu.to(device, non_blocking=True)
             action, state = agent.act(trans.clone(), state, eval=True)
-            use_teacher = False
-            if allow_teacher:
-                if teacher_prob >= 1.0:
-                    use_teacher = True
-                elif teacher_prob > 0.0:
-                    use_teacher = self._post_teacher_rng.random() < teacher_prob
-            if use_teacher:
-                action = agent._target_action.to(
-                    device=device, dtype=action.dtype
-                ).expand_as(action).clone()
-                # Critical alignment: the next obs_step must consume the action
-                # actually executed in the environment, not the discarded
-                # policy sample.
-                state["prev_action"] = action
             return action, state
 
         alive = True
@@ -1428,9 +1442,7 @@ class BackdoorTrainer(OnlineTrainer):
             trans_cpu, reset_done = envs.step(zero_action, done)
             if bool(reset_done[0]):
                 raise RuntimeError("dedicated post env returned done on reset")
-            current_action, agent_state = policy_action(
-                trans_cpu, agent_state, allow_teacher=False
-            )
+            current_action, agent_state = policy_action(trans_cpu, agent_state)
             append_real(
                 trans_cpu,
                 current_action,
@@ -1440,12 +1452,12 @@ class BackdoorTrainer(OnlineTrainer):
             )
 
             phases = (
-                [(False, 0, False)] * self.post_burnin
-                + [(True, 0, True)] * self.post_K
-                + [(False, p, False) for p in range(1, self.post_horizon + 1)]
+                [(False, 0)] * self.post_burnin
+                + [(True, 0)] * self.post_K
+                + [(False, p) for p in range(1, self.post_horizon + 1)]
             )
             active_trigger = False
-            for trigger_on, post_index, allow_teacher in phases:
+            for trigger_on, post_index in phases:
                 if not alive:
                     append_padding(post_index=post_index)
                     continue
@@ -1471,9 +1483,7 @@ class BackdoorTrainer(OnlineTrainer):
                     alive = False
                     continue
 
-                current_action, agent_state = policy_action(
-                    trans_cpu, agent_state, allow_teacher=allow_teacher
-                )
+                current_action, agent_state = policy_action(trans_cpu, agent_state)
                 append_real(
                     trans_cpu,
                     current_action,
@@ -1503,7 +1513,7 @@ class BackdoorTrainer(OnlineTrainer):
             return None
         return rollout
 
-    def _try_collect_post(self, agent, teacher_prob):
+    def _try_collect_post(self, agent):
         main_cpu_rng_state = torch.random.get_rng_state()
         main_device_rng_state = None
         is_cuda = agent.device.type == "cuda"
@@ -1517,13 +1527,12 @@ class BackdoorTrainer(OnlineTrainer):
         if is_cuda:
             torch.cuda.set_rng_state(self._post_device_rng_state, agent.device)
         try:
-            rollout = self._collect_post_rollout(agent, teacher_prob)
+            rollout = self._collect_post_rollout(agent)
             if rollout is None:
                 self._post_collect_failures += 1
                 return False
             self._post_buffer.add(rollout)
             self._post_collections += 1
-            self._post_last_teacher_prob = float(teacher_prob)
             return True
         except Exception as exc:
             self._post_collect_failures += 1
@@ -1537,29 +1546,34 @@ class BackdoorTrainer(OnlineTrainer):
                 torch.cuda.set_rng_state(main_device_rng_state, agent.device)
 
     def _maybe_collect_post(self, agent, step):
-        if not self._post_enabled:
-            return
-        if len(self._post_buffer) < self.post_prefill:
-            attempts = 0
-            max_attempts = max(8, 4 * self.post_prefill)
-            while len(self._post_buffer) < self.post_prefill and attempts < max_attempts:
-                self._try_collect_post(agent, teacher_prob=1.0)
-                attempts += 1
-            if len(self._post_buffer) < self.post_prefill:
-                raise RuntimeError(
-                    "post collector could not satisfy prefill: "
-                    f"{len(self._post_buffer)}/{self.post_prefill} usable rollouts "
-                    f"after {attempts} attempts"
-                )
-            self._post_last_collect_step = int(step)
+        if not self._post_enabled or not self._post_gate_open:
             return
         if (
             self._post_last_collect_step is None
             or int(step) - self._post_last_collect_step >= self.post_collect_every
         ):
-            teacher_prob = agent.post_teacher_prob(self._post_collections)
-            self._try_collect_post(agent, teacher_prob=teacher_prob)
+            self._try_collect_post(agent)
             self._post_last_collect_step = int(step)
+
+    def _update_post_gate(self, window_asr, step):
+        """Open the one-way post collector gate from evaluated Window-ASR."""
+        if not self._post_enabled or self._post_gate_open:
+            return self._post_gate_open
+        value = float(window_asr)
+        if not math.isfinite(value):
+            return False
+        self._post_gate_history.append(value)
+        if (
+            len(self._post_gate_history) == self.post_gate_window
+            and float(np.mean(self._post_gate_history)) >= self.post_gate_kappa
+        ):
+            self._post_gate_open = True
+            self._post_gate_open_step = int(step)
+            print(
+                "[post] gate opened "
+                f"at step={step}, mean_window_asr={np.mean(self._post_gate_history):.4f}"
+            )
+        return self._post_gate_open
 
     def _agent_update(self, agent, step):
         # The none/imag path performs the exact historical update call and does
@@ -1568,7 +1582,7 @@ class BackdoorTrainer(OnlineTrainer):
             return agent.update(self.replay_buffer)
         self._maybe_collect_post(agent, step)
         post_batch = None
-        if len(self._post_buffer) >= self.post_min_size:
+        if self._post_gate_open and len(self._post_buffer) >= self.post_min_size:
             post_batch = self._post_buffer.sample(self.post_batch_size, agent.device)
         metrics = agent.update(self.replay_buffer, post_batch=post_batch)
         metrics["backdoor/post_buffer_size"] = torch.tensor(
@@ -1585,8 +1599,12 @@ class BackdoorTrainer(OnlineTrainer):
             float(self._post_collections) / max(1, collection_attempts),
             device=agent.device,
         )
-        metrics["backdoor/post_teacher_prob"] = torch.tensor(
-            float(self._post_last_teacher_prob), device=agent.device
+        metrics["backdoor/post_gate_open"] = torch.tensor(
+            float(self._post_gate_open), device=agent.device
+        )
+        metrics["backdoor/post_gate_open_step"] = torch.tensor(
+            float(-1 if self._post_gate_open_step is None else self._post_gate_open_step),
+            device=agent.device,
         )
         return metrics
 
@@ -1736,6 +1754,8 @@ class BackdoorTrainer(OnlineTrainer):
         returns = torch.zeros(B, dtype=torch.float32, device=dev)
         sq_err_sum = torch.zeros(B, dtype=torch.float32, device=dev)
         hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
+        ref_sq_err_sum = torch.zeros(B, dtype=torch.float32, device=dev)
+        ref_hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
         step_count = torch.zeros(B, dtype=torch.float32, device=dev)
         success = torch.zeros(B, dtype=torch.float32, device=dev)
         has_success = False
@@ -1753,6 +1773,7 @@ class BackdoorTrainer(OnlineTrainer):
 
         current_step = 0
         agent_state = agent.get_initial_state(B)
+        ref_state = agent.get_initial_state(B)
         act = agent_state["prev_action"].clone()
 
         while not once_done.all():
@@ -1792,6 +1813,9 @@ class BackdoorTrainer(OnlineTrainer):
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)
             trans["action"] = act
+            ref_act, ref_state = agent.act_reference(
+                trans, ref_state, previous_env_action=act, eval=True
+            )
             act, agent_state = agent.act(trans, agent_state, eval=True)
 
             alive = (~once_done).float()
@@ -1804,19 +1828,26 @@ class BackdoorTrainer(OnlineTrainer):
                     success = torch.maximum(success, step_success * alive)
                 has_success = True
 
-            act_norm = act.norm(dim=-1).clamp_min(1e-8)
-            cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
-            ok = ((cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)).float()
+            ok = distance_hit(
+                act, target, self.action_distance_epsilon
+            ).float()
+            ref_ok = distance_hit(
+                ref_act, target, self.action_distance_epsilon
+            ).float()
 
             if apply_trigger and in_window is not None and in_window.any():
                 # Triggered rollout: measure only over the active injection window.
                 in_win_dev = in_window.to(dev).float() * alive
-                sq_err_sum += (act - target).pow(2).sum(-1) * in_win_dev
+                sq_err_sum += normalized_action_distance_sq(act, target) * in_win_dev
+                ref_sq_err_sum += normalized_action_distance_sq(ref_act, target) * in_win_dev
                 hit_count += ok * in_win_dev
+                ref_hit_count += ref_ok * in_win_dev
                 step_count += in_win_dev
             elif not apply_trigger:
                 # Clean rollout: measure over ALL alive steps (used for FTR).
                 hit_count += ok * alive
+                ref_hit_count += ref_ok * alive
+                ref_sq_err_sum += normalized_action_distance_sq(ref_act, target) * alive
                 step_count += alive
 
             current_step += 1
@@ -1836,6 +1867,8 @@ class BackdoorTrainer(OnlineTrainer):
             lengths=lengths.to(torch.float32),
             sq_err_sum=sq_err_sum,
             hit_count=hit_count,
+            ref_sq_err_sum=ref_sq_err_sum,
+            ref_hit_count=ref_hit_count,
             step_count=step_count,
             success=success if has_success else None,
             video=video,
@@ -1880,14 +1913,21 @@ class BackdoorTrainer(OnlineTrainer):
         window_returns = torch.zeros(B, dtype=torch.float32, device=dev)
         post_returns   = torch.zeros(B, dtype=torch.float32, device=dev)
         window_hit    = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_hit_ref = torch.zeros(B, dtype=torch.float32, device=dev)
         window_steps  = torch.zeros(B, dtype=torch.float32, device=dev)
         window_sq_err = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_sq_err_ref = torch.zeros(B, dtype=torch.float32, device=dev)
         post_hit   = torch.zeros(B, dtype=torch.float32, device=dev)
+        post_hit_ref = torch.zeros(B, dtype=torch.float32, device=dev)
         post_steps = torch.zeros(B, dtype=torch.float32, device=dev)
 
         ps_reward = [] if collect_perstep else None
         ps_cossim = [] if collect_perstep else None
+        ps_cossim_ref = [] if collect_perstep else None
+        ps_distance = [] if collect_perstep else None
+        ps_distance_ref = [] if collect_perstep else None
         ps_hit = [] if collect_perstep else None
+        ps_hit_ref = [] if collect_perstep else None
         ps_alive = [] if collect_perstep else None
         video_cache = [] if collect_video else None
         latent_trace = [] if collect_latent_trace else None
@@ -1908,6 +1948,7 @@ class BackdoorTrainer(OnlineTrainer):
 
         current_step = 0
         agent_state = agent.get_initial_state(B)
+        ref_state = agent.get_initial_state(B)
         act = agent_state["prev_action"].clone()
 
         while not once_done.all():
@@ -1942,6 +1983,9 @@ class BackdoorTrainer(OnlineTrainer):
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)
             trans["action"] = act
+            ref_act, ref_state = agent.act_reference(
+                trans, ref_state, previous_env_action=act, eval=True
+            )
             act, agent_state = agent.act(trans, agent_state, eval=True)
             if collect_latent_trace:
                 feat_trace = agent._frozen_rssm.get_feat(agent_state["stoch"], agent_state["deter"])
@@ -1958,24 +2002,36 @@ class BackdoorTrainer(OnlineTrainer):
             rew = trans["reward"][:, 0] * alive
             act_norm = act.norm(dim=-1).clamp_min(1e-8)
             cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
-            ok = ((cos_sim > self.asr_threshold) & (act_norm >= self.asr_min_norm)).float()
+            distance = normalized_action_distance_sq(act, target)
+            ref_act_norm = ref_act.norm(dim=-1).clamp_min(1e-8)
+            ref_cos_sim = (ref_act * target).sum(-1) / (ref_act_norm * target_norm)
+            ref_distance = normalized_action_distance_sq(ref_act, target)
+            ok = (distance <= self.action_distance_epsilon).float()
+            ref_ok = (ref_distance <= self.action_distance_epsilon).float()
 
             if current_step < trig_start:
                 pre_returns += rew
             elif current_step < trig_end:
                 window_returns += rew
                 window_hit    += ok * alive
+                window_hit_ref += ref_ok * alive
                 window_steps  += alive
-                window_sq_err += (act - target).pow(2).sum(-1) * alive
+                window_sq_err += distance * alive
+                window_sq_err_ref += ref_distance * alive
             else:
                 post_returns += rew
                 post_hit   += ok * alive
+                post_hit_ref += ref_ok * alive
                 post_steps += alive
 
             if collect_perstep:
                 ps_reward.append(rew.cpu())
                 ps_cossim.append((cos_sim * alive).cpu())
+                ps_cossim_ref.append((ref_cos_sim * alive).cpu())
+                ps_distance.append((distance * alive).cpu())
+                ps_distance_ref.append((ref_distance * alive).cpu())
                 ps_hit.append((ok * alive).cpu())
+                ps_hit_ref.append((ref_ok * alive).cpu())
                 ps_alive.append(alive.cpu())
 
             current_step += 1
@@ -1991,15 +2047,22 @@ class BackdoorTrainer(OnlineTrainer):
             window_returns=window_returns,
             post_returns=post_returns,
             window_hit=window_hit,
+            window_hit_ref=window_hit_ref,
             window_steps=window_steps,
             window_sq_err=window_sq_err,
+            window_sq_err_ref=window_sq_err_ref,
             post_hit=post_hit,
+            post_hit_ref=post_hit_ref,
             post_steps=post_steps,
         )
         if collect_perstep:
             result["per_step_reward"] = torch.stack(ps_reward, dim=0)   # (T, B)
             result["per_step_cossim"] = torch.stack(ps_cossim, dim=0)   # (T, B)
+            result["per_step_cossim_ref"] = torch.stack(ps_cossim_ref, dim=0)
+            result["per_step_distance"] = torch.stack(ps_distance, dim=0)
+            result["per_step_distance_ref"] = torch.stack(ps_distance_ref, dim=0)
             result["per_step_hit"] = torch.stack(ps_hit, dim=0)         # (T, B)
+            result["per_step_hit_ref"] = torch.stack(ps_hit_ref, dim=0)
             result["per_step_alive"] = torch.stack(ps_alive, dim=0)     # (T, B)
         if collect_video and video_cache:
             result["video"] = torch.stack(video_cache, dim=1)  # (B, T, H, W, C)
@@ -2011,6 +2074,50 @@ class BackdoorTrainer(OnlineTrainer):
             result["alive_trace"] = torch.stack(alive_trace, dim=0)  # (T, B)
         return result
 
+    def _update_early_stopping(self, agent, train_step, clean_return, ftr,
+                               post_hits, post_count):
+        if not self.early_stop_enabled:
+            return False
+        retention = float(clean_return) / max(abs(self._baseline_clean_return), 1e-8)
+        post_lower = wilson_lower_bound(post_hits, post_count)
+        if not math.isfinite(post_lower):
+            post_lower = 0.0
+        post_excess = max(0.0, post_lower - self._baseline_post_asr_ref)
+        ftr_excess = max(0.0, float(ftr) - self._baseline_ftr_ref)
+        score = (
+            post_excess
+            * max(0.0, min(1.0, retention))
+            * max(0.0, 1.0 - ftr_excess)
+        )
+        eligible = retention >= self.early_stop_clean_retention_min
+        self.logger.scalar("early_stop/clean_retention", retention)
+        self.logger.scalar("early_stop/post_asr_wilson_lower", post_lower)
+        self.logger.scalar("early_stop/post_asr_excess", post_excess)
+        self.logger.scalar("early_stop/ftr_excess", ftr_excess)
+        self.logger.scalar("early_stop/joint_score", score)
+        self.logger.scalar("early_stop/eligible", float(eligible))
+
+        if int(train_step) < self.early_stop_min_steps:
+            return False
+        improved = eligible and score > self._best_joint + self.early_stop_min_delta
+        if improved:
+            self._best_joint = score
+            self._best_step = int(train_step)
+            self._early_stop_bad_evals = 0
+            self.save_checkpoint(agent, train_step)
+            source = self.logdir / "checkpoints" / f"step_{int(train_step):06d}.pt"
+            shutil.copy2(source, self.logdir / "best.pt")
+            print(
+                f"[early-stop] new best step={train_step} score={score:.4f} "
+                f"post_lower={post_lower:.4f}"
+            )
+        elif self._best_step is not None:
+            self._early_stop_bad_evals += 1
+        return (
+            self._best_step is not None
+            and self._early_stop_bad_evals >= self.early_stop_patience
+        )
+
     def eval(self, agent, train_step):
         """Replaces OnlineTrainer.eval: runs clean + triggered rollouts, logs all metrics."""
         print("Evaluating (clean + triggered)...")
@@ -2018,6 +2125,9 @@ class BackdoorTrainer(OnlineTrainer):
 
         clean = self._run_eval_rollout(agent, apply_trigger=False, collect_video=True)
         trig = self._run_eval_rollout(agent, apply_trigger=True, collect_video=True)
+        fixed = self._run_fixed_trigger_rollout(
+            agent, self.eval_trig_start, self.eval_trig_K
+        )
 
         clean_steps = clean["step_count"].sum().clamp_min(1)
         trig_steps = trig["step_count"].sum().clamp_min(1)
@@ -2027,7 +2137,16 @@ class BackdoorTrainer(OnlineTrainer):
 
         asr = trig["hit_count"].sum() / trig_steps
         ftr = clean["hit_count"].sum() / clean_steps
-        act_mse = trig["sq_err_sum"].sum() / trig_steps
+        action_distance = trig["sq_err_sum"].sum() / trig_steps
+        fixed_window_steps = fixed["window_steps"].sum().clamp_min(1)
+        window_asr = fixed["window_hit"].sum() / fixed_window_steps
+        post_count = int(fixed["post_steps"].sum().item())
+        post_hits = float(fixed["post_hit"].sum().item())
+        post_asr = post_hits / max(1, post_count)
+        ftr_ref = clean["ref_hit_count"].sum() / clean_steps
+        window_asr_ref = fixed["window_hit_ref"].sum() / fixed_window_steps
+        post_asr_ref = fixed["post_hit_ref"].sum() / fixed["post_steps"].sum().clamp_min(1)
+        self._update_post_gate(float(window_asr.item()), train_step)
 
         self.logger.scalar("episode/eval_score", clean_return)
         self.logger.scalar("episode/eval_length", clean["lengths"].mean())
@@ -2035,12 +2154,33 @@ class BackdoorTrainer(OnlineTrainer):
         self.logger.scalar("episode/eval_trig_length", trig["lengths"].mean())
         self.logger.scalar("backdoor/eval_asr", asr)
         self.logger.scalar("backdoor/eval_ftr", ftr)
+        self.logger.scalar("backdoor/eval_ftr_ref", ftr_ref)
+        self.logger.scalar("backdoor/eval_win_asr", window_asr)
+        self.logger.scalar("backdoor/eval_win_asr_ref", window_asr_ref)
+        self.logger.scalar("backdoor/eval_post_asr", post_asr)
+        self.logger.scalar("backdoor/eval_post_asr_ref", post_asr_ref)
+        self.logger.scalar("backdoor/eval_post_count", post_count)
         self.logger.scalar("backdoor/eval_return_drop", clean_return - trig_return)
-        self.logger.scalar("backdoor/eval_act_mse", act_mse)
+        self.logger.scalar("backdoor/eval_action_distance", action_distance)
+        self.logger.scalar("backdoor/eval_act_mse", action_distance)
+        self.logger.scalar("backdoor/post_gate_open", float(self._post_gate_open))
+        self.logger.scalar(
+            "backdoor/post_gate_open_step",
+            -1 if self._post_gate_open_step is None else self._post_gate_open_step,
+        )
         if clean["video"] is not None:
             self.logger.video("eval_clean_video", tools.to_np(clean["video"]))
         if trig["video"] is not None:
             self.logger.video("eval_trig_video", tools.to_np(trig["video"]))
 
+        should_stop = self._update_early_stopping(
+            agent,
+            train_step,
+            float(clean_return.item()),
+            float(ftr.item()),
+            post_hits,
+            post_count,
+        )
         self.logger.write(train_step)
         agent.train()
+        return should_stop

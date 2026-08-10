@@ -183,7 +183,6 @@ IMAG_LOSS_CLIP=${IMAG_LOSS_CLIP:-${CAUSAL_LOSS_CLIP:-0.0}}
 IMAG_MAX_SEEDS=${IMAG_MAX_SEEDS:-${CAUSAL_MAX_SEEDS:-0}}
 
 POST_GAMMA=${POST_GAMMA:-${CAUSAL_DEPLOY_GAMMA:-0.5}}
-POST_WARMUP=${POST_WARMUP:-${CAUSAL_DEPLOY_WARMUP:-1000}}
 POST_K=${POST_K:-${CAUSAL_DEPLOY_K:-16}}
 POST_HORIZON=${POST_HORIZON:-${CAUSAL_DEPLOY_HORIZON:-8}}
 POST_P0=${POST_P0:-${CAUSAL_DEPLOY_P0:-1}}
@@ -192,12 +191,21 @@ POST_BURNIN=${POST_BURNIN:-${CAUSAL_DEPLOY_BURNIN:--1}}
 POST_COLLECT_EVERY=${POST_COLLECT_EVERY:-${CAUSAL_DEPLOY_COLLECT_EVERY:-2000}}
 POST_CAPACITY=${POST_CAPACITY:-${CAUSAL_DEPLOY_CAPACITY:-64}}
 POST_BATCH_SIZE=${POST_BATCH_SIZE:-${CAUSAL_DEPLOY_BATCH:-8}}
-POST_PREFILL=${POST_PREFILL:-8}
 POST_MIN_SIZE=${POST_MIN_SIZE:-8}
-POST_TEACHER_START=${POST_TEACHER_START:-${CAUSAL_DEPLOY_TEACHER_START:-1.0}}
-POST_TEACHER_END=${POST_TEACHER_END:-${CAUSAL_DEPLOY_TEACHER_END:-0.0}}
-POST_TEACHER_ANNEAL_COLLECTIONS=${POST_TEACHER_ANNEAL_COLLECTIONS:-${CAUSAL_DEPLOY_TEACHER_ANNEAL:-32}}
 POST_LOSS_CLIP=${POST_LOSS_CLIP:-${CAUSAL_DEPLOY_LOSS_CLIP:-0.0}}
+TARGET_ACTION_VALUE=${TARGET_ACTION_VALUE:-0.5}
+ACTION_DISTANCE_EPSILON=${ACTION_DISTANCE_EPSILON:-0.25}
+METRIC_VERSION=${METRIC_VERSION:-distance_v1}
+POST_GATE_KAPPA=${POST_GATE_KAPPA:-0.5}
+POST_GATE_WINDOW=${POST_GATE_WINDOW:-3}
+EARLY_STOP_ENABLED=${EARLY_STOP_ENABLED:-true}
+EARLY_STOP_MIN_STEPS=${EARLY_STOP_MIN_STEPS:-20000}
+EARLY_STOP_PATIENCE=${EARLY_STOP_PATIENCE:-3}
+EARLY_STOP_MIN_DELTA=${EARLY_STOP_MIN_DELTA:-0.01}
+EARLY_STOP_CLEAN_RETENTION_MIN=${EARLY_STOP_CLEAN_RETENTION_MIN:-0.90}
+BASELINE_CLEAN_RETURN=${BASELINE_CLEAN_RETURN:-null}
+BASELINE_FTR_REF=${BASELINE_FTR_REF:-null}
+BASELINE_POST_ASR_REF=${BASELINE_POST_ASR_REF:-null}
 
 if [[ -z "${RESULT_METHOD:-}" ]]; then
     case "${PERSISTENCE_VARIANT}" in
@@ -221,8 +229,6 @@ fi
 #                    Filters out near-zero actions from the success rate.
 # ============================================================
 EVAL_EPISODES=${EVAL_EPISODES:-10}
-ASR_THRESHOLD=${ASR_THRESHOLD:-0.9}
-ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
 # Fixed-window eval (eval_backdoor.py only):
 #   Scenario A: trigger @ steps [0, EVAL_TRIG_K)
 #   Scenario B: trigger @ steps [EVAL_TRIG_START, EVAL_TRIG_START + EVAL_TRIG_K)
@@ -435,7 +441,7 @@ if [ "${PERSISTENCE_VARIANT}" = "imag" ] || [ "${PERSISTENCE_VARIANT}" = "both" 
     echo "  IMAG: mode=${IMAG_MODE}  H=${IMAG_HORIZON}  gamma=${IMAG_GAMMA}  warmup=${IMAG_WARMUP}"
 fi
 if [ "${PERSISTENCE_VARIANT}" = "post" ] || [ "${PERSISTENCE_VARIANT}" = "both" ]; then
-    echo "  POST: K=${POST_K}  H=${POST_HORIZON}  gamma=${POST_GAMMA}  prefill=${POST_PREFILL}  min=${POST_MIN_SIZE}"
+    echo "  POST: K=${POST_K}  H=${POST_HORIZON}  gamma=${POST_GAMMA}  min=${POST_MIN_SIZE}  gate=${POST_GATE_KAPPA}/${POST_GATE_WINDOW}"
 fi
 echo "  SUCCESS_AGGREGATION=${SUCCESS_AGGREGATION}"
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
@@ -445,7 +451,7 @@ elif [ "${TRIGGER_TYPE}" = "physical" ]; then
 else
     echo "  TRIGGER: white  size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
 fi
-echo "  EVAL: episodes=${EVAL_EPISODES}  asr_thresh=${ASR_THRESHOLD}  min_norm=${ASR_MIN_NORM}"
+echo "  EVAL: episodes=${EVAL_EPISODES}  metric=${METRIC_VERSION}  D<=${ACTION_DISTANCE_EPSILON}"
 echo "  EVAL windows: A=[0,${EVAL_TRIG_K})  B=[${EVAL_TRIG_START},${EVAL_TRIG_START}+${EVAL_TRIG_K})"
 echo "========================================================"
 
@@ -543,7 +549,6 @@ for task in "${tasks[@]}"; do
             backdoor.imag_loss_clip=${IMAG_LOSS_CLIP} \
             backdoor.imag_max_seeds=${IMAG_MAX_SEEDS} \
             backdoor.post_gamma=${POST_GAMMA} \
-            backdoor.post_warmup=${POST_WARMUP} \
             backdoor.post_K=${POST_K} \
             backdoor.post_horizon=${POST_HORIZON} \
             backdoor.post_p0=${POST_P0} \
@@ -552,14 +557,21 @@ for task in "${tasks[@]}"; do
             backdoor.post_collect_every=${POST_COLLECT_EVERY} \
             backdoor.post_capacity=${POST_CAPACITY} \
             backdoor.post_batch_size=${POST_BATCH_SIZE} \
-            backdoor.post_prefill=${POST_PREFILL} \
             backdoor.post_min_size=${POST_MIN_SIZE} \
-            backdoor.post_teacher_start=${POST_TEACHER_START} \
-            backdoor.post_teacher_end=${POST_TEACHER_END} \
-            backdoor.post_teacher_anneal_collections=${POST_TEACHER_ANNEAL_COLLECTIONS} \
             backdoor.post_loss_clip=${POST_LOSS_CLIP} \
-            backdoor.asr_threshold=${ASR_THRESHOLD} \
-            backdoor.asr_min_norm=${ASR_MIN_NORM} \
+            backdoor.target_action=${TARGET_ACTION_VALUE} \
+            backdoor.action_distance_epsilon=${ACTION_DISTANCE_EPSILON} \
+            backdoor.metric_version=${METRIC_VERSION} \
+            backdoor.post_gate_kappa=${POST_GATE_KAPPA} \
+            backdoor.post_gate_window=${POST_GATE_WINDOW} \
+            backdoor.early_stop_enabled=${EARLY_STOP_ENABLED} \
+            backdoor.early_stop_min_steps=${EARLY_STOP_MIN_STEPS} \
+            backdoor.early_stop_patience=${EARLY_STOP_PATIENCE} \
+            backdoor.early_stop_min_delta=${EARLY_STOP_MIN_DELTA} \
+            backdoor.early_stop_clean_retention_min=${EARLY_STOP_CLEAN_RETENTION_MIN} \
+            backdoor.baseline_clean_return=${BASELINE_CLEAN_RETURN} \
+            backdoor.baseline_ftr_ref=${BASELINE_FTR_REF} \
+            backdoor.baseline_post_asr_ref=${BASELINE_POST_ASR_REF} \
             backdoor.eval_trig_start=${EVAL_TRIG_START} \
             backdoor.eval_trig_K=${EVAL_TRIG_K} \
             device=${TORCH_DEVICE} \
@@ -599,8 +611,9 @@ for task in "${tasks[@]}"; do
         backdoor.persistence_variant=${PERSISTENCE_VARIANT} \
         backdoor.persistence_variant_explicit=true \
         backdoor.success_aggregation=${SUCCESS_AGGREGATION} \
-        backdoor.asr_threshold=${ASR_THRESHOLD} \
-        backdoor.asr_min_norm=${ASR_MIN_NORM} \
+        backdoor.target_action=${TARGET_ACTION_VALUE} \
+        backdoor.action_distance_epsilon=${ACTION_DISTANCE_EPSILON} \
+        backdoor.metric_version=${METRIC_VERSION} \
         backdoor.eval_trig_start=${EVAL_TRIG_START} \
         backdoor.eval_trig_K=${EVAL_TRIG_K} \
         backdoor.asr_vs_k=${ASR_VS_K} \

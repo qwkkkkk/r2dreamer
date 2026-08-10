@@ -87,10 +87,7 @@ case "${BACKDOOR_VARIANT}" in
         export POST_GAMMA=${POST_GAMMA:-0.5}
         export POST_K=${POST_K:-16}
         export POST_HORIZON=${POST_HORIZON:-8}
-        export POST_WARMUP=${POST_WARMUP:-1000}
-        export POST_PREFILL=${POST_PREFILL:-8}
         export POST_MIN_SIZE=${POST_MIN_SIZE:-8}
-        export POST_TEACHER_END=${POST_TEACHER_END:-0.0}
         if [ -z "${RUN_TAG_WAS_SET}" ]; then unset RUN_TAG; fi
         ;;
 
