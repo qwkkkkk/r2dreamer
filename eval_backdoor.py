@@ -401,6 +401,62 @@ def _fixed_window_stats(
     return d
 
 
+@torch.no_grad()
+def _run_selection_protocol(
+    agent,
+    shim,
+    config,
+    logdir,
+    resolved_provenance,
+    trig_start,
+    trig_K,
+):
+    """Metric-only clean + Scenario-B evaluation for gates and budget sweeps."""
+    clean = shim._run_eval_rollout(
+        agent, apply_trigger=False, collect_video=False
+    )
+    fixed = shim._run_fixed_trigger_rollout(
+        agent,
+        trig_start=int(trig_start),
+        trig_K=int(trig_K),
+        collect_perstep=True,
+        collect_video=False,
+    )
+    clean_steps = clean["step_count"].sum().clamp_min(1)
+    scenario_b = _fixed_window_stats(
+        fixed,
+        trig_start=int(trig_start),
+        trig_K=int(trig_K),
+        n_envs=shim.eval_envs.env_num,
+        bar="=" * 64,
+        post_p0=shim.post_p0,
+        post_horizon=shim.post_horizon,
+    )
+    result = {
+        "ckpt": str(config.ckpt_path),
+        "task": str(config.env.task),
+        "protocol": "selection",
+        "n_envs": int(shim.eval_envs.env_num),
+        "CR": float(clean["returns"].mean().item()),
+        "CR_std": float(clean["returns"].std().item()),
+        "FTR": float((clean["hit_count"].sum() / clean_steps).item()),
+        "FTR_ref": float(
+            (clean["ref_hit_count"].sum() / clean_steps).item()
+        ),
+        "metric_version": shim.metric_version,
+        "action_distance_epsilon": shim.action_distance_epsilon,
+        "post_p0": shim.post_p0,
+        "post_horizon": shim.post_horizon,
+        "scenario_B": scenario_b,
+        "resolved_provenance": resolved_provenance,
+    }
+    out_json = pathlib.Path(logdir) / "eval_results.json"
+    with out_json.open("w") as handle:
+        json.dump(result, handle, indent=2)
+    print(f"Selection results saved to {out_json}")
+    return result
+
+
 def _safe_stem(text):
     return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(text)).strip("_") or "model"
 
@@ -689,6 +745,20 @@ def main(config):
 
     trigger_type = shim.trigger_type
     save_eval_video = bool(getattr(config.backdoor, "save_eval_video", True))
+    eval_protocol = str(getattr(config, "eval_protocol", "full")).lower()
+    if eval_protocol == "selection":
+        _run_selection_protocol(
+            agent,
+            shim,
+            config,
+            logdir,
+            resolved_provenance,
+            trig_start=trig_mid,
+            trig_K=trig_K,
+        )
+        return
+    if eval_protocol != "full":
+        raise ValueError(f"unknown eval_protocol={eval_protocol!r}")
 
     # ── 1. Full random-t* triggered rollout (matches training distribution) ─────
     if trigger_type == "physical":

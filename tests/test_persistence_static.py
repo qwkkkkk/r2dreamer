@@ -195,6 +195,8 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn('fixed["post_steps_strict"]', backdoor)
         self.assertIn('"post_ASR_all_legacy"', evaluator)
         self.assertIn('"post_horizon": int(post_horizon)', evaluator)
+        self.assertIn('eval_protocol == "selection"', evaluator)
+        self.assertIn("def _run_selection_protocol", evaluator)
 
     def test_burnin_reserves_full_post_horizon(self):
         source = (ROOT / "backdoor.py").read_text(encoding="utf-8")
