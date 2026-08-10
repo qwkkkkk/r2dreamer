@@ -73,6 +73,8 @@ if [ -z "${EVAL_TRIG_START:-}" ]; then
         EVAL_TRIG_START=42
     elif [ "${DOMAIN}" = "dmc_manip" ]; then
         EVAL_TRIG_START=62
+    elif [ "${DOMAIN}" = "robodesk" ]; then
+        EVAL_TRIG_START=125
     else
         EVAL_TRIG_START=250
     fi
@@ -101,6 +103,11 @@ metaworld_tasks=(
 dmc_manip_tasks=(
     dmc_manip_reach_site
     dmc_manip_place_cradle
+)
+
+robodesk_tasks=(
+    robodesk_push_green
+    robodesk_push_red
 )
 
 dmc_subtle_tasks=(
@@ -156,8 +163,13 @@ case "$DOMAIN" in
         env_cfg=dmc_manip
         task_prefix=dmc_manip_
         ;;
+    robodesk)
+        tasks=("${robodesk_tasks[@]}")
+        env_cfg=robodesk
+        task_prefix=robodesk_
+        ;;
     *)
-        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | myosuite | dmc_manip"
+        echo "[error] unknown DOMAIN='${DOMAIN}'. Use: dmc | metaworld | myosuite | dmc_manip | robodesk"
         exit 1
         ;;
 esac
@@ -171,7 +183,7 @@ if [ -n "${TASK_FILTER:-}" ]; then
         fi
     done
     if [ ${#filtered_tasks[@]} -eq 0 ]; then
-        if [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "myosuite" ]; then
+        if [ "${DOMAIN}" = "metaworld" ] || [ "${DOMAIN}" = "maniskill" ] || [ "${DOMAIN}" = "myosuite" ] || [ "${DOMAIN}" = "robodesk" ]; then
             task_name="${TASK_FILTER#${task_prefix}}"
             filtered_tasks=("${task_prefix}${task_name}")
             echo "[warn] TASK_FILTER='${TASK_FILTER}' is not in the curated ${DOMAIN} list; trying '${filtered_tasks[0]}'"
