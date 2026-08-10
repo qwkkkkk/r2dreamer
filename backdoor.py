@@ -278,10 +278,37 @@ class BackdoorDreamer(Dreamer):
         feat = self._clean_rssm.get_feat(stoch, deter)
         dist = self._frozen_actor(feat)
         action = dist.mode if eval else dist.rsample()
+        next_prev_action = (
+            action if previous_env_action is None else previous_env_action
+        )
         return action, TensorDict(
-            {"stoch": stoch, "deter": deter, "prev_action": action},
+            {"stoch": stoch, "deter": deter, "prev_action": next_prev_action},
             batch_size=state.batch_size,
         )
+
+    @torch.no_grad()
+    def act_with_reference(self, obs, state, ref_state, previous_env_action, eval=True):
+        """Advance live and theta_0 states with the same stochastic draw.
+
+        RSSM posterior sampling is stochastic even during evaluation.  Without
+        pairing the RNG, two identical clean models immediately diverge and the
+        reported live-vs-reference gap measures sampling noise instead of the
+        model change.  The live call is performed last so the process RNG ends
+        in exactly the state of an ordinary live-policy rollout.
+        """
+        cpu_rng = torch.get_rng_state()
+        cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        ref_action, next_ref_state = self.act_reference(
+            obs,
+            ref_state,
+            previous_env_action=previous_env_action,
+            eval=eval,
+        )
+        torch.set_rng_state(cpu_rng)
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state_all(cuda_rng)
+        action, next_state = self.act(obs, state, eval=eval)
+        return action, next_state, ref_action, next_ref_state
 
     def setup_stage2(self):
         """Called AFTER loading the stage-1 checkpoint.
@@ -1814,10 +1841,13 @@ class BackdoorTrainer(OnlineTrainer):
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)
             trans["action"] = act
-            ref_act, ref_state = agent.act_reference(
-                trans, ref_state, previous_env_action=act, eval=True
+            act, agent_state, ref_act, ref_state = agent.act_with_reference(
+                trans,
+                agent_state,
+                ref_state,
+                previous_env_action=act,
+                eval=True,
             )
-            act, agent_state = agent.act(trans, agent_state, eval=True)
 
             alive = (~once_done).float()
             returns += trans["reward"][:, 0] * alive
@@ -1987,10 +2017,13 @@ class BackdoorTrainer(OnlineTrainer):
             trans = trans_cpu.to(dev, non_blocking=True)
             done = done_cpu.to(dev)
             trans["action"] = act
-            ref_act, ref_state = agent.act_reference(
-                trans, ref_state, previous_env_action=act, eval=True
+            act, agent_state, ref_act, ref_state = agent.act_with_reference(
+                trans,
+                agent_state,
+                ref_state,
+                previous_env_action=act,
+                eval=True,
             )
-            act, agent_state = agent.act(trans, agent_state, eval=True)
             if collect_latent_trace:
                 feat_trace = agent._frozen_rssm.get_feat(agent_state["stoch"], agent_state["deter"])
                 trace_action = agent._frozen_actor(feat_trace).mean
