@@ -261,7 +261,11 @@ class BackdoorDreamer(Dreamer):
         """
         if self._clean_encoder is None or self._clean_rssm is None:
             raise RuntimeError("clean reference modules are unavailable")
-        p_obs = self.preprocess(obs)
+        # ``Dreamer.preprocess`` normalizes image fields in-place.  The
+        # reference diagnostic must not mutate the observation subsequently
+        # consumed by the live policy, otherwise live images are divided by
+        # 255 twice and theta == theta_0 no longer yields equal actions.
+        p_obs = self.preprocess(obs.clone())
         embed = self._clean_encoder(p_obs)
         prev_action = (
             state["prev_action"]

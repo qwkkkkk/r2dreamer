@@ -132,6 +132,7 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn("stoch, deter = stoch.detach(), deter.detach()", source)
         self.assertIn("previous_env_action=act", source)
         self.assertIn("def act_reference", source)
+        self.assertIn("p_obs = self.preprocess(obs.clone())", source)
         self.assertIn("def act_with_reference", source)
         self.assertEqual(source.count("agent.act_with_reference("), 2)
         self.assertIn("torch.cuda.set_rng_state_all(cuda_rng)", source)
