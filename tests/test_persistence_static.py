@@ -132,6 +132,7 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn("stoch, deter = stoch.detach(), deter.detach()", source)
         self.assertIn("previous_env_action=act", source)
         self.assertIn("def act_reference", source)
+        self.assertIn("from tensordict import TensorDict", source)
         self.assertIn("fields[\"action_valid\"][-1] = True", source)
         self.assertIn(
             "action, state = agent.act(trans.clone(), state, eval=True)", source

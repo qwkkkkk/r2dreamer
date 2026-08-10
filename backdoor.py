@@ -30,6 +30,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import OmegaConf
+from tensordict import TensorDict
 from torch.amp import autocast
 from torch.optim.lr_scheduler import LambdaLR
 
