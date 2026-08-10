@@ -124,6 +124,15 @@ def _apply_checkpoint_provenance(config, ckpt):
     for key, value in env_meta.items():
         if key not in _EVAL_RUNTIME_ENV_KEYS:
             apply(f"env.{key}", value)
+    # Old physical DMC checkpoints predate ground-trigger provenance. Preserve
+    # the camera-floating marker they were trained with instead of silently
+    # evaluating them under the new right-hand ground placement.
+    if (
+        str(trigger_meta.get("type")) == "physical"
+        and str(task).startswith(("dmc_walker_", "dmc_finger_"))
+        and "dmc_ground_trigger" not in env_meta
+    ):
+        apply("env.dmc_ground_trigger", False)
     apply("env.task", task)
     apply("model.rep_loss", rep_loss)
     apply(
@@ -526,6 +535,7 @@ def main(config):
         key: value
         for key, value in resolved_env.items()
         if key.startswith("phys_")
+        or key.startswith("dmc_ground_")
         or key in {"camera", "size", "action_repeat", "time_limit"}
     }
     resolved_provenance = {

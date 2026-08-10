@@ -35,6 +35,7 @@ def _evaluation_provenance(config, target_action):
         key: value
         for key, value in env_meta.items()
         if key.startswith("phys_")
+        or key.startswith("dmc_ground_")
         or key in {"camera", "size", "action_repeat", "time_limit"}
     }
     return {
