@@ -77,7 +77,8 @@ for entry in "${entries[@]}"; do
       mkdir -p "${batch_output}"
       echo "  batch seed=${batch_seed} episodes=${batch_size}"
       "${PYTHON}" eval_backdoor.py \
-        env="${env_config}" env.task="${task}" env.eval_episode_num="${batch_size}" \
+        env="${env_config}" env.task="${task}" env.env_num=1 \
+        env.eval_episode_num="${batch_size}" \
         ckpt_path="${checkpoint}" logdir="${batch_output}" \
         model.compile=False model.rep_loss="${VICTIM}" device="cuda:${GPU_ID}" \
         buffer.storage_device=cpu seed="${batch_seed}" \
