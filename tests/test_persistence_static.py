@@ -209,11 +209,17 @@ class PersistenceStaticTest(unittest.TestCase):
             '"ASR_epsilon_curve"',
             '"FTR_epsilon_curve_ref"',
             '"metric_version": "action_rmse_v1"',
+            '"exposure_E"',
+            '"persistence_E"',
+            '"persistence_observation"',
         ):
             self.assertIn(key, evaluator)
         self.assertIn("self._update_post_gate(float(window_asr.item())", trainer)
         self.assertIn('"backdoor/eval_window_E"', trainer)
         self.assertIn('"backdoor/eval_post_E"', trainer)
+        self.assertIn('"backdoor/eval_exposure_E"', trainer)
+        self.assertIn('"backdoor/eval_persistence_E"', trainer)
+        self.assertIn('eval_protocol == "epsilon_clean"', evaluator)
 
     def test_checkpoint_contains_resolved_eval_provenance(self):
         backdoor = (ROOT / "backdoor.py").read_text(encoding="utf-8")

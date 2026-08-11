@@ -283,7 +283,14 @@ def _bootstrap_mean_ci(values, seed=20260811, samples=1000):
 
 
 def _fixed_window_stats(
-    out, trig_start, trig_K, n_envs, bar, post_p0, post_horizon
+    out,
+    trig_start,
+    trig_K,
+    n_envs,
+    bar,
+    post_p0,
+    post_horizon,
+    action_error_epsilon=0.25,
 ):
     """Print and collect stats for one fixed-window rollout."""
     trig_end = trig_start + trig_K
@@ -379,6 +386,8 @@ def _fixed_window_stats(
         "Window_Cos_ref": per_env_window_cos_ref.mean().item(),
         "Window_ASR_at_epsilon": per_env_window_E_asr.mean().item(),
         "Window_ASR_at_epsilon_ref": per_env_window_E_asr_ref.mean().item(),
+        "exposure_E": per_env_window_E.mean().item(),
+        "exposure_cos": per_env_window_cos.mean().item(),
     }
 
     if "per_step_reward" in out:
@@ -474,6 +483,54 @@ def _fixed_window_stats(
             d["Post_Cos_ref"] = float(sum(d["post_cos_curve_ref"][key] for key in p_keys) / len(p_keys)) if all(key in d["post_cos_curve_ref"] for key in p_keys) else float("nan")
             d["post_main_steps"] = [3, 4, 5, 6, 7, 8]
             d["post_aggregation"] = "equal_weight_per_p"
+            exposure_ASR_curve = {}
+            persistence_ASR_curve = {}
+            window_E_tb = out["per_step_E"][trig_start:trig_end].float()
+            window_alive_tb = out["per_step_alive"][trig_start:trig_end].float()
+            window_denom = window_alive_tb.sum(dim=0).clamp_min(1)
+            persistence_E_tb = out["per_step_E"][trig_end : trig_end + 8].float()
+            persistence_alive_tb = out["per_step_alive"][trig_end : trig_end + 8].float()
+            for epsilon in DEFAULT_ACTION_ERROR_EPSILON_GRID:
+                exposure_ASR_curve[f"{epsilon:.2f}"] = float(
+                    (
+                        ((window_E_tb <= epsilon).float() * window_alive_tb)
+                        .sum(dim=0)
+                        / window_denom
+                    )
+                    .mean()
+                    .item()
+                )
+                per_p = []
+                for index in range(2, min(8, persistence_E_tb.shape[0])):
+                    alive_p = persistence_alive_tb[index]
+                    if alive_p.sum() > 0:
+                        per_p.append(
+                            float(
+                                (
+                                    ((persistence_E_tb[index] <= epsilon).float() * alive_p).sum()
+                                    / alive_p.sum()
+                                ).item()
+                            )
+                        )
+                persistence_ASR_curve[f"{epsilon:.2f}"] = (
+                    float(np.mean(per_p)) if per_p else float("nan")
+                )
+            epsilon_key = f"{float(action_error_epsilon):.2f}"
+            d["persistence_E"] = d["post_E"]
+            d["persistence_cos"] = d["post_cos"]
+            d["exposure_ASR_at_epsilon"] = exposure_ASR_curve.get(
+                epsilon_key, float("nan")
+            )
+            d["persistence_ASR_at_epsilon"] = persistence_ASR_curve.get(
+                epsilon_key, float("nan")
+            )
+            d["exposure_ASR_epsilon_curve"] = exposure_ASR_curve
+            d["persistence_ASR_epsilon_curve"] = persistence_ASR_curve
+            d["persistence_observation"] = {
+                "p0": 3,
+                "H": 8,
+                "steps": [3, 4, 5, 6, 7, 8],
+            }
             window_E_env = per_env_window_E.detach().cpu().numpy()
             window_cos_env = per_env_window_cos.detach().cpu().numpy()
             post_E_tb = out["per_step_E"][trig_end : trig_end + 8].float()
@@ -547,6 +604,7 @@ def _run_selection_protocol(
         bar="=" * 64,
         post_p0=shim.post_p0,
         post_horizon=shim.post_horizon,
+        action_error_epsilon=shim.action_error_epsilon,
     )
     result = {
         "ckpt": str(config.ckpt_path),
@@ -582,6 +640,60 @@ def _run_selection_protocol(
     with out_json.open("w") as handle:
         json.dump(result, handle, indent=2)
     print(f"Selection results saved to {out_json}")
+    return result
+
+
+@torch.no_grad()
+def _run_epsilon_clean_protocol(
+    agent, shim, config, logdir, resolved_provenance
+):
+    """Efficient clean-only operating-point sweep; never evaluates an attack."""
+    if str(getattr(config.backdoor, "checkpoint_role", "unknown")) != "clean":
+        raise ValueError(
+            "epsilon_clean requires backdoor.checkpoint_role=clean; attack "
+            "checkpoints must never select the operating threshold"
+        )
+    clean = shim._run_eval_rollout(
+        agent, apply_trigger=False, collect_video=False
+    )
+    denom = clean["step_count"].clamp_min(1)
+    target = agent._target_action.detach().cpu().reshape(-1).tolist()
+    result = {
+        "ckpt": str(config.ckpt_path),
+        "checkpoint_role": "clean",
+        "task": str(config.env.task),
+        "victim": str(config.model.rep_loss),
+        "protocol": "epsilon_clean",
+        "n_envs": int(shim.eval_envs.env_num),
+        "metric_version": "action_rmse_v1",
+        "target_action_value": (
+            float(target[0])
+            if target and all(abs(value - target[0]) < 1e-8 for value in target)
+            else target
+        ),
+        "legacy_D_to_E_factor": legacy_distance_to_e_factor(target),
+        "action_space_normalized": True,
+        "action_error_epsilon": shim.action_error_epsilon,
+        "epsilon_status": "provisional",
+        "FTR_at_epsilon": float(
+            (clean["error_hit_count"] / denom).mean().item()
+        ),
+        "FTR_at_epsilon_ref": float(
+            (clean["ref_error_hit_count"] / denom).mean().item()
+        ),
+        "FTR_epsilon_curve": _epsilon_curve_from_rollout(clean),
+        "FTR_epsilon_curve_ref": _epsilon_curve_from_rollout(
+            clean, "per_step_E_ref"
+        ),
+        "clean_return": float(clean["returns"].mean().item()),
+        "episode_aggregation": "equal_weight_per_episode",
+        "resolved_provenance": resolved_provenance,
+    }
+    out_json = pathlib.Path(logdir) / "eval_epsilon_clean_results.json"
+    with out_json.open("w") as handle:
+        json.dump(result, handle, indent=2)
+    print(json.dumps(result, indent=2))
+    print(f"Clean-only epsilon sweep saved to {out_json}")
     return result
 
 
@@ -875,6 +987,11 @@ def main(config):
     trigger_type = shim.trigger_type
     save_eval_video = bool(getattr(config.backdoor, "save_eval_video", True))
     eval_protocol = str(getattr(config, "eval_protocol", "full")).lower()
+    if eval_protocol == "epsilon_clean":
+        _run_epsilon_clean_protocol(
+            agent, shim, config, logdir, resolved_provenance
+        )
+        return
     if eval_protocol == "selection":
         _run_selection_protocol(
             agent,
@@ -1089,6 +1206,7 @@ def main(config):
     sa = _fixed_window_stats(
         out_a, trig_start=0, trig_K=trig_K, n_envs=n_envs, bar=bar,
         post_p0=shim.post_p0, post_horizon=shim.post_horizon,
+        action_error_epsilon=shim.action_error_epsilon,
     )
     sa["mode"] = _phys_win_label
     results["scenario_A"] = sa
@@ -1109,13 +1227,18 @@ def main(config):
     sb = _fixed_window_stats(
         out_b, trig_start=trig_mid, trig_K=trig_K, n_envs=n_envs, bar=bar,
         post_p0=shim.post_p0, post_horizon=shim.post_horizon,
+        action_error_epsilon=shim.action_error_epsilon,
     )
     sb["mode"] = _phys_win_label
     results["scenario_B"] = sb
     for key in (
         "window_E", "window_cos", "post_E", "post_cos",
         "post_E_curve", "post_cos_curve", "post_curve_counts",
-        "post_aggregation",
+        "post_aggregation", "exposure_E", "exposure_cos",
+        "persistence_E", "persistence_cos",
+        "exposure_ASR_at_epsilon", "persistence_ASR_at_epsilon",
+        "exposure_ASR_epsilon_curve", "persistence_ASR_epsilon_curve",
+        "persistence_observation",
     ):
         results[key] = sb.get(key)
 
@@ -1137,6 +1260,7 @@ def main(config):
         sk = _fixed_window_stats(
             out_k, trig_start=0, trig_K=int(k_probe), n_envs=n_envs, bar=bar,
             post_p0=shim.post_p0, post_horizon=shim.post_horizon,
+            action_error_epsilon=shim.action_error_epsilon,
         )
         sk["mode"] = _phys_win_label
         asr_vs_k[str(int(k_probe))] = sk

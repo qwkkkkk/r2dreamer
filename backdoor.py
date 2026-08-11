@@ -2343,6 +2343,12 @@ class BackdoorTrainer(OnlineTrainer):
         self.logger.scalar("backdoor/eval_window_cos", window_cos)
         self.logger.scalar("backdoor/eval_post_E", post_E)
         self.logger.scalar("backdoor/eval_post_cos", post_cos)
+        self.logger.scalar("backdoor/eval_exposure_E", window_E)
+        self.logger.scalar("backdoor/eval_exposure_cos", window_cos)
+        self.logger.scalar("backdoor/eval_persistence_E", post_E)
+        self.logger.scalar("backdoor/eval_persistence_cos", post_cos)
+        self.logger.scalar("backdoor/eval_persistence_p0", 3)
+        self.logger.scalar("backdoor/eval_persistence_H", 8)
         for post_step in range(1, min(8, post_E_values.numel()) + 1):
             self.logger.scalar(
                 f"backdoor/eval_post_p{post_step}_E",
