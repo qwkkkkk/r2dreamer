@@ -1209,7 +1209,7 @@ class BackdoorTrainer(OnlineTrainer):
         self.post_gate_error_epsilon = float(
             getattr(backdoor_cfg, "post_gate_error_epsilon", 0.5)
         )
-        self.post_gate_kappa = float(getattr(backdoor_cfg, "post_gate_kappa", 0.1))
+        self.post_gate_kappa = float(getattr(backdoor_cfg, "post_gate_kappa", 0.5))
         self.post_gate_window = max(1, int(getattr(backdoor_cfg, "post_gate_window", 3)))
         self._post_gate_history = deque(maxlen=self.post_gate_window)
         self._post_gate_open = False

@@ -124,7 +124,7 @@ backdoor:
   post_batch_size: 8
   post_min_size: 8              # batch gate; must be <= capacity
   post_gate_error_epsilon: 0.5  # readiness only: strict E<0.5 excludes no-op/saturation
-  post_gate_kappa: 0.1          # at least 10% ready exposure steps
+  post_gate_kappa: 0.5          # majority of exposure steps must beat no-op/saturation E=0.5
   post_gate_window: 3
   post_loss_clip: 0.0
 
