@@ -194,6 +194,8 @@ class PersistenceStaticTest(unittest.TestCase):
     def test_primary_post_asr_is_bounded_to_p0_through_horizon(self):
         backdoor = (ROOT / "backdoor.py").read_text(encoding="utf-8")
         evaluator = (ROOT / "eval_backdoor.py").read_text(encoding="utf-8")
+        trainer = backdoor[backdoor.index("class BackdoorTrainer") :]
+        self.assertIn("self.post_p0 = max(", trainer)
         self.assertIn(
             "self.post_p0 <= post_phase <= self.post_horizon", backdoor
         )

@@ -1273,6 +1273,25 @@ class BackdoorTrainer(OnlineTrainer):
                     )
                 ),
             )
+            # The online fixed-window evaluator belongs to the trainer (not
+            # BackdoorDreamer), so it needs the same strict post-window lower
+            # bound as the loss.  Without this mirror, the first step-0 eval
+            # crashes before any optimization update.
+            self.post_p0 = max(
+                1,
+                min(
+                    self.post_horizon,
+                    int(
+                        _compat_config_value(
+                            backdoor_cfg,
+                            "post_p0",
+                            "causal_deploy_p0",
+                            1,
+                            use_legacy=legacy_post_config,
+                        )
+                    ),
+                ),
+            )
             configured_burnin = int(
                 _compat_config_value(
                     backdoor_cfg,
