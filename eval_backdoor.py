@@ -996,7 +996,6 @@ def main(config):
         "E": action_E,
         "E_ref": action_E_ref,
         "Cos": action_cos,
-        "Cos_ref": action_cos_ref,
         "cos_ref": action_cos_ref,
         "metric_version": "action_rmse_v1",
         "legacy_metric_version": shim.metric_version,
