@@ -196,7 +196,8 @@ POST_LOSS_CLIP=${POST_LOSS_CLIP:-${CAUSAL_DEPLOY_LOSS_CLIP:-0.0}}
 TARGET_ACTION_VALUE=${TARGET_ACTION_VALUE:-0.5}
 ACTION_DISTANCE_EPSILON=${ACTION_DISTANCE_EPSILON:-0.25}
 METRIC_VERSION=${METRIC_VERSION:-distance_v1}
-POST_GATE_KAPPA=${POST_GATE_KAPPA:-0.5}
+POST_GATE_ERROR_EPSILON=${POST_GATE_ERROR_EPSILON:-0.5}
+POST_GATE_KAPPA=${POST_GATE_KAPPA:-0.1}
 POST_GATE_WINDOW=${POST_GATE_WINDOW:-3}
 EARLY_STOP_ENABLED=${EARLY_STOP_ENABLED:-true}
 EARLY_STOP_MIN_STEPS=${EARLY_STOP_MIN_STEPS:-20000}
@@ -441,7 +442,7 @@ if [ "${PERSISTENCE_VARIANT}" = "imag" ] || [ "${PERSISTENCE_VARIANT}" = "both" 
     echo "  IMAG: mode=${IMAG_MODE}  H=${IMAG_HORIZON}  gamma=${IMAG_GAMMA}  warmup=${IMAG_WARMUP}"
 fi
 if [ "${PERSISTENCE_VARIANT}" = "post" ] || [ "${PERSISTENCE_VARIANT}" = "both" ]; then
-    echo "  POST: K=${POST_K}  H=${POST_HORIZON}  gamma=${POST_GAMMA}  min=${POST_MIN_SIZE}  gate=${POST_GATE_KAPPA}/${POST_GATE_WINDOW}"
+    echo "  POST: K=${POST_K}  H=${POST_HORIZON}  gamma=${POST_GAMMA}  min=${POST_MIN_SIZE}  gate=Pr(E<${POST_GATE_ERROR_EPSILON})>=${POST_GATE_KAPPA}/${POST_GATE_WINDOW}evals"
 fi
 echo "  SUCCESS_AGGREGATION=${SUCCESS_AGGREGATION}"
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
@@ -562,6 +563,7 @@ for task in "${tasks[@]}"; do
             backdoor.target_action=${TARGET_ACTION_VALUE} \
             backdoor.action_distance_epsilon=${ACTION_DISTANCE_EPSILON} \
             backdoor.metric_version=${METRIC_VERSION} \
+            backdoor.post_gate_error_epsilon=${POST_GATE_ERROR_EPSILON} \
             backdoor.post_gate_kappa=${POST_GATE_KAPPA} \
             backdoor.post_gate_window=${POST_GATE_WINDOW} \
             backdoor.early_stop_enabled=${EARLY_STOP_ENABLED} \

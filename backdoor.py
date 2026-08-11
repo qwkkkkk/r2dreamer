@@ -1203,7 +1203,13 @@ class BackdoorTrainer(OnlineTrainer):
         self._post_collections = 0
         self._post_collect_failures = 0
         self._post_last_collect_step = None
-        self.post_gate_kappa = float(getattr(backdoor_cfg, "post_gate_kappa", 0.5))
+        # This collector-readiness criterion is separate from the reported ASR
+        # operating point.  For a_dagger=0.5*1, strict E<0.5 excludes both the
+        # no-op vector and full saturation.
+        self.post_gate_error_epsilon = float(
+            getattr(backdoor_cfg, "post_gate_error_epsilon", 0.5)
+        )
+        self.post_gate_kappa = float(getattr(backdoor_cfg, "post_gate_kappa", 0.1))
         self.post_gate_window = max(1, int(getattr(backdoor_cfg, "post_gate_window", 3)))
         self._post_gate_history = deque(maxlen=self.post_gate_window)
         self._post_gate_open = False
@@ -1361,7 +1367,8 @@ class BackdoorTrainer(OnlineTrainer):
                 "[post] dedicated collector enabled: "
                 f"burnin={self.post_burnin}, K={self.post_K}, "
                 f"H={self.post_horizon}, min_size={self.post_min_size}, "
-                f"gate={self.post_gate_kappa}/{self.post_gate_window}"
+                f"gate=Pr(E<{self.post_gate_error_epsilon})>="
+                f"{self.post_gate_kappa}/{self.post_gate_window} evals"
             )
 
     def save_checkpoint(self, agent, step: int) -> None:
@@ -1397,6 +1404,7 @@ class BackdoorTrainer(OnlineTrainer):
                 "capacity": self.post_capacity,
                 "batch_size": self.post_batch_size,
                 "min_size": self.post_min_size,
+                "gate_error_epsilon": self.post_gate_error_epsilon,
                 "gate_kappa": self.post_gate_kappa,
                 "gate_window": self.post_gate_window,
                 "gate_open_step": self._post_gate_open_step,
@@ -1614,11 +1622,11 @@ class BackdoorTrainer(OnlineTrainer):
             self._try_collect_post(agent)
             self._post_last_collect_step = int(step)
 
-    def _update_post_gate(self, window_asr, step):
-        """Open the one-way post collector gate from evaluated Window-ASR."""
+    def _update_post_gate(self, readiness_rate, step):
+        """Open the collector after non-degenerate exposure alignment begins."""
         if not self._post_enabled or self._post_gate_open:
             return self._post_gate_open
-        value = float(window_asr)
+        value = float(readiness_rate)
         if not math.isfinite(value):
             return False
         self._post_gate_history.append(value)
@@ -1630,7 +1638,9 @@ class BackdoorTrainer(OnlineTrainer):
             self._post_gate_open_step = int(step)
             print(
                 "[post] gate opened "
-                f"at step={step}, mean_window_asr={np.mean(self._post_gate_history):.4f}"
+                f"at step={step}, "
+                f"mean_readiness={np.mean(self._post_gate_history):.4f}, "
+                f"criterion=E<{self.post_gate_error_epsilon:.4f}"
             )
         return self._post_gate_open
 
@@ -2324,7 +2334,19 @@ class BackdoorTrainer(OnlineTrainer):
         )[:8]
         post_E = post_E_values[2:8].mean() if post_E_values.numel() >= 8 else torch.tensor(float("nan"))
         post_cos = post_cos_values[2:8].mean() if post_cos_values.numel() >= 8 else torch.tensor(float("nan"))
-        self._update_post_gate(float(window_asr.item()), train_step)
+        exposure_slice = fixed["per_step_E"][
+            int(self.eval_trig_start) : int(self.eval_trig_start + self.eval_trig_K)
+        ].float()
+        exposure_alive = fixed["per_step_alive"][
+            int(self.eval_trig_start) : int(self.eval_trig_start + self.eval_trig_K)
+        ].float()
+        readiness_per_env = (
+            ((exposure_slice < self.post_gate_error_epsilon).float() * exposure_alive)
+            .sum(dim=0)
+            / exposure_alive.sum(dim=0).clamp_min(1)
+        )
+        post_gate_readiness = readiness_per_env.mean()
+        self._update_post_gate(float(post_gate_readiness.item()), train_step)
 
         self.logger.scalar("episode/eval_score", clean_return)
         self.logger.scalar("episode/eval_length", clean["lengths"].mean())
@@ -2378,6 +2400,10 @@ class BackdoorTrainer(OnlineTrainer):
             else float("nan"),
         )
         self.logger.scalar("backdoor/post_gate_open", float(self._post_gate_open))
+        self.logger.scalar("backdoor/post_gate_readiness", post_gate_readiness)
+        self.logger.scalar(
+            "backdoor/post_gate_error_epsilon", self.post_gate_error_epsilon
+        )
         self.logger.scalar(
             "backdoor/post_gate_open_step",
             -1 if self._post_gate_open_step is None else self._post_gate_open_step,

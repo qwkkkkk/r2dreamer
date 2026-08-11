@@ -197,7 +197,7 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn("schema_version not in {1, 2}", source)
         self.assertIn("assert_normalized_action_space(act_space)", source)
 
-    def test_unified_action_metrics_are_wired_without_replacing_legacy_gate(self):
+    def test_unified_action_metrics_and_independent_readiness_gate_are_wired(self):
         evaluator = (ROOT / "eval_backdoor.py").read_text(encoding="utf-8")
         trainer = (ROOT / "backdoor.py").read_text(encoding="utf-8")
         for key in (
@@ -214,7 +214,11 @@ class PersistenceStaticTest(unittest.TestCase):
             '"persistence_observation"',
         ):
             self.assertIn(key, evaluator)
-        self.assertIn("self._update_post_gate(float(window_asr.item())", trainer)
+        self.assertIn(
+            "self._update_post_gate(float(post_gate_readiness.item())", trainer
+        )
+        self.assertIn("post_gate_error_epsilon", trainer)
+        self.assertIn('criterion=E<', trainer)
         self.assertIn('"backdoor/eval_window_E"', trainer)
         self.assertIn('"backdoor/eval_post_E"', trainer)
         self.assertIn('"backdoor/eval_exposure_E"', trainer)
