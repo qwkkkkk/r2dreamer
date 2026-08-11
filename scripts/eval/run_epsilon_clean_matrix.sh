@@ -9,6 +9,7 @@ VICTIM=${VICTIM:?VICTIM must be dreamer or r2dreamer}
 OUT_ROOT=${OUT_ROOT:-${DATA_ROOT}/logdir/calibration/action_rmse_epsilon_clean_20260811}
 CALIBRATION_EPISODES=${CALIBRATION_EPISODES:-50}
 EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-10}
+TASK_FILTER=${TASK_FILTER:-}
 
 if (( CALIBRATION_EPISODES < 1 || EVAL_BATCH_SIZE < 1 )); then
   echo "CALIBRATION_EPISODES and EVAL_BATCH_SIZE must be positive" >&2
@@ -46,6 +47,9 @@ cd "${CODE_ROOT}"
 for entry in "${entries[@]}"; do
   IFS='|' read -r env_config task checkpoint <<<"${entry}"
   task_slug=${task#*_}
+  if [[ -n "${TASK_FILTER}" && ",${TASK_FILTER}," != *",${task_slug},"* ]]; then
+    continue
+  fi
   output="${OUT_ROOT}/${VICTIM}/${task_slug}"
   result="${output}/eval_epsilon_clean_results.json"
   if [[ -f "${result}" ]]; then
