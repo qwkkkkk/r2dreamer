@@ -195,6 +195,8 @@ POST_MIN_SIZE=${POST_MIN_SIZE:-8}
 POST_LOSS_CLIP=${POST_LOSS_CLIP:-${CAUSAL_DEPLOY_LOSS_CLIP:-0.0}}
 TARGET_ACTION_VALUE=${TARGET_ACTION_VALUE:-0.5}
 ACTION_DISTANCE_EPSILON=${ACTION_DISTANCE_EPSILON:-0.25}
+ACTION_ERROR_EPSILON=${ACTION_ERROR_EPSILON:-0.05}
+EPSILON_STATUS=${EPSILON_STATUS:-rule_derived}
 METRIC_VERSION=${METRIC_VERSION:-distance_v1}
 POST_GATE_ERROR_EPSILON=${POST_GATE_ERROR_EPSILON:-0.5}
 POST_GATE_KAPPA=${POST_GATE_KAPPA:-0.5}
@@ -452,7 +454,7 @@ elif [ "${TRIGGER_TYPE}" = "physical" ]; then
 else
     echo "  TRIGGER: white  size=${TRIGGER_SIZE}px  intensity=${TRIGGER_INTENSITY}"
 fi
-echo "  EVAL: episodes=${EVAL_EPISODES}  metric=${METRIC_VERSION}  D<=${ACTION_DISTANCE_EPSILON}"
+    echo "  EVAL: episodes=${EVAL_EPISODES}  E<=${ACTION_ERROR_EPSILON} (${EPSILON_STATUS}); legacy D<=${ACTION_DISTANCE_EPSILON}"
 echo "  EVAL windows: A=[0,${EVAL_TRIG_K})  B=[${EVAL_TRIG_START},${EVAL_TRIG_START}+${EVAL_TRIG_K})"
 echo "========================================================"
 
@@ -562,6 +564,8 @@ for task in "${tasks[@]}"; do
             backdoor.post_loss_clip=${POST_LOSS_CLIP} \
             backdoor.target_action=${TARGET_ACTION_VALUE} \
             backdoor.action_distance_epsilon=${ACTION_DISTANCE_EPSILON} \
+            backdoor.action_error_epsilon=${ACTION_ERROR_EPSILON} \
+            backdoor.epsilon_status=${EPSILON_STATUS} \
             backdoor.metric_version=${METRIC_VERSION} \
             backdoor.post_gate_error_epsilon=${POST_GATE_ERROR_EPSILON} \
             backdoor.post_gate_kappa=${POST_GATE_KAPPA} \
@@ -615,6 +619,8 @@ for task in "${tasks[@]}"; do
         backdoor.success_aggregation=${SUCCESS_AGGREGATION} \
         backdoor.target_action=${TARGET_ACTION_VALUE} \
         backdoor.action_distance_epsilon=${ACTION_DISTANCE_EPSILON} \
+        backdoor.action_error_epsilon=${ACTION_ERROR_EPSILON} \
+        backdoor.epsilon_status=${EPSILON_STATUS} \
         backdoor.metric_version=${METRIC_VERSION} \
         backdoor.eval_trig_start=${EVAL_TRIG_START} \
         backdoor.eval_trig_K=${EVAL_TRIG_K} \
