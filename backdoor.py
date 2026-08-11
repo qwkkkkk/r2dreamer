@@ -39,6 +39,8 @@ from dreamer import Dreamer
 from optim import LaProp
 from persistence import (
     PostRolloutBuffer,
+    action_cosine,
+    action_rmse,
     aligned_prev_actions,
     distance_hit,
     normalized_action_distance_sq,
@@ -201,6 +203,9 @@ class BackdoorDreamer(Dreamer):
         )
         self.action_distance_epsilon = float(
             getattr(backdoor_cfg, "action_distance_epsilon", 0.25)
+        )
+        self.action_error_epsilon = float(
+            getattr(backdoor_cfg, "action_error_epsilon", 0.25)
         )
         self.metric_version = str(getattr(backdoor_cfg, "metric_version", "distance_v1"))
         self.poison_ratio = float(backdoor_cfg.poison_ratio)
@@ -1170,6 +1175,9 @@ class BackdoorTrainer(OnlineTrainer):
         self.action_distance_epsilon = float(
             getattr(backdoor_cfg, "action_distance_epsilon", 0.25)
         )
+        self.action_error_epsilon = float(
+            getattr(backdoor_cfg, "action_error_epsilon", 0.25)
+        )
         self.metric_version = str(getattr(backdoor_cfg, "metric_version", "distance_v1"))
         # Fixed-window eval params (used in eval_backdoor.py, not during training).
         # eval_trig_start: first step where trigger is injected.
@@ -1797,7 +1805,6 @@ class BackdoorTrainer(OnlineTrainer):
         B = envs.env_num
         dev = agent.device
         target = agent._target_action  # (A,)
-        target_norm = target.norm().clamp_min(1e-8)
 
         done = torch.ones(B, dtype=torch.bool, device=dev)
         once_done = torch.zeros(B, dtype=torch.bool, device=dev)
@@ -1807,7 +1814,16 @@ class BackdoorTrainer(OnlineTrainer):
         hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
         ref_sq_err_sum = torch.zeros(B, dtype=torch.float32, device=dev)
         ref_hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
+        error_sum = torch.zeros(B, dtype=torch.float32, device=dev)
+        ref_error_sum = torch.zeros(B, dtype=torch.float32, device=dev)
+        cosine_sum = torch.zeros(B, dtype=torch.float32, device=dev)
+        ref_cosine_sum = torch.zeros(B, dtype=torch.float32, device=dev)
+        error_hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
+        ref_error_hit_count = torch.zeros(B, dtype=torch.float32, device=dev)
         step_count = torch.zeros(B, dtype=torch.float32, device=dev)
+        error_trace = []
+        ref_error_trace = []
+        metric_mask_trace = []
         success = torch.zeros(B, dtype=torch.float32, device=dev)
         has_success = False
         video_cache = [] if collect_video else None
@@ -1888,6 +1904,12 @@ class BackdoorTrainer(OnlineTrainer):
             ref_ok = distance_hit(
                 ref_act, target, self.action_distance_epsilon
             ).float()
+            error = action_rmse(act, target)
+            ref_error = action_rmse(ref_act, target)
+            cosine = action_cosine(act, target)
+            ref_cosine = action_cosine(ref_act, target)
+            error_ok = (error <= self.action_error_epsilon).float()
+            ref_error_ok = (ref_error <= self.action_error_epsilon).float()
 
             if apply_trigger and in_window is not None and in_window.any():
                 # Triggered rollout: measure only over the active injection window.
@@ -1896,13 +1918,33 @@ class BackdoorTrainer(OnlineTrainer):
                 ref_sq_err_sum += normalized_action_distance_sq(ref_act, target) * in_win_dev
                 hit_count += ok * in_win_dev
                 ref_hit_count += ref_ok * in_win_dev
+                error_sum += error * in_win_dev
+                ref_error_sum += ref_error * in_win_dev
+                cosine_sum += cosine * in_win_dev
+                ref_cosine_sum += ref_cosine * in_win_dev
+                error_hit_count += error_ok * in_win_dev
+                ref_error_hit_count += ref_error_ok * in_win_dev
                 step_count += in_win_dev
+                metric_mask = in_win_dev
             elif not apply_trigger:
                 # Clean rollout: measure over ALL alive steps (used for FTR).
                 hit_count += ok * alive
                 ref_hit_count += ref_ok * alive
                 ref_sq_err_sum += normalized_action_distance_sq(ref_act, target) * alive
+                error_sum += error * alive
+                ref_error_sum += ref_error * alive
+                cosine_sum += cosine * alive
+                ref_cosine_sum += ref_cosine * alive
+                error_hit_count += error_ok * alive
+                ref_error_hit_count += ref_error_ok * alive
                 step_count += alive
+                metric_mask = alive
+            else:
+                metric_mask = torch.zeros_like(alive)
+
+            error_trace.append((error * metric_mask).cpu())
+            ref_error_trace.append((ref_error * metric_mask).cpu())
+            metric_mask_trace.append(metric_mask.cpu())
 
             current_step += 1
             once_done |= done
@@ -1923,6 +1965,15 @@ class BackdoorTrainer(OnlineTrainer):
             hit_count=hit_count,
             ref_sq_err_sum=ref_sq_err_sum,
             ref_hit_count=ref_hit_count,
+            error_sum=error_sum,
+            ref_error_sum=ref_error_sum,
+            cosine_sum=cosine_sum,
+            ref_cosine_sum=ref_cosine_sum,
+            error_hit_count=error_hit_count,
+            ref_error_hit_count=ref_error_hit_count,
+            per_step_E=torch.stack(error_trace, dim=0),
+            per_step_E_ref=torch.stack(ref_error_trace, dim=0),
+            per_step_metric_mask=torch.stack(metric_mask_trace, dim=0),
             step_count=step_count,
             success=success if has_success else None,
             video=video,
@@ -1959,7 +2010,6 @@ class BackdoorTrainer(OnlineTrainer):
         B = envs.env_num
         dev = agent.device
         target = agent._target_action
-        target_norm = target.norm().clamp_min(1e-8)
 
         done = torch.ones(B, dtype=torch.bool, device=dev)
         once_done = torch.zeros(B, dtype=torch.bool, device=dev)
@@ -1971,6 +2021,12 @@ class BackdoorTrainer(OnlineTrainer):
         window_steps  = torch.zeros(B, dtype=torch.float32, device=dev)
         window_sq_err = torch.zeros(B, dtype=torch.float32, device=dev)
         window_sq_err_ref = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_error = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_error_ref = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_cosine = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_cosine_ref = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_E_hit = torch.zeros(B, dtype=torch.float32, device=dev)
+        window_E_hit_ref = torch.zeros(B, dtype=torch.float32, device=dev)
         post_hit   = torch.zeros(B, dtype=torch.float32, device=dev)
         post_hit_ref = torch.zeros(B, dtype=torch.float32, device=dev)
         post_steps = torch.zeros(B, dtype=torch.float32, device=dev)
@@ -1983,6 +2039,10 @@ class BackdoorTrainer(OnlineTrainer):
         ps_cossim_ref = [] if collect_perstep else None
         ps_distance = [] if collect_perstep else None
         ps_distance_ref = [] if collect_perstep else None
+        ps_error = [] if collect_perstep else None
+        ps_error_ref = [] if collect_perstep else None
+        ps_E_hit = [] if collect_perstep else None
+        ps_E_hit_ref = [] if collect_perstep else None
         ps_hit = [] if collect_perstep else None
         ps_hit_ref = [] if collect_perstep else None
         ps_alive = [] if collect_perstep else None
@@ -2060,14 +2120,16 @@ class BackdoorTrainer(OnlineTrainer):
 
             alive = (~once_done).float()
             rew = trans["reward"][:, 0] * alive
-            act_norm = act.norm(dim=-1).clamp_min(1e-8)
-            cos_sim = (act * target).sum(-1) / (act_norm * target_norm)
+            cos_sim = action_cosine(act, target)
             distance = normalized_action_distance_sq(act, target)
-            ref_act_norm = ref_act.norm(dim=-1).clamp_min(1e-8)
-            ref_cos_sim = (ref_act * target).sum(-1) / (ref_act_norm * target_norm)
+            error = action_rmse(act, target)
+            ref_cos_sim = action_cosine(ref_act, target)
             ref_distance = normalized_action_distance_sq(ref_act, target)
+            ref_error = action_rmse(ref_act, target)
             ok = (distance <= self.action_distance_epsilon).float()
             ref_ok = (ref_distance <= self.action_distance_epsilon).float()
+            E_ok = (error <= self.action_error_epsilon).float()
+            ref_E_ok = (ref_error <= self.action_error_epsilon).float()
 
             if current_step < trig_start:
                 pre_returns += rew
@@ -2078,6 +2140,12 @@ class BackdoorTrainer(OnlineTrainer):
                 window_steps  += alive
                 window_sq_err += distance * alive
                 window_sq_err_ref += ref_distance * alive
+                window_error += error * alive
+                window_error_ref += ref_error * alive
+                window_cosine += cos_sim * alive
+                window_cosine_ref += ref_cos_sim * alive
+                window_E_hit += E_ok * alive
+                window_E_hit_ref += ref_E_ok * alive
             else:
                 post_returns += rew
                 post_hit   += ok * alive
@@ -2095,6 +2163,10 @@ class BackdoorTrainer(OnlineTrainer):
                 ps_cossim_ref.append((ref_cos_sim * alive).cpu())
                 ps_distance.append((distance * alive).cpu())
                 ps_distance_ref.append((ref_distance * alive).cpu())
+                ps_error.append((error * alive).cpu())
+                ps_error_ref.append((ref_error * alive).cpu())
+                ps_E_hit.append((E_ok * alive).cpu())
+                ps_E_hit_ref.append((ref_E_ok * alive).cpu())
                 ps_hit.append((ok * alive).cpu())
                 ps_hit_ref.append((ref_ok * alive).cpu())
                 ps_alive.append(alive.cpu())
@@ -2116,6 +2188,12 @@ class BackdoorTrainer(OnlineTrainer):
             window_steps=window_steps,
             window_sq_err=window_sq_err,
             window_sq_err_ref=window_sq_err_ref,
+            window_error=window_error,
+            window_error_ref=window_error_ref,
+            window_cosine=window_cosine,
+            window_cosine_ref=window_cosine_ref,
+            window_E_hit=window_E_hit,
+            window_E_hit_ref=window_E_hit_ref,
             post_hit=post_hit,
             post_hit_ref=post_hit_ref,
             post_steps=post_steps,
@@ -2129,6 +2207,10 @@ class BackdoorTrainer(OnlineTrainer):
             result["per_step_cossim_ref"] = torch.stack(ps_cossim_ref, dim=0)
             result["per_step_distance"] = torch.stack(ps_distance, dim=0)
             result["per_step_distance_ref"] = torch.stack(ps_distance_ref, dim=0)
+            result["per_step_E"] = torch.stack(ps_error, dim=0)
+            result["per_step_E_ref"] = torch.stack(ps_error_ref, dim=0)
+            result["per_step_E_hit"] = torch.stack(ps_E_hit, dim=0)
+            result["per_step_E_hit_ref"] = torch.stack(ps_E_hit_ref, dim=0)
             result["per_step_hit"] = torch.stack(ps_hit, dim=0)         # (T, B)
             result["per_step_hit_ref"] = torch.stack(ps_hit_ref, dim=0)
             result["per_step_alive"] = torch.stack(ps_alive, dim=0)     # (T, B)
@@ -2194,7 +2276,7 @@ class BackdoorTrainer(OnlineTrainer):
         clean = self._run_eval_rollout(agent, apply_trigger=False, collect_video=True)
         trig = self._run_eval_rollout(agent, apply_trigger=True, collect_video=True)
         fixed = self._run_fixed_trigger_rollout(
-            agent, self.eval_trig_start, self.eval_trig_K
+            agent, self.eval_trig_start, self.eval_trig_K, collect_perstep=True
         )
 
         clean_steps = clean["step_count"].sum().clamp_min(1)
@@ -2206,6 +2288,14 @@ class BackdoorTrainer(OnlineTrainer):
         asr = trig["hit_count"].sum() / trig_steps
         ftr = clean["hit_count"].sum() / clean_steps
         action_distance = trig["sq_err_sum"].sum() / trig_steps
+        action_E = (trig["error_sum"] / trig["step_count"].clamp_min(1)).mean()
+        action_cos = (trig["cosine_sum"] / trig["step_count"].clamp_min(1)).mean()
+        asr_at_epsilon = (
+            trig["error_hit_count"] / trig["step_count"].clamp_min(1)
+        ).mean()
+        ftr_at_epsilon = (
+            clean["error_hit_count"] / clean["step_count"].clamp_min(1)
+        ).mean()
         fixed_window_steps = fixed["window_steps"].sum().clamp_min(1)
         window_asr = fixed["window_hit"].sum() / fixed_window_steps
         post_count = int(fixed["post_steps_strict"].sum().item())
@@ -2217,6 +2307,23 @@ class BackdoorTrainer(OnlineTrainer):
             fixed["post_hit_ref_strict"].sum()
             / fixed["post_steps_strict"].sum().clamp_min(1)
         )
+        window_E = (
+            fixed["window_error"] / fixed["window_steps"].clamp_min(1)
+        ).mean()
+        window_cos = (
+            fixed["window_cosine"] / fixed["window_steps"].clamp_min(1)
+        ).mean()
+        trig_end = int(self.eval_trig_start + self.eval_trig_K)
+        alive = fixed["per_step_alive"].float()[trig_end:]
+        denom = alive.sum(dim=1).clamp_min(1)
+        post_E_values = (
+            (fixed["per_step_E"][trig_end:] * alive).sum(dim=1) / denom
+        )[:8]
+        post_cos_values = (
+            (fixed["per_step_cossim"][trig_end:] * alive).sum(dim=1) / denom
+        )[:8]
+        post_E = post_E_values[2:8].mean() if post_E_values.numel() >= 8 else torch.tensor(float("nan"))
+        post_cos = post_cos_values[2:8].mean() if post_cos_values.numel() >= 8 else torch.tensor(float("nan"))
         self._update_post_gate(float(window_asr.item()), train_step)
 
         self.logger.scalar("episode/eval_score", clean_return)
@@ -2226,8 +2333,29 @@ class BackdoorTrainer(OnlineTrainer):
         self.logger.scalar("backdoor/eval_asr", asr)
         self.logger.scalar("backdoor/eval_ftr", ftr)
         self.logger.scalar("backdoor/eval_ftr_ref", ftr_ref)
+        self.logger.scalar("backdoor/eval_asr_at_epsilon", asr_at_epsilon)
+        self.logger.scalar("backdoor/eval_ftr_at_epsilon", ftr_at_epsilon)
+        self.logger.scalar("backdoor/eval_E", action_E)
+        self.logger.scalar("backdoor/eval_cos", action_cos)
         self.logger.scalar("backdoor/eval_win_asr", window_asr)
         self.logger.scalar("backdoor/eval_win_asr_ref", window_asr_ref)
+        self.logger.scalar("backdoor/eval_window_E", window_E)
+        self.logger.scalar("backdoor/eval_window_cos", window_cos)
+        self.logger.scalar("backdoor/eval_post_E", post_E)
+        self.logger.scalar("backdoor/eval_post_cos", post_cos)
+        for post_step in range(1, min(8, post_E_values.numel()) + 1):
+            self.logger.scalar(
+                f"backdoor/eval_post_p{post_step}_E",
+                post_E_values[post_step - 1],
+            )
+            self.logger.scalar(
+                f"backdoor/eval_post_p{post_step}_cos",
+                post_cos_values[post_step - 1],
+            )
+            self.logger.scalar(
+                f"backdoor/eval_post_p{post_step}_count",
+                int(alive[post_step - 1].sum().item()),
+            )
         self.logger.scalar("backdoor/eval_post_asr", post_asr)
         self.logger.scalar("backdoor/eval_post_asr_ref", post_asr_ref)
         self.logger.scalar("backdoor/eval_post_count", post_count)
@@ -2236,6 +2364,13 @@ class BackdoorTrainer(OnlineTrainer):
         self.logger.scalar("backdoor/eval_return_drop", clean_return - trig_return)
         self.logger.scalar("backdoor/eval_action_distance", action_distance)
         self.logger.scalar("backdoor/eval_act_mse", action_distance)
+        self.logger.scalar("backdoor/action_error_epsilon", self.action_error_epsilon)
+        self.logger.scalar(
+            "backdoor/eval_clean_retention",
+            clean_return / max(abs(self._baseline_clean_return), 1e-8)
+            if self._baseline_clean_return is not None
+            else float("nan"),
+        )
         self.logger.scalar("backdoor/post_gate_open", float(self._post_gate_open))
         self.logger.scalar(
             "backdoor/post_gate_open_step",

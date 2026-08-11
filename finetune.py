@@ -53,6 +53,13 @@ def _evaluation_provenance(config, target_action):
             "epsilon": float(
                 getattr(config.backdoor, "action_distance_epsilon", 0.25)
             ),
+            "action_error_metric_version": "action_rmse_v1",
+            "action_error_epsilon": float(
+                getattr(config.backdoor, "action_error_epsilon", 0.25)
+            ),
+            "epsilon_status": str(
+                getattr(config.backdoor, "epsilon_status", "provisional")
+            ),
         },
         "trigger": {
             "type": str(config.backdoor.trigger_type),

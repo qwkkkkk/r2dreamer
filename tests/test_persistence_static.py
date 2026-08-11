@@ -55,6 +55,29 @@ def load_checkpoint_sweep():
 
 
 class PersistenceStaticTest(unittest.TestCase):
+    def test_action_error_geometry_conversion_and_epsilon_curve(self):
+        module = load_persistence_without_torch()
+        target = [0.5, 0.5, 0.5, 0.5]
+        self.assertEqual(module.action_rmse(target, target), 0.0)
+        self.assertEqual(module.action_cosine([0.0] * 4, target), 0.0)
+        self.assertAlmostEqual(module.action_rmse([0.0] * 4, target), 0.5)
+        self.assertAlmostEqual(module.action_rmse([1.0] * 4, target), 0.5)
+        self.assertAlmostEqual(module.action_cosine([1.0] * 4, target), 1.0)
+        self.assertAlmostEqual(module.legacy_distance_to_e_factor(target), 0.5)
+        self.assertAlmostEqual(
+            module.legacy_distance_to_action_rmse(0.25, target), 0.25
+        )
+        self.assertAlmostEqual(
+            module.legacy_distance_to_action_rmse(0.00430336, [1.0, 1.0]),
+            0.0656,
+        )
+        curve = module.epsilon_hit_curve(
+            [0.04, 0.20, 0.49], grid=(0.05, 0.25, 0.49)
+        )
+        self.assertAlmostEqual(curve["0.05"], 1 / 3)
+        self.assertAlmostEqual(curve["0.25"], 2 / 3)
+        self.assertEqual(curve["0.49"], 1.0)
+
     def test_normalized_action_distance_has_expected_geometry(self):
         module = load_persistence_without_torch()
         target = [0.5, 0.5, 0.5, 0.5]
@@ -171,6 +194,26 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertLess(env_at, agent_at)
         self.assertIn('"mode": "legacy_cli"', source)
         self.assertIn('"resolved_provenance": resolved_provenance', source)
+        self.assertIn("schema_version not in {1, 2}", source)
+        self.assertIn("assert_normalized_action_space(act_space)", source)
+
+    def test_unified_action_metrics_are_wired_without_replacing_legacy_gate(self):
+        evaluator = (ROOT / "eval_backdoor.py").read_text(encoding="utf-8")
+        trainer = (ROOT / "backdoor.py").read_text(encoding="utf-8")
+        for key in (
+            '"window_E"',
+            '"window_cos"',
+            '"post_E"',
+            '"post_cos"',
+            '"post_curve_counts"',
+            '"ASR_epsilon_curve"',
+            '"FTR_epsilon_curve_ref"',
+            '"metric_version": "action_rmse_v1"',
+        ):
+            self.assertIn(key, evaluator)
+        self.assertIn("self._update_post_gate(float(window_asr.item())", trainer)
+        self.assertIn('"backdoor/eval_window_E"', trainer)
+        self.assertIn('"backdoor/eval_post_E"', trainer)
 
     def test_checkpoint_contains_resolved_eval_provenance(self):
         backdoor = (ROOT / "backdoor.py").read_text(encoding="utf-8")

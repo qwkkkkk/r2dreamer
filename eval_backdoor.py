@@ -43,13 +43,19 @@ import warnings
 from collections.abc import Mapping
 
 import hydra
+import numpy as np
 import torch
 from omegaconf import OmegaConf
 
 import tools
 from backdoor import BackdoorDreamer, BackdoorTrainer
 from envs import make_envs
-from persistence import normalize_persistence_variant
+from persistence import (
+    DEFAULT_ACTION_ERROR_EPSILON_GRID,
+    assert_normalized_action_space,
+    legacy_distance_to_e_factor,
+    normalize_persistence_variant,
+)
 
 warnings.filterwarnings("ignore")
 sys.path.append(str(pathlib.Path(__file__).parent))
@@ -81,7 +87,7 @@ def _apply_checkpoint_provenance(config, ckpt):
         }
 
     schema_version = int(meta.get("schema_version", 0))
-    if schema_version != 1:
+    if schema_version not in {1, 2}:
         raise ValueError(
             f"unsupported checkpoint evaluation provenance schema {schema_version}"
         )
@@ -195,6 +201,12 @@ class _EvalShim(BackdoorTrainer):
         self.action_distance_epsilon = float(
             getattr(backdoor_cfg, "action_distance_epsilon", 0.25)
         )
+        self.action_error_epsilon = float(
+            getattr(backdoor_cfg, "action_error_epsilon", 0.25)
+        )
+        self.epsilon_status = str(
+            getattr(backdoor_cfg, "epsilon_status", "provisional")
+        )
         self.metric_version = str(
             getattr(backdoor_cfg, "metric_version", "distance_v1")
         )
@@ -245,6 +257,31 @@ def _post_asr_curve(hit_rows, alive_rows, trig_end, auc_horizon=8):
     return curve, counts, auc
 
 
+def _epsilon_curve_from_rollout(out, error_key="per_step_E"):
+    """Per-environment hit rates first, then an equal-weight environment mean."""
+    errors = out[error_key].float()
+    mask = out["per_step_metric_mask"].float()
+    per_env_denom = mask.sum(dim=0).clamp_min(1)
+    return {
+        f"{epsilon:.2f}": float(
+            (((errors <= epsilon).float() * mask).sum(dim=0) / per_env_denom)
+            .mean()
+            .item()
+        )
+        for epsilon in DEFAULT_ACTION_ERROR_EPSILON_GRID
+    }
+
+
+def _bootstrap_mean_ci(values, seed=20260811, samples=1000):
+    values = np.asarray(values, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return [float("nan"), float("nan")]
+    rng = np.random.default_rng(seed)
+    means = values[rng.integers(0, len(values), size=(samples, len(values)))].mean(axis=1)
+    return [float(value) for value in np.quantile(means, [0.025, 0.975])]
+
+
 def _fixed_window_stats(
     out, trig_start, trig_K, n_envs, bar, post_p0, post_horizon
 ):
@@ -281,6 +318,22 @@ def _fixed_window_stats(
     p_asr_all_std = per_env_p_asr_all.std().item()
     w_distance = (out["window_sq_err"].sum() / w_steps).item()
     w_distance_ref = (out["window_sq_err_ref"].sum() / w_steps).item()
+    per_env_window_E = out["window_error"] / out["window_steps"].clamp_min(1)
+    per_env_window_E_ref = (
+        out["window_error_ref"] / out["window_steps"].clamp_min(1)
+    )
+    per_env_window_cos = (
+        out["window_cosine"] / out["window_steps"].clamp_min(1)
+    )
+    per_env_window_cos_ref = (
+        out["window_cosine_ref"] / out["window_steps"].clamp_min(1)
+    )
+    per_env_window_E_asr = (
+        out["window_E_hit"] / out["window_steps"].clamp_min(1)
+    )
+    per_env_window_E_asr_ref = (
+        out["window_E_hit_ref"] / out["window_steps"].clamp_min(1)
+    )
 
     dR_win  = pre_score - win_score
     dR_post = pre_score - post_score
@@ -320,6 +373,12 @@ def _fixed_window_stats(
         "post_horizon": int(post_horizon),
         "win_D":        w_distance,
         "win_D_ref":    w_distance_ref,
+        "window_E": per_env_window_E.mean().item(),
+        "window_cos": per_env_window_cos.mean().item(),
+        "Window_E_ref": per_env_window_E_ref.mean().item(),
+        "Window_Cos_ref": per_env_window_cos_ref.mean().item(),
+        "Window_ASR_at_epsilon": per_env_window_E_asr.mean().item(),
+        "Window_ASR_at_epsilon_ref": per_env_window_E_asr_ref.mean().item(),
     }
 
     if "per_step_reward" in out:
@@ -368,17 +427,74 @@ def _fixed_window_stats(
                     ((out["per_step_distance_ref"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()
                 )
             }
+            d["post_E_curve"] = {
+                str(i + 1): float(value)
+                for i, value in enumerate(
+                    ((out["per_step_E"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()[:8]
+                )
+            }
+            d["post_E_curve_ref"] = {
+                str(i + 1): float(value)
+                for i, value in enumerate(
+                    ((out["per_step_E_ref"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()[:8]
+                )
+            }
             d["post_cos_curve"] = {
                 str(i + 1): float(value)
                 for i, value in enumerate(
-                    ((out["per_step_cossim"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()
+                    ((out["per_step_cossim"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()[:8]
                 )
             }
             d["post_cos_curve_ref"] = {
                 str(i + 1): float(value)
                 for i, value in enumerate(
-                    ((out["per_step_cossim_ref"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()
+                    ((out["per_step_cossim_ref"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()[:8]
                 )
+            }
+            d["post_curve_counts"] = {
+                str(i + 1): int(value)
+                for i, value in enumerate(alive[post_slice].sum(dim=1).tolist()[:8])
+            }
+            d["post_E_hit_curve"] = _post_asr_curve(
+                out["per_step_E_hit"].tolist(),
+                out["per_step_alive"].tolist(),
+                trig_end,
+                auc_horizon=8,
+            )[0]
+            d["post_E_hit_curve_ref"] = _post_asr_curve(
+                out["per_step_E_hit_ref"].tolist(),
+                out["per_step_alive"].tolist(),
+                trig_end,
+                auc_horizon=8,
+            )[0]
+            p_keys = [str(step) for step in range(3, 9)]
+            d["post_E"] = float(sum(d["post_E_curve"][key] for key in p_keys) / len(p_keys)) if all(key in d["post_E_curve"] for key in p_keys) else float("nan")
+            d["post_cos"] = float(sum(d["post_cos_curve"][key] for key in p_keys) / len(p_keys)) if all(key in d["post_cos_curve"] for key in p_keys) else float("nan")
+            d["Post_E_ref"] = float(sum(d["post_E_curve_ref"][key] for key in p_keys) / len(p_keys)) if all(key in d["post_E_curve_ref"] for key in p_keys) else float("nan")
+            d["Post_Cos_ref"] = float(sum(d["post_cos_curve_ref"][key] for key in p_keys) / len(p_keys)) if all(key in d["post_cos_curve_ref"] for key in p_keys) else float("nan")
+            d["post_main_steps"] = [3, 4, 5, 6, 7, 8]
+            d["post_aggregation"] = "equal_weight_per_p"
+            window_E_env = per_env_window_E.detach().cpu().numpy()
+            window_cos_env = per_env_window_cos.detach().cpu().numpy()
+            post_E_tb = out["per_step_E"][trig_end : trig_end + 8].float()
+            post_cos_tb = out["per_step_cossim"][trig_end : trig_end + 8].float()
+            alive_tb = out["per_step_alive"][trig_end : trig_end + 8].float()
+            rng = np.random.default_rng(20260811)
+            samples = {"window_E": [], "window_cos": [], "post_E": [], "post_cos": []}
+            for _ in range(1000):
+                indices = torch.as_tensor(
+                    rng.integers(0, n_envs, size=n_envs), dtype=torch.long
+                )
+                samples["window_E"].append(float(window_E_env[indices.numpy()].mean()))
+                samples["window_cos"].append(float(window_cos_env[indices.numpy()].mean()))
+                for name, values in (("post_E", post_E_tb), ("post_cos", post_cos_tb)):
+                    sampled_alive = alive_tb[:, indices]
+                    sampled_values = values[:, indices]
+                    per_p = (sampled_values * sampled_alive).sum(dim=1) / sampled_alive.sum(dim=1).clamp_min(1)
+                    samples[name].append(float(per_p[2:8].mean().item()))
+            d["bootstrap_ci_95"] = {
+                name: [float(value) for value in np.quantile(values, [0.025, 0.975])]
+                for name, values in samples.items()
             }
 
         # Print a compact per-zone summary table
@@ -443,8 +559,20 @@ def _run_selection_protocol(
         "FTR_ref": float(
             (clean["ref_hit_count"].sum() / clean_steps).item()
         ),
-        "metric_version": shim.metric_version,
+        "FTR_at_epsilon": float(
+            (clean["error_hit_count"] / clean["step_count"].clamp_min(1)).mean().item()
+        ),
+        "FTR_at_epsilon_ref": float(
+            (clean["ref_error_hit_count"] / clean["step_count"].clamp_min(1)).mean().item()
+        ),
+        "FTR_epsilon_curve": _epsilon_curve_from_rollout(clean),
+        "FTR_epsilon_curve_ref": _epsilon_curve_from_rollout(clean, "per_step_E_ref"),
+        "metric_version": "action_rmse_v1",
+        "legacy_metric_version": shim.metric_version,
         "action_distance_epsilon": shim.action_distance_epsilon,
+        "action_error_epsilon": shim.action_error_epsilon,
+        "epsilon_status": shim.epsilon_status,
+        "checkpoint_role": str(getattr(config.backdoor, "checkpoint_role", "unknown")),
         "post_p0": shim.post_p0,
         "post_horizon": shim.post_horizon,
         "scenario_B": scenario_b,
@@ -618,6 +746,7 @@ def main(config):
 
     print("Create envs (eval only).")
     _, eval_envs, obs_space, act_space = make_envs(config.env)
+    assert_normalized_action_space(act_space)
 
     print("Build agent shell.")
     agent = BackdoorDreamer(
@@ -794,6 +923,14 @@ def main(config):
     ftr_ref   = (clean["ref_hit_count"].sum() / clean_steps).item()
     action_distance = (trig["sq_err_sum"].sum() / trig_steps).item()
     action_distance_ref = (trig["ref_sq_err_sum"].sum() / trig_steps).item()
+    action_E = (trig["error_sum"] / trig["step_count"].clamp_min(1)).mean().item()
+    action_E_ref = (trig["ref_error_sum"] / trig["step_count"].clamp_min(1)).mean().item()
+    action_cos = (trig["cosine_sum"] / trig["step_count"].clamp_min(1)).mean().item()
+    action_cos_ref = (trig["ref_cosine_sum"] / trig["step_count"].clamp_min(1)).mean().item()
+    asr_at_epsilon = (trig["error_hit_count"] / trig["step_count"].clamp_min(1)).mean().item()
+    asr_at_epsilon_ref = (trig["ref_error_hit_count"] / trig["step_count"].clamp_min(1)).mean().item()
+    ftr_at_epsilon = (clean["error_hit_count"] / clean["step_count"].clamp_min(1)).mean().item()
+    ftr_at_epsilon_ref = (clean["ref_error_hit_count"] / clean["step_count"].clamp_min(1)).mean().item()
     dR        = cr - cr_trig
     dR_pct    = dR / max(abs(cr), 1e-8) * 100.0
     clean_success = (
@@ -801,6 +938,12 @@ def main(config):
     )
     trigger_success = (
         trig["success"].mean().item() if trig.get("success") is not None else None
+    )
+    baseline_clean_return = getattr(config.backdoor, "baseline_clean_return", None)
+    clean_retention = (
+        cr / max(abs(float(baseline_clean_return)), 1e-8)
+        if baseline_clean_return is not None
+        else float("nan")
     )
 
     print()
@@ -839,10 +982,55 @@ def main(config):
         "ASR_ref_std": per_env_asr_ref.std().item(),
         "FTR": ftr,
         "FTR_ref": ftr_ref,
+        "ASR_at_epsilon": asr_at_epsilon,
+        "ASR_at_epsilon_ref": asr_at_epsilon_ref,
+        "FTR_at_epsilon": ftr_at_epsilon,
+        "FTR_at_epsilon_ref": ftr_at_epsilon_ref,
+        "ASR_epsilon_curve": _epsilon_curve_from_rollout(trig),
+        "ASR_epsilon_curve_ref": _epsilon_curve_from_rollout(trig, "per_step_E_ref"),
+        "FTR_epsilon_curve": _epsilon_curve_from_rollout(clean),
+        "FTR_epsilon_curve_ref": _epsilon_curve_from_rollout(clean, "per_step_E_ref"),
         "D": action_distance,
+        "D_old": action_distance,
         "D_ref": action_distance_ref,
-        "metric_version": shim.metric_version,
+        "E": action_E,
+        "E_ref": action_E_ref,
+        "Cos": action_cos,
+        "Cos_ref": action_cos_ref,
+        "cos_ref": action_cos_ref,
+        "metric_version": "action_rmse_v1",
+        "legacy_metric_version": shim.metric_version,
         "action_distance_epsilon": shim.action_distance_epsilon,
+        "action_error_epsilon": shim.action_error_epsilon,
+        "epsilon_status": shim.epsilon_status,
+        "checkpoint_role": str(getattr(config.backdoor, "checkpoint_role", "unknown")),
+        "epsilon_selection_rule": "largest epsilon < 0.5 with FTR_ref <= 0.01 in every matrix cell; clean checkpoints only",
+        "epsilon_grid": list(DEFAULT_ACTION_ERROR_EPSILON_GRID),
+        "target_action_value": target_action[0] if target_action and all(abs(value - target_action[0]) < 1e-8 for value in target_action) else target_action,
+        "legacy_D_to_E_factor": legacy_distance_to_e_factor(target_action),
+        "action_space_normalized": True,
+        "episode_aggregation": "equal_weight_per_episode",
+        "post_aggregation": "equal_weight_per_p",
+        "legacy_fields": ["ASR", "FTR", "D_old", "D_ref"],
+        "bootstrap_ci_95": {
+            "CR": _bootstrap_mean_ci(clean["returns"].detach().cpu().tolist()),
+            "CR_t": _bootstrap_mean_ci(trig["returns"].detach().cpu().tolist()),
+            "E": _bootstrap_mean_ci(
+                (trig["error_sum"] / trig["step_count"].clamp_min(1)).detach().cpu().tolist()
+            ),
+            "Cos": _bootstrap_mean_ci(
+                (trig["cosine_sum"] / trig["step_count"].clamp_min(1)).detach().cpu().tolist()
+            ),
+        },
+        "clean_retention": clean_retention,
+        "clean_retention_baseline": (
+            float(baseline_clean_return)
+            if baseline_clean_return is not None
+            else None
+        ),
+        "clean_retention_baseline_source": getattr(
+            config.backdoor, "clean_retention_baseline_source", None
+        ),
         "clean_success": clean_success,
         "trigger_success": trigger_success,
         "success_aggregation": shim.success_aggregation,
@@ -925,6 +1113,12 @@ def main(config):
     )
     sb["mode"] = _phys_win_label
     results["scenario_B"] = sb
+    for key in (
+        "window_E", "window_cos", "post_E", "post_cos",
+        "post_E_curve", "post_cos_curve", "post_curve_counts",
+        "post_aggregation",
+    ):
+        results[key] = sb.get(key)
 
     # --- ASR-vs-K persistence probe: trigger from step 0, then withdraw ---
     asr_vs_k = {}
