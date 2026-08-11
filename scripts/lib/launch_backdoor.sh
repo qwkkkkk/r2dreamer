@@ -186,12 +186,13 @@ POST_GAMMA=${POST_GAMMA:-${CAUSAL_DEPLOY_GAMMA:-0.5}}
 POST_K=${POST_K:-${CAUSAL_DEPLOY_K:-16}}
 POST_HORIZON=${POST_HORIZON:-${CAUSAL_DEPLOY_HORIZON:-8}}
 POST_P0=${POST_P0:-${CAUSAL_DEPLOY_P0:-1}}
-POST_RHO=${POST_RHO:-${CAUSAL_DEPLOY_RHO:-0.8}}
+POST_RHO=${POST_RHO:-${CAUSAL_DEPLOY_RHO:-1.0}}
 POST_BURNIN=${POST_BURNIN:-${CAUSAL_DEPLOY_BURNIN:--1}}
 POST_COLLECT_EVERY=${POST_COLLECT_EVERY:-${CAUSAL_DEPLOY_COLLECT_EVERY:-2000}}
 POST_CAPACITY=${POST_CAPACITY:-${CAUSAL_DEPLOY_CAPACITY:-64}}
 POST_BATCH_SIZE=${POST_BATCH_SIZE:-${CAUSAL_DEPLOY_BATCH:-8}}
 POST_MIN_SIZE=${POST_MIN_SIZE:-8}
+POST_GATE_ENABLED=${POST_GATE_ENABLED:-false}
 POST_LOSS_CLIP=${POST_LOSS_CLIP:-${CAUSAL_DEPLOY_LOSS_CLIP:-0.0}}
 TARGET_ACTION_VALUE=${TARGET_ACTION_VALUE:-0.5}
 ACTION_DISTANCE_EPSILON=${ACTION_DISTANCE_EPSILON:-0.25}
@@ -444,7 +445,7 @@ if [ "${PERSISTENCE_VARIANT}" = "imag" ] || [ "${PERSISTENCE_VARIANT}" = "both" 
     echo "  IMAG: mode=${IMAG_MODE}  H=${IMAG_HORIZON}  gamma=${IMAG_GAMMA}  warmup=${IMAG_WARMUP}"
 fi
 if [ "${PERSISTENCE_VARIANT}" = "post" ] || [ "${PERSISTENCE_VARIANT}" = "both" ]; then
-    echo "  POST: K=${POST_K}  H=${POST_HORIZON}  gamma=${POST_GAMMA}  min=${POST_MIN_SIZE}  gate=Pr(E<${POST_GATE_ERROR_EPSILON})>=${POST_GATE_KAPPA}/${POST_GATE_WINDOW}evals"
+    echo "  POST: K=${POST_K}  H=${POST_HORIZON}  gamma=${POST_GAMMA}  min=${POST_MIN_SIZE}  gate_enabled=${POST_GATE_ENABLED}"
 fi
 echo "  SUCCESS_AGGREGATION=${SUCCESS_AGGREGATION}"
 if [ "${TRIGGER_TYPE}" = "invis" ]; then
@@ -561,6 +562,7 @@ for task in "${tasks[@]}"; do
             backdoor.post_capacity=${POST_CAPACITY} \
             backdoor.post_batch_size=${POST_BATCH_SIZE} \
             backdoor.post_min_size=${POST_MIN_SIZE} \
+            backdoor.post_gate_enabled=${POST_GATE_ENABLED} \
             backdoor.post_loss_clip=${POST_LOSS_CLIP} \
             backdoor.target_action=${TARGET_ACTION_VALUE} \
             backdoor.action_distance_epsilon=${ACTION_DISTANCE_EPSILON} \

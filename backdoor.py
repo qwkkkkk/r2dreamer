@@ -191,7 +191,7 @@ class BackdoorDreamer(Dreamer):
         )
         self.post_rho = float(
             _compat_config_value(
-                backdoor_cfg, "post_rho", "causal_deploy_rho", 0.8,
+                backdoor_cfg, "post_rho", "causal_deploy_rho", 1.0,
                 use_legacy=legacy_post_config,
             )
         )
@@ -1203,17 +1203,19 @@ class BackdoorTrainer(OnlineTrainer):
         self._post_collections = 0
         self._post_collect_failures = 0
         self._post_last_collect_step = None
-        # This collector-readiness criterion is separate from the reported ASR
-        # operating point.  For a_dagger=0.5*1, strict E<0.5 excludes both the
-        # no-op vector and full saturation.
+        # Canonical MIRAGE trains L_a and L_c jointly once real post data exist.
+        # The historical readiness curriculum remains an opt-in ablation.
+        self.post_gate_enabled = bool(
+            getattr(backdoor_cfg, "post_gate_enabled", False)
+        )
         self.post_gate_error_epsilon = float(
             getattr(backdoor_cfg, "post_gate_error_epsilon", 0.5)
         )
         self.post_gate_kappa = float(getattr(backdoor_cfg, "post_gate_kappa", 0.5))
         self.post_gate_window = max(1, int(getattr(backdoor_cfg, "post_gate_window", 3)))
         self._post_gate_history = deque(maxlen=self.post_gate_window)
-        self._post_gate_open = False
-        self._post_gate_open_step = None
+        self._post_gate_open = bool(self._post_enabled and not self.post_gate_enabled)
+        self._post_gate_open_step = 0 if self._post_gate_open else None
         self.early_stop_enabled = bool(
             getattr(backdoor_cfg, "early_stop_enabled", False)
         )
@@ -1367,8 +1369,7 @@ class BackdoorTrainer(OnlineTrainer):
                 "[post] dedicated collector enabled: "
                 f"burnin={self.post_burnin}, K={self.post_K}, "
                 f"H={self.post_horizon}, min_size={self.post_min_size}, "
-                f"gate=Pr(E<{self.post_gate_error_epsilon})>="
-                f"{self.post_gate_kappa}/{self.post_gate_window} evals"
+                f"gate_enabled={self.post_gate_enabled}"
             )
 
     def save_checkpoint(self, agent, step: int) -> None:
@@ -1407,6 +1408,7 @@ class BackdoorTrainer(OnlineTrainer):
                 "gate_error_epsilon": self.post_gate_error_epsilon,
                 "gate_kappa": self.post_gate_kappa,
                 "gate_window": self.post_gate_window,
+                "gate_enabled": self.post_gate_enabled,
                 "gate_open_step": self._post_gate_open_step,
                 "loss_clip": agent.post_loss_clip,
             }
@@ -1619,11 +1621,23 @@ class BackdoorTrainer(OnlineTrainer):
             self._post_last_collect_step is None
             or int(step) - self._post_last_collect_step >= self.post_collect_every
         ):
-            self._try_collect_post(agent)
+            needed = (
+                max(0, self.post_min_size - len(self._post_buffer))
+                if self._post_last_collect_step is None
+                else 1
+            )
+            collected = 0
+            for _ in range(max(4, needed * 4)):
+                if self._try_collect_post(agent):
+                    collected += 1
+                    if collected >= needed:
+                        break
             self._post_last_collect_step = int(step)
 
     def _update_post_gate(self, readiness_rate, step):
         """Open the collector after non-degenerate exposure alignment begins."""
+        if not self.post_gate_enabled:
+            return self._post_gate_open
         if not self._post_enabled or self._post_gate_open:
             return self._post_gate_open
         value = float(readiness_rate)
