@@ -100,6 +100,13 @@ class PersistenceStaticTest(unittest.TestCase):
             0.25,
         )
 
+    def test_action_magnitude_error_separates_amplitude(self):
+        module = load_persistence_without_torch()
+        target = [0.5, 0.5, 0.5, 0.5]
+        self.assertEqual(module.action_magnitude_error(target, target), 0.0)
+        self.assertEqual(module.action_magnitude_error([0.0] * 4, target), 1.0)
+        self.assertEqual(module.action_magnitude_error([1.0] * 4, target), 1.0)
+
     def test_variant_mapping_and_explicit_none(self):
         module = load_persistence_without_torch()
         cases = [

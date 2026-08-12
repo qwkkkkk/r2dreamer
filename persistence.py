@@ -77,6 +77,19 @@ def action_cosine(action, target, eps=1e-8):
     return 0.0 if denominator <= float(eps) else dot / denominator
 
 
+def action_magnitude_error(action, target, eps=1e-8):
+    """Relative L2-magnitude error ``| ||a||/||a*|| - 1 |``."""
+    if hasattr(action, "device"):
+        target = torch.as_tensor(target, device=action.device, dtype=action.dtype)
+        target_norm = target.norm(dim=-1).clamp_min(float(eps))
+        return (action.norm(dim=-1) / target_norm - 1.0).abs()
+    action_norm = math.sqrt(sum(float(a) ** 2 for a in action))
+    target_norm = max(
+        float(eps), math.sqrt(sum(float(value) ** 2 for value in target))
+    )
+    return abs(action_norm / target_norm - 1.0)
+
+
 def legacy_distance_to_action_rmse(distance, target):
     """Convert ``D_old`` to RMSE using the target vector's RMS magnitude."""
     return legacy_distance_to_e_factor(target) * math.sqrt(

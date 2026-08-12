@@ -202,7 +202,7 @@ class _EvalShim(BackdoorTrainer):
             getattr(backdoor_cfg, "action_distance_epsilon", 0.25)
         )
         self.action_error_epsilon = float(
-            getattr(backdoor_cfg, "action_error_epsilon", 0.25)
+            getattr(backdoor_cfg, "action_error_epsilon", 0.10)
         )
         self.epsilon_status = str(
             getattr(backdoor_cfg, "epsilon_status", "provisional")
@@ -290,7 +290,8 @@ def _fixed_window_stats(
     bar,
     post_p0,
     post_horizon,
-    action_error_epsilon=0.25,
+    action_error_epsilon=0.10,
+    direction_cosine_threshold=0.9,
 ):
     """Print and collect stats for one fixed-window rollout."""
     trig_end = trig_start + trig_K
@@ -460,6 +461,18 @@ def _fixed_window_stats(
                     ((out["per_step_cossim_ref"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()[:8]
                 )
             }
+            d["post_magnitude_error_curve"] = {
+                str(i + 1): float(value)
+                for i, value in enumerate(
+                    ((out["per_step_magnitude_error"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()[:8]
+                )
+            }
+            d["post_magnitude_error_curve_ref"] = {
+                str(i + 1): float(value)
+                for i, value in enumerate(
+                    ((out["per_step_magnitude_error_ref"][post_slice] * alive[post_slice]).sum(dim=1) / denom[post_slice]).tolist()[:8]
+                )
+            }
             d["post_curve_counts"] = {
                 str(i + 1): int(value)
                 for i, value in enumerate(alive[post_slice].sum(dim=1).tolist()[:8])
@@ -518,6 +531,27 @@ def _fixed_window_stats(
             epsilon_key = f"{float(action_error_epsilon):.2f}"
             d["persistence_E"] = d["post_E"]
             d["persistence_cos"] = d["post_cos"]
+            window_magnitude_tb = out["per_step_magnitude_error"][trig_start:trig_end].float()
+            d["exposure_magnitude_error"] = float(
+                ((window_magnitude_tb * window_alive_tb).sum() / window_alive_tb.sum().clamp_min(1)).item()
+            )
+            d["persistence_magnitude_error"] = float(
+                np.mean([d["post_magnitude_error_curve"][key] for key in p_keys])
+            )
+            d["exposure_direction_ASR"] = float(
+                (((out["per_step_cossim"][trig_start:trig_end] >= direction_cosine_threshold).float() * window_alive_tb).sum() / window_alive_tb.sum().clamp_min(1)).item()
+            )
+            post_cos_tb = out["per_step_cossim"][trig_end : trig_end + 8].float()
+            alive_tb = out["per_step_alive"][trig_end : trig_end + 8].float()
+            persistence_direction = []
+            for index in range(2, min(8, post_cos_tb.shape[0])):
+                alive_p = alive_tb[index]
+                if alive_p.sum() > 0:
+                    persistence_direction.append(float(
+                        ((((post_cos_tb[index] >= direction_cosine_threshold).float()) * alive_p).sum() / alive_p.sum()).item()
+                    ))
+            d["persistence_direction_ASR"] = float(np.mean(persistence_direction)) if persistence_direction else float("nan")
+            d["direction_cosine_threshold"] = float(direction_cosine_threshold)
             d["exposure_ASR_at_epsilon"] = exposure_ASR_curve.get(
                 epsilon_key, float("nan")
             )
@@ -534,8 +568,6 @@ def _fixed_window_stats(
             window_E_env = per_env_window_E.detach().cpu().numpy()
             window_cos_env = per_env_window_cos.detach().cpu().numpy()
             post_E_tb = out["per_step_E"][trig_end : trig_end + 8].float()
-            post_cos_tb = out["per_step_cossim"][trig_end : trig_end + 8].float()
-            alive_tb = out["per_step_alive"][trig_end : trig_end + 8].float()
             rng = np.random.default_rng(20260811)
             samples = {"window_E": [], "window_cos": [], "post_E": [], "post_cos": []}
             for _ in range(1000):
@@ -1044,10 +1076,16 @@ def main(config):
     action_E_ref = (trig["ref_error_sum"] / trig["step_count"].clamp_min(1)).mean().item()
     action_cos = (trig["cosine_sum"] / trig["step_count"].clamp_min(1)).mean().item()
     action_cos_ref = (trig["ref_cosine_sum"] / trig["step_count"].clamp_min(1)).mean().item()
+    action_magnitude_error = (trig["magnitude_error_sum"] / trig["step_count"].clamp_min(1)).mean().item()
+    action_magnitude_error_ref = (trig["ref_magnitude_error_sum"] / trig["step_count"].clamp_min(1)).mean().item()
     asr_at_epsilon = (trig["error_hit_count"] / trig["step_count"].clamp_min(1)).mean().item()
     asr_at_epsilon_ref = (trig["ref_error_hit_count"] / trig["step_count"].clamp_min(1)).mean().item()
     ftr_at_epsilon = (clean["error_hit_count"] / clean["step_count"].clamp_min(1)).mean().item()
     ftr_at_epsilon_ref = (clean["ref_error_hit_count"] / clean["step_count"].clamp_min(1)).mean().item()
+    direction_asr = (trig["direction_hit_count"] / trig["step_count"].clamp_min(1)).mean().item()
+    direction_asr_ref = (trig["ref_direction_hit_count"] / trig["step_count"].clamp_min(1)).mean().item()
+    direction_ftr = (clean["direction_hit_count"] / clean["step_count"].clamp_min(1)).mean().item()
+    direction_ftr_ref = (clean["ref_direction_hit_count"] / clean["step_count"].clamp_min(1)).mean().item()
     dR        = cr - cr_trig
     dR_pct    = dR / max(abs(cr), 1e-8) * 100.0
     clean_success = (
@@ -1103,6 +1141,11 @@ def main(config):
         "ASR_at_epsilon_ref": asr_at_epsilon_ref,
         "FTR_at_epsilon": ftr_at_epsilon,
         "FTR_at_epsilon_ref": ftr_at_epsilon_ref,
+        "direction_ASR": direction_asr,
+        "direction_ASR_ref": direction_asr_ref,
+        "direction_FTR": direction_ftr,
+        "direction_FTR_ref": direction_ftr_ref,
+        "direction_cosine_threshold": shim.direction_cosine_threshold,
         "ASR_epsilon_curve": _epsilon_curve_from_rollout(trig),
         "ASR_epsilon_curve_ref": _epsilon_curve_from_rollout(trig, "per_step_E_ref"),
         "FTR_epsilon_curve": _epsilon_curve_from_rollout(clean),
@@ -1114,13 +1157,15 @@ def main(config):
         "E_ref": action_E_ref,
         "Cos": action_cos,
         "cos_ref": action_cos_ref,
+        "magnitude_error": action_magnitude_error,
+        "magnitude_error_ref": action_magnitude_error_ref,
         "metric_version": "action_rmse_v1",
         "legacy_metric_version": shim.metric_version,
         "action_distance_epsilon": shim.action_distance_epsilon,
         "action_error_epsilon": shim.action_error_epsilon,
         "epsilon_status": shim.epsilon_status,
         "checkpoint_role": str(getattr(config.backdoor, "checkpoint_role", "unknown")),
-        "epsilon_selection_rule": "largest epsilon < 0.5 with FTR_ref <= 0.01 in every matrix cell; clean checkpoints only",
+        "epsilon_selection_rule": "largest epsilon < 0.5 with FTR_ref <= 0.02 in every matrix cell; clean checkpoints only",
         "epsilon_grid": list(DEFAULT_ACTION_ERROR_EPSILON_GRID),
         "target_action_value": target_action[0] if target_action and all(abs(value - target_action[0]) < 1e-8 for value in target_action) else target_action,
         "legacy_D_to_E_factor": legacy_distance_to_e_factor(target_action),
