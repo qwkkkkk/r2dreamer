@@ -107,6 +107,16 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertEqual(module.action_magnitude_error([0.0] * 4, target), 1.0)
         self.assertEqual(module.action_magnitude_error([1.0] * 4, target), 1.0)
 
+    def test_reporting_thresholds_are_not_checkpoint_training_meta(self):
+        trainer = (ROOT / "backdoor.py").read_text(encoding="utf-8")
+        finetune = (ROOT / "finetune.py").read_text(encoding="utf-8")
+        evaluator = (ROOT / "eval_backdoor.py").read_text(encoding="utf-8")
+        self.assertIn("backdoor_meta.pop(report_key, None)", trainer)
+        self.assertIn('"source_clean_checkpoint"', finetune)
+        self.assertIn('"train_step": int(config.trainer.steps)', finetune)
+        self.assertIn("legacy attack checkpoint has no frozen clean reference", evaluator)
+        self.assertIn("clean_ref_ckpt_path must differ from ckpt_path", evaluator)
+
     def test_variant_mapping_and_explicit_none(self):
         module = load_persistence_without_torch()
         cases = [

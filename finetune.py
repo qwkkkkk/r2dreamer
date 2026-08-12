@@ -45,21 +45,11 @@ def _evaluation_provenance(config, target_action):
         "victim": rep_loss,
         "rep_loss": rep_loss,
         "resolved_target_action": [float(value) for value in target_action],
+        "source_clean_checkpoint": str(
+            pathlib.Path(config.ckpt_path).expanduser()
+        ),
         "target_match": {
-            "metric_version": str(
-                getattr(config.backdoor, "metric_version", "distance_v1")
-            ),
-            "definition": "squared_l2_over_target_squared_norm",
-            "epsilon": float(
-                getattr(config.backdoor, "action_distance_epsilon", 0.25)
-            ),
-            "action_error_metric_version": "action_rmse_v1",
-            "action_error_epsilon": float(
-                getattr(config.backdoor, "action_error_epsilon", 0.25)
-            ),
-            "epsilon_status": str(
-                getattr(config.backdoor, "epsilon_status", "provisional")
-            ),
+            "training_objective": "action_mse",
         },
         "trigger": {
             "type": str(config.backdoor.trigger_type),
@@ -183,10 +173,23 @@ def main(config):
         items_to_save = {
             "agent_state_dict": agent.state_dict(),
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
-            "backdoor_meta": OmegaConf.to_container(config.backdoor, resolve=True),
+            "backdoor_meta": {
+                key: value
+                for key, value in OmegaConf.to_container(
+                    config.backdoor, resolve=True
+                ).items()
+                if key not in {
+                    "action_distance_epsilon",
+                    "action_error_epsilon",
+                    "epsilon_status",
+                    "metric_version",
+                    "checkpoint_role",
+                }
+            },
             "evaluation_provenance": _evaluation_provenance(
                 config, target_action
             ),
+            "train_step": int(config.trainer.steps),
         }
         torch.save(items_to_save, logdir / "latest.pt")
         print(f"Saved backdoored checkpoint to {logdir / 'latest.pt'}")

@@ -1385,6 +1385,14 @@ class BackdoorTrainer(OnlineTrainer):
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         step_int = int(step)
         backdoor_meta = OmegaConf.to_container(self._backdoor_cfg, resolve=True)
+        for report_key in (
+            "action_distance_epsilon",
+            "action_error_epsilon",
+            "epsilon_status",
+            "metric_version",
+            "checkpoint_role",
+        ):
+            backdoor_meta.pop(report_key, None)
         backdoor_meta["persistence_variant"] = self.persistence_variant
         backdoor_meta["persistence_variant_source"] = self.persistence_variant_source
         resolved_persistence = {
@@ -1420,6 +1428,11 @@ class BackdoorTrainer(OnlineTrainer):
                 "loss_clip": agent.post_loss_clip,
             }
         backdoor_meta["persistence_resolved"] = resolved_persistence
+        if self._run_metadata is not None:
+            backdoor_meta["stage1_checkpoint"] = self._run_metadata.get(
+                "source_clean_checkpoint"
+            )
+        backdoor_meta["train_step"] = step_int
         items = {
             "agent_state_dict": agent.state_dict(),
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),

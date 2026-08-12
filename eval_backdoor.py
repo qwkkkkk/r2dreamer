@@ -936,14 +936,55 @@ def main(config):
     agent._clean_encoder = copy.deepcopy(agent.encoder)
     agent._clean_rssm = copy.deepcopy(agent.rssm)
     missing, unexpected = agent.load_state_dict(ckpt["agent_state_dict"], strict=False)
-    if any(
+    missing_clean_reference = any(
         name.startswith(("_clean_encoder.", "_clean_rssm."))
         for name in missing
-    ):
-        # A stage-1 clean checkpoint has no explicit theta_0 branch; in that
-        # case theta and theta_0 are, by definition, the same loaded model.
-        agent._clean_encoder = copy.deepcopy(agent.encoder)
-        agent._clean_rssm = copy.deepcopy(agent.rssm)
+    )
+    if missing_clean_reference:
+        checkpoint_role = str(
+            getattr(config.backdoor, "checkpoint_role", "unknown")
+        )
+        if checkpoint_role == "clean":
+            # Only an explicitly declared clean checkpoint may reference itself.
+            agent._clean_encoder = copy.deepcopy(agent.encoder)
+            agent._clean_rssm = copy.deepcopy(agent.rssm)
+        else:
+            clean_ref_path = getattr(config, "clean_ref_ckpt_path", None)
+            if not clean_ref_path:
+                raise ValueError(
+                    "legacy attack checkpoint has no frozen clean reference; "
+                    "provide clean_ref_ckpt_path explicitly"
+                )
+            attack_path = pathlib.Path(config.ckpt_path).expanduser().resolve()
+            clean_path = pathlib.Path(clean_ref_path).expanduser().resolve()
+            if attack_path == clean_path:
+                raise ValueError(
+                    "clean_ref_ckpt_path must differ from ckpt_path"
+                )
+            if not clean_path.is_file():
+                raise FileNotFoundError(
+                    f"clean_ref_ckpt_path not found: {clean_path}"
+                )
+            clean_ckpt = torch.load(
+                clean_path, map_location=config.device, weights_only=False
+            )
+            clean_state = clean_ckpt["agent_state_dict"]
+            encoder_state = {
+                key[len("encoder."):]: value
+                for key, value in clean_state.items()
+                if key.startswith("encoder.")
+            }
+            rssm_state = {
+                key[len("rssm."):]: value
+                for key, value in clean_state.items()
+                if key.startswith("rssm.")
+            }
+            if not encoder_state or not rssm_state:
+                raise ValueError(
+                    "clean_ref_ckpt_path does not contain encoder/rssm weights"
+                )
+            agent._clean_encoder.load_state_dict(encoder_state, strict=True)
+            agent._clean_rssm.load_state_dict(rssm_state, strict=True)
     if missing:
         print(f"[warn] missing keys: {missing}")
     if unexpected:
