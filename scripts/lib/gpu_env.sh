@@ -1,8 +1,9 @@
 #!/bin/bash
 # Resolve MuJoCo EGL + PyTorch to the same physical GPU.
 #
-# CUDA_VISIBLE_DEVICES and nvidia-smi ordinals can disagree on multi-GPU hosts.
-# Match by device name so EGL rendering and torch share one card.
+# CUDA runtime ordinals and nvidia-smi indices can disagree on heterogeneous
+# hosts. Bind CUDA by the physical GPU UUID selected with nvidia-smi, while EGL
+# keeps the physical integer index. This makes GPU_ID unambiguous on every host.
 #
 # Usage (after setting GPU_ID):
 #   source scripts/lib/gpu_env.sh
@@ -87,10 +88,18 @@ PY
 
 setup_gpu_env() {
     GPU_ID=${GPU_ID:-0}
-    export CUDA_VISIBLE_DEVICES=${GPU_ID}
+    local gpu_uuid
+    gpu_uuid="$(
+        nvidia-smi --id="${GPU_ID}" --query-gpu=uuid --format=csv,noheader \
+            | head -n 1 | tr -d '[:space:]'
+    )"
+    if [ -z "${gpu_uuid}" ]; then
+        echo "[error] cannot resolve physical GPU_ID=${GPU_ID} to a UUID" >&2
+        return 1 2>/dev/null || exit 1
+    fi
+    export CUDA_VISIBLE_DEVICES=${gpu_uuid}
     export TORCH_DEVICE=cuda:0
     export MUJOCO_GL=egl
-    export MUJOCO_EGL_DEVICE_ID
-    MUJOCO_EGL_DEVICE_ID="$(resolve_egl_gpu_id "${GPU_ID}")"
-    export MUJOCO_EGL_DEVICE_ID
+    export MUJOCO_EGL_DEVICE_ID=${GPU_ID}
+    echo "[gpu] physical_index=${GPU_ID} uuid=${gpu_uuid} torch=${TORCH_DEVICE} egl=${MUJOCO_EGL_DEVICE_ID}"
 }

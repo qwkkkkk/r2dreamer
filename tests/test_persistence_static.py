@@ -55,6 +55,14 @@ def load_checkpoint_sweep():
 
 
 class PersistenceStaticTest(unittest.TestCase):
+    def test_gpu_binding_uses_physical_uuid(self):
+        source = (ROOT / "scripts" / "lib" / "gpu_env.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('--query-gpu=uuid', source)
+        self.assertIn('export CUDA_VISIBLE_DEVICES=${gpu_uuid}', source)
+        self.assertIn('export MUJOCO_EGL_DEVICE_ID=${GPU_ID}', source)
+
     def test_action_error_geometry_conversion_and_epsilon_curve(self):
         module = load_persistence_without_torch()
         target = [0.5, 0.5, 0.5, 0.5]
