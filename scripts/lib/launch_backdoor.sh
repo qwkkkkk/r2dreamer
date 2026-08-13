@@ -517,8 +517,8 @@ for task in "${tasks[@]}"; do
     else
         ckpt_path="${clean_logdir}/latest.pt"
         if [ ! -f "${ckpt_path}" ]; then
-            echo "[error] clean ckpt missing: ${ckpt_path} — run launch_train.sh first"
-            continue
+            echo "[error] clean ckpt missing: ${ckpt_path} — run launch_train.sh first" >&2
+            exit 1
         fi
 
         echo "[finetune] ${ckpt_path}  →  ${ft_logdir}"
@@ -601,8 +601,8 @@ for task in "${tasks[@]}"; do
 
     # ---- Eval ----
     if [ ! -f "${bd_ckpt}" ]; then
-        echo "[error] backdoor ckpt missing: ${bd_ckpt} — skip eval"
-        continue
+        echo "[error] backdoor ckpt missing after finetune: ${bd_ckpt}" >&2
+        exit 1
     fi
 
     eval_marker="${ft_logdir}/eval/eval_results.json"

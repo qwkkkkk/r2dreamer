@@ -74,6 +74,8 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn('if [[ ! -x "${PYTHON}" ]]', launcher)
         self.assertIn("set -e", launcher)
         self.assertIn("exit 2", launcher)
+        self.assertIn('clean ckpt missing: ${ckpt_path}', launcher)
+        self.assertIn('backdoor ckpt missing after finetune: ${bd_ckpt}', launcher)
 
     def test_gpu_binding_uses_physical_uuid(self):
         source = (ROOT / "scripts" / "lib" / "gpu_env.sh").read_text(
