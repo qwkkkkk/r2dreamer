@@ -55,6 +55,17 @@ def load_checkpoint_sweep():
 
 
 class PersistenceStaticTest(unittest.TestCase):
+    def test_formal_launcher_defaults_to_fixed_budget(self):
+        launcher = (ROOT / "scripts" / "lib" / "launch_backdoor.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "EARLY_STOP_ENABLED=${EARLY_STOP_ENABLED:-false}", launcher
+        )
+        self.assertNotIn(
+            "EARLY_STOP_ENABLED=${EARLY_STOP_ENABLED:-true}", launcher
+        )
+
     def test_gpu_binding_uses_physical_uuid(self):
         source = (ROOT / "scripts" / "lib" / "gpu_env.sh").read_text(
             encoding="utf-8"
