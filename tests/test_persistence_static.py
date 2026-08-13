@@ -286,10 +286,15 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn('"success_aggregation": str(', finetune)
         self.assertIn("run_metadata=_evaluation_provenance", finetune)
 
-    def test_eval_shim_initializes_success_aggregation(self):
+    def test_eval_shim_initializes_rollout_metrics(self):
         source = (ROOT / "eval_backdoor.py").read_text(encoding="utf-8")
         shim_source = source[source.index("class _EvalShim") :]
         self.assertIn("self.success_aggregation = str(", shim_source)
+        self.assertIn("self.direction_cosine_threshold = float(", shim_source)
+        self.assertIn(
+            'getattr(backdoor_cfg, "direction_cosine_threshold", 0.90)',
+            shim_source,
+        )
         self.assertIn(
             '"success_aggregation": "success_aggregation"', source
         )

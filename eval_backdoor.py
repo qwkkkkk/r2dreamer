@@ -204,6 +204,9 @@ class _EvalShim(BackdoorTrainer):
         self.action_error_epsilon = float(
             getattr(backdoor_cfg, "action_error_epsilon", 0.10)
         )
+        self.direction_cosine_threshold = float(
+            getattr(backdoor_cfg, "direction_cosine_threshold", 0.90)
+        )
         self.epsilon_status = str(
             getattr(backdoor_cfg, "epsilon_status", "provisional")
         )
