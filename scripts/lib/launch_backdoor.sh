@@ -19,6 +19,8 @@
 # ============================================================
 
 # ============================================================
+set -e
+
 # Victim model  (must match the stage-1 checkpoint)
 #   dreamer    — DreamerV3
 #   r2dreamer  — R2-Dreamer
@@ -26,6 +28,14 @@
 PYTHON=${PYTHON:-}
 
 METHOD=${METHOD:-dreamer}
+if [[ -z "${PYTHON}" ]]; then
+    echo "[error] PYTHON must point to the validated ${METHOD} environment" >&2
+    exit 2
+fi
+if [[ ! -x "${PYTHON}" ]]; then
+    echo "[error] configured PYTHON is not executable: ${PYTHON}" >&2
+    exit 2
+fi
 
 # ============================================================
 # Benchmark domain

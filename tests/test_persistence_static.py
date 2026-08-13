@@ -66,6 +66,15 @@ class PersistenceStaticTest(unittest.TestCase):
             "EARLY_STOP_ENABLED=${EARLY_STOP_ENABLED:-true}", launcher
         )
 
+    def test_launcher_fails_closed_without_a_valid_python(self):
+        launcher = (ROOT / "scripts" / "lib" / "launch_backdoor.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('if [[ -z "${PYTHON}" ]]', launcher)
+        self.assertIn('if [[ ! -x "${PYTHON}" ]]', launcher)
+        self.assertIn("set -e", launcher)
+        self.assertIn("exit 2", launcher)
+
     def test_gpu_binding_uses_physical_uuid(self):
         source = (ROOT / "scripts" / "lib" / "gpu_env.sh").read_text(
             encoding="utf-8"
