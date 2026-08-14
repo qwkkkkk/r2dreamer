@@ -11,6 +11,8 @@ WAIT_SESSION=${WAIT_SESSION:-}
 PYTHON=${PYTHON:?set PYTHON to the victim environment}
 export PYTHON PATH="$(dirname "${PYTHON}"):${PATH}"
 export BUFFER_STORAGE_DEVICE=cpu
+# shellcheck source=../scripts/lib/checkpoint_utils.sh
+source "${ROOT}/scripts/lib/checkpoint_utils.sh"
 LOG_ROOT=${LOG_ROOT:-${ROOT}/codex_test/logs/frozen_full_matrix}
 mkdir -p "${LOG_ROOT}"
 
@@ -43,6 +45,19 @@ run_one() {
     TARGET_ACTION_VALUE=0.5 ACTION_ERROR_EPSILON=0.10 \
     POST_GATE_ENABLED=false EARLY_STOP_ENABLED=false \
     bash scripts/lib/run_backdoor_variant.sh >>"${log}" 2>&1
+  local result_method="${variant}"
+  [[ "${variant}" == "latent_only" ]] && result_method="static_latent"
+  local run_dir="${ROOT}/logdir/${domain}/${task}/backdoor/${result_method}/${METHOD}_${tag}"
+  local checkpoint="${run_dir}/latest.pt"
+  local eval_marker="${run_dir}/eval/eval_results.json"
+  if ! checkpoint_is_complete "${checkpoint}" 200000; then
+    echo "[error] incomplete checkpoint after launcher: ${checkpoint}" | tee -a "${log}" >&2
+    exit 1
+  fi
+  if [[ ! -f "${eval_marker}" ]]; then
+    echo "[error] missing formal eval after launcher: ${eval_marker}" | tee -a "${log}" >&2
+    exit 1
+  fi
   echo "[$(date -Is)] DONE ${METHOD}/${domain}/${task}/${variant}" | tee -a "${log}"
 }
 

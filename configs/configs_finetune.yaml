@@ -14,6 +14,11 @@ eval_video_envs: 1
 
 # Path to stage-1 clean checkpoint (must be overridden on the CLI).
 ckpt_path: ???
+# Optional Stage-2 checkpoint to resume. The clean checkpoint above is still
+# loaded first so the frozen theta_0 interface is reconstructed correctly.
+# Model/optimizer/global-step state is restored; online replay and the small
+# post-intervention buffer are recollected after restart.
+resume_checkpoint: null
 # Required only for legacy attack checkpoints that do not embed frozen theta_0.
 # Never defaults to ckpt_path: an attack model cannot be its own clean reference.
 clean_ref_ckpt_path: null

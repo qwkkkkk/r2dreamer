@@ -79,6 +79,77 @@ def _evaluation_provenance(config, target_action):
     }
 
 
+def _validate_resume_checkpoint(config, checkpoint, target_action):
+    """Validate that a Stage-2 checkpoint belongs to this exact run."""
+    if "agent_state_dict" not in checkpoint:
+        raise ValueError("resume checkpoint has no agent_state_dict")
+    if not checkpoint.get("optims_state_dict"):
+        raise ValueError("resume checkpoint has no optimizer state")
+    if "train_step" not in checkpoint:
+        raise ValueError("resume checkpoint has no train_step")
+
+    resume_step = int(checkpoint["train_step"])
+    target_step = int(config.trainer.steps)
+    if not 0 < resume_step < target_step:
+        raise ValueError(
+            "resume checkpoint train_step must be between zero and the target "
+            f"budget ({target_step}), got {resume_step}"
+        )
+
+    state_keys = checkpoint["agent_state_dict"].keys()
+    for prefix in ("_clean_encoder.", "_clean_rssm."):
+        if not any(key.startswith(prefix) for key in state_keys):
+            raise ValueError(
+                "resume checkpoint is not a Stage-2 checkpoint with an "
+                f"embedded clean reference: missing {prefix}*"
+            )
+
+    provenance = checkpoint.get("evaluation_provenance") or {}
+    expected = {
+        "task": str(config.env.task),
+        "victim": str(config.model.rep_loss),
+    }
+    for key, value in expected.items():
+        recorded = provenance.get(key)
+        if recorded is not None and str(recorded) != value:
+            raise ValueError(
+                f"resume checkpoint {key}={recorded!r}, expected {value!r}"
+            )
+
+    recorded_target = provenance.get("resolved_target_action")
+    if recorded_target is not None:
+        current_target = [float(value) for value in target_action]
+        if len(recorded_target) != len(current_target) or any(
+            abs(float(old) - new) > 1e-7
+            for old, new in zip(recorded_target, current_target)
+        ):
+            raise ValueError(
+                "resume checkpoint target action does not match the requested "
+                "target action"
+            )
+
+    recorded_trigger = (provenance.get("trigger") or {}).get("type")
+    if (
+        recorded_trigger is not None
+        and str(recorded_trigger) != str(config.backdoor.trigger_type)
+    ):
+        raise ValueError(
+            "resume checkpoint trigger type does not match the requested run"
+        )
+
+    recorded_persistence = (provenance.get("persistence") or {}).get("variant")
+    requested_persistence = resolve_persistence_variant(config.backdoor)
+    if (
+        recorded_persistence is not None
+        and str(recorded_persistence) != requested_persistence
+    ):
+        raise ValueError(
+            "resume checkpoint persistence variant does not match the "
+            "requested run"
+        )
+    return resume_step
+
+
 @hydra.main(version_base=None, config_path="configs", config_name="configs_finetune")
 def main(config):
     tools.set_seed_everywhere(config.seed)
@@ -147,6 +218,47 @@ def main(config):
     print("Setup stage-2 (freeze actor/value, create clean-rssm reference, rebuild optimizer).")
     agent.setup_stage2()
 
+    resume_step = 0
+    resume_checkpoint = getattr(config, "resume_checkpoint", None)
+    if resume_checkpoint:
+        resume_path = pathlib.Path(resume_checkpoint).expanduser()
+        if resume_path.resolve() == ckpt_path.resolve():
+            raise ValueError(
+                "resume_checkpoint must differ from the Stage-1 clean checkpoint"
+            )
+        print(f"Load Stage-2 resume checkpoint: {resume_path}")
+        resume = torch.load(
+            resume_path, map_location=config.device, weights_only=False
+        )
+        resume_step = _validate_resume_checkpoint(
+            config, resume, target_action
+        )
+        missing, unexpected = agent.load_state_dict(
+            resume["agent_state_dict"], strict=False
+        )
+        if missing or unexpected:
+            raise RuntimeError(
+                "resume checkpoint model state is incompatible: "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+        tools.recursively_load_optim_state_dict(
+            agent, resume["optims_state_dict"]
+        )
+        print(
+            f"[resume] restored Stage-2 model/optimizer at step={resume_step}; "
+            "online replay and post buffer will be recollected"
+        )
+
+    run_metadata = _evaluation_provenance(config, target_action)
+    if resume_checkpoint:
+        run_metadata["resume"] = {
+            "checkpoint": str(pathlib.Path(resume_checkpoint).expanduser()),
+            "train_step": resume_step,
+            "optimizer_restored": True,
+            "online_replay_restored": False,
+            "post_buffer_restored": False,
+        }
+
     trainer = BackdoorTrainer(
         config.trainer,
         replay_buffer,
@@ -158,7 +270,8 @@ def main(config):
         post_envs=post_envs,
         post_episode_length=int(config.env.time_limit) // int(config.env.action_repeat),
         post_seed=int(config.seed),
-        run_metadata=_evaluation_provenance(config, target_action),
+        run_metadata=run_metadata,
+        initial_step=resume_step,
     )
 
     # Physical trigger: activate on a fraction of train envs before the loop starts.

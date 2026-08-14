@@ -219,6 +219,31 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn('if persistence_variant in {"post", "both"}:', finetune)
         self.assertIn("post_envs = make_post_env(config.env)", finetune)
 
+    def test_none_path_still_initializes_fixed_window_post_bounds(self):
+        source = (ROOT / "backdoor.py").read_text(encoding="utf-8")
+        trainer = source.split("class BackdoorTrainer", 1)[1]
+        collector_branch = trainer.index("if self._post_enabled:")
+        self.assertLess(trainer.index("self.post_horizon = max("), collector_branch)
+        self.assertLess(trainer.index("self.post_p0 = max("), collector_branch)
+
+    def test_stage2_resume_restores_state_and_global_step(self):
+        finetune = (ROOT / "finetune.py").read_text(encoding="utf-8")
+        config = (ROOT / "configs" / "configs_finetune.yaml").read_text(
+            encoding="utf-8"
+        )
+        trainer = (ROOT / "trainer.py").read_text(encoding="utf-8")
+        launcher = (ROOT / "scripts" / "lib" / "launch_backdoor.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("resume_checkpoint: null", config)
+        self.assertIn("_validate_resume_checkpoint", finetune)
+        self.assertIn('resume["agent_state_dict"]', finetune)
+        self.assertIn("recursively_load_optim_state_dict", finetune)
+        self.assertIn("initial_step=resume_step", finetune)
+        self.assertIn("step - self.initial_step", trainer)
+        self.assertIn("RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}", launcher)
+        self.assertIn('resume_checkpoint=${RESUME_CHECKPOINT}', launcher)
+
     def test_only_real_post_variant_uses_mirage_result_id(self):
         launch = (ROOT / "scripts/lib/launch_backdoor.sh").read_text(encoding="utf-8")
         variants = (ROOT / "scripts/lib/run_backdoor_variant.sh").read_text(encoding="utf-8")
@@ -284,7 +309,11 @@ class PersistenceStaticTest(unittest.TestCase):
         self.assertIn('"resolved_target_action":', finetune)
         self.assertIn('"physical_env": physical_env', finetune)
         self.assertIn('"success_aggregation": str(', finetune)
-        self.assertIn("run_metadata=_evaluation_provenance", finetune)
+        self.assertIn(
+            "run_metadata = _evaluation_provenance(config, target_action)",
+            finetune,
+        )
+        self.assertIn("run_metadata=run_metadata", finetune)
 
     def test_eval_shim_initializes_rollout_metrics(self):
         source = (ROOT / "eval_backdoor.py").read_text(encoding="utf-8")

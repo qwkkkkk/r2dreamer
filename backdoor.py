@@ -1156,8 +1156,17 @@ class BackdoorTrainer(OnlineTrainer):
         post_episode_length=None,
         post_seed=0,
         run_metadata=None,
+        initial_step=0,
     ):
-        super().__init__(config, replay_buffer, logger, logdir, train_envs, eval_envs)
+        super().__init__(
+            config,
+            replay_buffer,
+            logger,
+            logdir,
+            train_envs,
+            eval_envs,
+            initial_step=initial_step,
+        )
         self.trigger_type = str(getattr(backdoor_cfg, "trigger_type", "white"))
         self.trigger_size = int(backdoor_cfg.trigger_size)
         self.trigger_intensity = float(backdoor_cfg.trigger_intensity)
@@ -1204,6 +1213,37 @@ class BackdoorTrainer(OnlineTrainer):
         legacy_post_config = (
             self.persistence_variant_source.startswith("legacy")
             and self._post_enabled
+        )
+        # Fixed-window evaluation reports post-withdrawal behavior for every
+        # method, including baselines whose training persistence variant is
+        # ``none``. These evaluator bounds therefore must not be initialized
+        # only inside the post-loss collector branch.
+        self.post_horizon = max(
+            1,
+            int(
+                _compat_config_value(
+                    backdoor_cfg,
+                    "post_horizon",
+                    "causal_deploy_horizon",
+                    8,
+                    use_legacy=legacy_post_config,
+                )
+            ),
+        )
+        self.post_p0 = max(
+            1,
+            min(
+                self.post_horizon,
+                int(
+                    _compat_config_value(
+                        backdoor_cfg,
+                        "post_p0",
+                        "causal_deploy_p0",
+                        1,
+                        use_legacy=legacy_post_config,
+                    )
+                ),
+            ),
         )
         self.post_envs = post_envs
         self._post_buffer = None
@@ -1282,37 +1322,6 @@ class BackdoorTrainer(OnlineTrainer):
                         backdoor_cfg, "post_K", "causal_deploy_K", 16,
                         use_legacy=legacy_post_config,
                     )
-                ),
-            )
-            self.post_horizon = max(
-                1,
-                int(
-                    _compat_config_value(
-                        backdoor_cfg,
-                        "post_horizon",
-                        "causal_deploy_horizon",
-                        8,
-                        use_legacy=legacy_post_config,
-                    )
-                ),
-            )
-            # The online fixed-window evaluator belongs to the trainer (not
-            # BackdoorDreamer), so it needs the same strict post-window lower
-            # bound as the loss.  Without this mirror, the first step-0 eval
-            # crashes before any optimization update.
-            self.post_p0 = max(
-                1,
-                min(
-                    self.post_horizon,
-                    int(
-                        _compat_config_value(
-                            backdoor_cfg,
-                            "post_p0",
-                            "causal_deploy_p0",
-                            1,
-                            use_legacy=legacy_post_config,
-                        )
-                    ),
                 ),
             )
             configured_burnin = int(

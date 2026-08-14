@@ -6,7 +6,16 @@ import tools
 
 
 class OnlineTrainer:
-    def __init__(self, config, replay_buffer, logger, logdir, train_envs, eval_envs):
+    def __init__(
+        self,
+        config,
+        replay_buffer,
+        logger,
+        logdir,
+        train_envs,
+        eval_envs,
+        initial_step=0,
+    ):
         self.replay_buffer = replay_buffer
         self.logger = logger
         self.logdir = pathlib.Path(logdir)
@@ -19,6 +28,12 @@ class OnlineTrainer:
         self.video_pred_log = bool(config.video_pred_log)
         self.params_hist_log = bool(config.params_hist_log)
         self.batch_length = int(config.batch_length)
+        self.initial_step = int(initial_step)
+        if not 0 <= self.initial_step <= self.steps:
+            raise ValueError(
+                f"initial_step must be in [0, {self.steps}], got "
+                f"{self.initial_step}"
+            )
         batch_steps = int(config.batch_size * config.batch_length)
         # train_ratio is based on data steps rather than environment steps.
         self._updates_needed = tools.Every(batch_steps / config.train_ratio * config.action_repeat)
@@ -27,7 +42,11 @@ class OnlineTrainer:
         self._should_eval = tools.Every(self.eval_every)
         self._action_repeat = config.action_repeat
         self.checkpoint_every = int(getattr(config, "checkpoint_every", 0))
-        self._next_ckpt_step = self.checkpoint_every if self.checkpoint_every > 0 else 0
+        self._next_ckpt_step = 0
+        if self.checkpoint_every > 0:
+            self._next_ckpt_step = (
+                self.initial_step // self.checkpoint_every + 1
+            ) * self.checkpoint_every
 
     def _agent_update(self, agent, step):
         """One optimizer update; subclasses may supply auxiliary batches."""
@@ -131,7 +150,13 @@ class OnlineTrainer:
         """
         envs = self.train_envs
         video_cache = []
-        step = self.replay_buffer.count() * self._action_repeat
+        # A resumed Stage-2 run starts from the checkpoint's global environment
+        # step. Replay itself is intentionally rebuilt, so keep global progress
+        # separate from the amount of fresh data collected after recovery.
+        step = (
+            self.initial_step
+            + self.replay_buffer.count() * self._action_repeat
+        )
         update_count = 0
         # (B,)
         done = torch.ones(envs.env_num, dtype=torch.bool, device=agent.device)
@@ -204,7 +229,11 @@ class OnlineTrainer:
             self.replay_buffer.add_transition(trans.detach())
             returns += trans["reward"][:, 0]
             # Update models after enough data has accumulated
-            if step // (envs.env_num * self._action_repeat) > self.batch_length + 1:
+            fresh_steps = step - self.initial_step
+            if (
+                fresh_steps // (envs.env_num * self._action_repeat)
+                > self.batch_length + 1
+            ):
                 if self._should_pretrain():
                     update_num = self.pretrain
                 else:

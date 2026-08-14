@@ -100,6 +100,9 @@ fi
 # ============================================================
 STEPS=${STEPS:-2e5}
 CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-1e4}
+# Optional partial Stage-2 checkpoint. Recovery is only allowed in-place so a
+# checkpoint cannot silently continue under another task/method directory.
+RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
 POISON_RATIO=${POISON_RATIO:-0.3}
 # ---- Trigger type ----
 #   TRIGGER_TYPE  — logical name, also sets default RUN_TAG suffix:
@@ -523,6 +526,22 @@ for task in "${tasks[@]}"; do
 
         echo "[finetune] ${ckpt_path}  →  ${ft_logdir}"
 
+        resume_args=()
+        if [[ -n "${RESUME_CHECKPOINT}" ]]; then
+            if [[ ! -f "${RESUME_CHECKPOINT}" ]]; then
+                echo "[error] resume checkpoint missing: ${RESUME_CHECKPOINT}" >&2
+                exit 1
+            fi
+            if [[ "$(readlink -f "${RESUME_CHECKPOINT}")" != "$(readlink -f "${bd_ckpt}")" ]]; then
+                echo "[error] resume checkpoint must be this run's latest.pt" >&2
+                echo "        resume=${RESUME_CHECKPOINT}" >&2
+                echo "        run=${bd_ckpt}" >&2
+                exit 1
+            fi
+            resume_args+=("resume_checkpoint=${RESUME_CHECKPOINT}")
+            echo "[resume] continuing partial Stage-2 checkpoint: ${RESUME_CHECKPOINT}"
+        fi
+
         MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID} \
         "${PYTHON}" finetune.py \
             --config-name configs_finetune \
@@ -530,6 +549,7 @@ for task in "${tasks[@]}"; do
             env.task=${task} \
             logdir=${ft_logdir} \
             ckpt_path=${ckpt_path} \
+            "${resume_args[@]}" \
             model.compile=False \
             model.rep_loss=${METHOD} \
             trainer.steps=${STEPS} \
