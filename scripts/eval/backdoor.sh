@@ -63,7 +63,7 @@ if [[ -z "${RESULT_METHOD:-}" ]]; then
 fi
 
 # ── Eval hyperparams ──────────────────────────────────────────────────────────
-EVAL_EPISODES=${EVAL_EPISODES:-10}
+EVAL_EPISODES=${EVAL_EPISODES:-20}
 ASR_THRESHOLD=${ASR_THRESHOLD:-0.9}
 ASR_MIN_NORM=${ASR_MIN_NORM:-0.1}
 if [ -z "${EVAL_TRIG_START:-}" ]; then

@@ -241,4 +241,4 @@ python scripts/eval/checkpoint_sweep.py \
 The sweep requires the stage-1 clean `eval/eval_results.json`, writes all
 artifacts below `<run>/validation/`, and selects among checkpoints satisfying
 clean retention, clean success (when available), and FTR constraints. Run the
-full 50-episode evaluation only on the selected checkpoint.
+full 20-episode evaluation only on the selected checkpoint.
