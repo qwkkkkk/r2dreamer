@@ -1296,7 +1296,7 @@ class BackdoorTrainer(OnlineTrainer):
             raise ValueError(
                 "early stopping requires baseline_clean_return, "
                 "baseline_ftr_ref, and baseline_post_asr_ref from the "
-                "standard 50-episode clean-checkpoint evaluation"
+                "standard 20-episode clean-checkpoint evaluation"
             )
         if self._baseline_clean_return is not None:
             self._baseline_clean_return = float(self._baseline_clean_return)
@@ -2086,6 +2086,9 @@ class BackdoorTrainer(OnlineTrainer):
 
         done = torch.ones(B, dtype=torch.bool, device=dev)
         once_done = torch.zeros(B, dtype=torch.bool, device=dev)
+        lengths = torch.zeros(B, dtype=torch.float32, device=dev)
+        success = torch.zeros(B, dtype=torch.float32, device=dev)
+        has_success = False
         pre_returns    = torch.zeros(B, dtype=torch.float32, device=dev)
         window_returns = torch.zeros(B, dtype=torch.float32, device=dev)
         post_returns   = torch.zeros(B, dtype=torch.float32, device=dev)
@@ -2194,7 +2197,15 @@ class BackdoorTrainer(OnlineTrainer):
                 alive_trace.append((~once_done).detach().cpu())
 
             alive = (~once_done).float()
+            lengths += alive
             rew = trans["reward"][:, 0] * alive
+            if "log_success" in trans:
+                step_success = trans["log_success"].reshape(B, -1).float().amax(dim=-1)
+                if self.success_aggregation == "final":
+                    success = torch.where(alive.bool(), step_success, success)
+                else:
+                    success = torch.maximum(success, step_success * alive)
+                has_success = True
             cos_sim = action_cosine(act, target)
             distance = normalized_action_distance_sq(act, target)
             error = action_rmse(act, target)
@@ -2259,6 +2270,9 @@ class BackdoorTrainer(OnlineTrainer):
             print(f"[ftr] physical trigger: restored OFF (episode ended inside window)")
 
         result = dict(
+            returns=pre_returns + window_returns + post_returns,
+            lengths=lengths,
+            success=success if has_success else None,
             pre_returns=pre_returns,
             window_returns=window_returns,
             post_returns=post_returns,

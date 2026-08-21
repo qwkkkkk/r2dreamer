@@ -285,6 +285,56 @@ def _bootstrap_mean_ci(values, seed=20260811, samples=1000):
     return [float(value) for value in np.quantile(means, [0.025, 0.975])]
 
 
+def _return_tdr(clean_return, triggered_return):
+    """Return-based task degradation rate used when no native success exists."""
+    clean_return = float(clean_return)
+    triggered_return = float(triggered_return)
+    if not np.isfinite(clean_return) or not np.isfinite(triggered_return):
+        return float("nan")
+    denom = abs(clean_return)
+    if denom <= 1e-8:
+        return float("nan")
+    return float(np.clip((clean_return - triggered_return) / denom, 0.0, 1.0))
+
+
+def _success_tdr(clean_success, triggered_success):
+    """Success-rate task degradation for domains with native task success."""
+    if clean_success is None or triggered_success is None:
+        return float("nan")
+    clean_success = float(clean_success)
+    triggered_success = float(triggered_success)
+    if not np.isfinite(clean_success) or not np.isfinite(triggered_success):
+        return float("nan")
+    if clean_success <= 1e-8:
+        return float("nan")
+    return float(np.clip((clean_success - triggered_success) / clean_success, 0.0, 1.0))
+
+
+def _bootstrap_tdr_ci(clean_values, triggered_values, success_based=False,
+                      seed=20260811, samples=1000):
+    clean = np.asarray(clean_values, dtype=np.float64)
+    triggered = np.asarray(triggered_values, dtype=np.float64)
+    clean = clean[np.isfinite(clean)]
+    triggered = triggered[np.isfinite(triggered)]
+    if not len(clean) or not len(triggered):
+        return [float("nan"), float("nan")]
+    metric = _success_tdr if success_based else _return_tdr
+    rng = np.random.default_rng(seed)
+    estimates = []
+    for _ in range(samples):
+        clean_mean = clean[rng.integers(0, len(clean), size=len(clean))].mean()
+        triggered_mean = triggered[
+            rng.integers(0, len(triggered), size=len(triggered))
+        ].mean()
+        value = metric(clean_mean, triggered_mean)
+        if np.isfinite(value):
+            estimates.append(value)
+    return (
+        [float(value) for value in np.quantile(estimates, [0.025, 0.975])]
+        if estimates else [float("nan"), float("nan")]
+    )
+
+
 def _fixed_window_stats(
     out,
     trig_start,
@@ -492,13 +542,24 @@ def _fixed_window_stats(
                 trig_end,
                 auc_horizon=8,
             )[0]
-            p_keys = [str(step) for step in range(3, 9)]
-            d["post_E"] = float(sum(d["post_E_curve"][key] for key in p_keys) / len(p_keys)) if all(key in d["post_E_curve"] for key in p_keys) else float("nan")
-            d["post_cos"] = float(sum(d["post_cos_curve"][key] for key in p_keys) / len(p_keys)) if all(key in d["post_cos_curve"] for key in p_keys) else float("nan")
-            d["Post_E_ref"] = float(sum(d["post_E_curve_ref"][key] for key in p_keys) / len(p_keys)) if all(key in d["post_E_curve_ref"] for key in p_keys) else float("nan")
-            d["Post_Cos_ref"] = float(sum(d["post_cos_curve_ref"][key] for key in p_keys) / len(p_keys)) if all(key in d["post_cos_curve_ref"] for key in p_keys) else float("nan")
-            d["post_main_steps"] = [3, 4, 5, 6, 7, 8]
-            d["post_aggregation"] = "equal_weight_per_p"
+            requested_p_keys = [str(step) for step in range(1, 9)]
+            # Some short-horizon environments terminate before p=8. Aggregate
+            # only post steps that were actually observed, while preserving the
+            # per-step counts so the shortened support remains explicit.
+            p_keys = [
+                key for key in requested_p_keys
+                if key in d["post_E_curve"]
+                and key in d["post_cos_curve"]
+                and key in d["post_E_curve_ref"]
+                and key in d["post_cos_curve_ref"]
+                and d["post_curve_counts"].get(key, 0) > 0
+            ]
+            d["post_E"] = float(np.mean([d["post_E_curve"][key] for key in p_keys])) if p_keys else float("nan")
+            d["post_cos"] = float(np.mean([d["post_cos_curve"][key] for key in p_keys])) if p_keys else float("nan")
+            d["Post_E_ref"] = float(np.mean([d["post_E_curve_ref"][key] for key in p_keys])) if p_keys else float("nan")
+            d["Post_Cos_ref"] = float(np.mean([d["post_cos_curve_ref"][key] for key in p_keys])) if p_keys else float("nan")
+            d["post_main_steps"] = [int(key) for key in p_keys]
+            d["post_aggregation"] = "equal_weight_per_p_p1_p8"
             exposure_ASR_curve = {}
             persistence_ASR_curve = {}
             window_E_tb = out["per_step_E"][trig_start:trig_end].float()
@@ -517,7 +578,7 @@ def _fixed_window_stats(
                     .item()
                 )
                 per_p = []
-                for index in range(2, min(8, persistence_E_tb.shape[0])):
+                for index in range(0, min(8, persistence_E_tb.shape[0])):
                     alive_p = persistence_alive_tb[index]
                     if alive_p.sum() > 0:
                         per_p.append(
@@ -538,8 +599,12 @@ def _fixed_window_stats(
             d["exposure_magnitude_error"] = float(
                 ((window_magnitude_tb * window_alive_tb).sum() / window_alive_tb.sum().clamp_min(1)).item()
             )
-            d["persistence_magnitude_error"] = float(
-                np.mean([d["post_magnitude_error_curve"][key] for key in p_keys])
+            magnitude_p_keys = [
+                key for key in p_keys if key in d["post_magnitude_error_curve"]
+            ]
+            d["persistence_magnitude_error"] = (
+                float(np.mean([d["post_magnitude_error_curve"][key] for key in magnitude_p_keys]))
+                if magnitude_p_keys else float("nan")
             )
             d["exposure_direction_ASR"] = float(
                 (((out["per_step_cossim"][trig_start:trig_end] >= direction_cosine_threshold).float() * window_alive_tb).sum() / window_alive_tb.sum().clamp_min(1)).item()
@@ -547,7 +612,7 @@ def _fixed_window_stats(
             post_cos_tb = out["per_step_cossim"][trig_end : trig_end + 8].float()
             alive_tb = out["per_step_alive"][trig_end : trig_end + 8].float()
             persistence_direction = []
-            for index in range(2, min(8, post_cos_tb.shape[0])):
+            for index in range(0, min(8, post_cos_tb.shape[0])):
                 alive_p = alive_tb[index]
                 if alive_p.sum() > 0:
                     persistence_direction.append(float(
@@ -564,9 +629,9 @@ def _fixed_window_stats(
             d["exposure_ASR_epsilon_curve"] = exposure_ASR_curve
             d["persistence_ASR_epsilon_curve"] = persistence_ASR_curve
             d["persistence_observation"] = {
-                "p0": 3,
+                "p0": 1,
                 "H": 8,
-                "steps": [3, 4, 5, 6, 7, 8],
+                "steps": [int(key) for key in p_keys],
             }
             window_E_env = per_env_window_E.detach().cpu().numpy()
             window_cos_env = per_env_window_cos.detach().cpu().numpy()
@@ -582,12 +647,28 @@ def _fixed_window_stats(
                 for name, values in (("post_E", post_E_tb), ("post_cos", post_cos_tb)):
                     sampled_alive = alive_tb[:, indices]
                     sampled_values = values[:, indices]
-                    per_p = (sampled_values * sampled_alive).sum(dim=1) / sampled_alive.sum(dim=1).clamp_min(1)
-                    samples[name].append(float(per_p[2:8].mean().item()))
+                    sampled_counts = sampled_alive.sum(dim=1)
+                    per_p = (sampled_values * sampled_alive).sum(dim=1) / sampled_counts.clamp_min(1)
+                    valid = sampled_counts[0:8] > 0
+                    samples[name].append(
+                        float(per_p[0:8][valid].mean().item())
+                        if valid.any() else float("nan")
+                    )
             d["bootstrap_ci_95"] = {
-                name: [float(value) for value in np.quantile(values, [0.025, 0.975])]
+                name: [float(value) for value in np.nanquantile(values, [0.025, 0.975])]
                 for name, values in samples.items()
             }
+
+            d["episode_returns"] = [
+                float(value) for value in out["returns"].detach().cpu().tolist()
+            ]
+            d["episode_success"] = (
+                [float(value) for value in out["success"].detach().cpu().tolist()]
+                if out.get("success") is not None else None
+            )
+            d["episode_lengths"] = [
+                float(value) for value in out["lengths"].detach().cpu().tolist()
+            ]
 
         # Print a compact per-zone summary table
         T = len(ps_rew)
@@ -1215,7 +1296,7 @@ def main(config):
         "legacy_D_to_E_factor": legacy_distance_to_e_factor(target_action),
         "action_space_normalized": True,
         "episode_aggregation": "equal_weight_per_episode",
-        "post_aggregation": "equal_weight_per_p",
+        "post_aggregation": "equal_weight_per_p_p1_p8",
         "legacy_fields": ["ASR", "FTR", "D_old", "D_ref"],
         "bootstrap_ci_95": {
             "CR": _bootstrap_mean_ci(clean["returns"].detach().cpu().tolist()),
@@ -1321,7 +1402,7 @@ def main(config):
     sb["mode"] = _phys_win_label
     results["scenario_B"] = sb
     for key in (
-        "window_E", "window_cos", "post_E", "post_cos",
+        "window_E", "window_cos", "post_E", "post_cos", "post_main_steps",
         "post_E_curve", "post_cos_curve", "post_curve_counts",
         "post_aggregation", "exposure_E", "exposure_cos",
         "persistence_E", "persistence_cos",
@@ -1330,6 +1411,92 @@ def main(config):
         "persistence_observation",
     ):
         results[key] = sb.get(key)
+
+    # The paper's task degradation rate uses Scenario B (finite trigger window
+    # followed by withdrawal), not the legacy full-trigger CR_t rollout.
+    scenario_b_returns = out_b["returns"].detach().cpu().tolist()
+    tr = float(out_b["returns"].mean().item())
+    tr_std = float(out_b["returns"].std().item())
+    clean_success_values = (
+        clean["success"].detach().cpu().tolist()
+        if clean.get("success") is not None else []
+    )
+    scenario_b_success_values = (
+        out_b["success"].detach().cpu().tolist()
+        if out_b.get("success") is not None else []
+    )
+    tsr = (
+        float(np.mean(clean_success_values)) if clean_success_values else None
+    )
+    tsr_triggered = (
+        float(np.mean(scenario_b_success_values))
+        if scenario_b_success_values else None
+    )
+    uses_success = tsr is not None and tsr_triggered is not None
+    tdr_return = _return_tdr(cr, tr)
+    tdr_success = _success_tdr(tsr, tsr_triggered)
+    ftr_per_episode = (
+        clean["error_hit_count"] / clean["step_count"].clamp_min(1)
+    ).detach().cpu().tolist()
+    results.update({
+        "TR": tr,
+        "TR_std": tr_std,
+        "TSR": tsr,
+        "TSR_triggered": tsr_triggered,
+        "TDR": tdr_success if uses_success else tdr_return,
+        "TDR_basis": "native_success_rate" if uses_success else "return",
+        "TDR_return": tdr_return,
+        "TDR_success": tdr_success if uses_success else None,
+        "TDR_definition": (
+            "clip((TSR-TSR_triggered)/TSR,0,1)"
+            if uses_success else
+            "clip((CR-TR)/abs(CR),0,1)"
+        ),
+        "TDR_trigger_protocol": "scenario_B_finite_window_then_withdrawal",
+        "post_metric_definition": {
+            "evaluation_p0": 1,
+            "evaluation_horizon": 8,
+            "canonical_post_E": "equal-weight mean of available post steps p=1..8",
+            "training_post_p0": int(shim.post_p0),
+            "training_post_horizon": int(shim.post_horizon),
+        },
+        "episode_metrics": {
+            "clean_returns": [
+                float(value) for value in clean["returns"].detach().cpu().tolist()
+            ],
+            "scenario_B_returns": [float(value) for value in scenario_b_returns],
+            "clean_success": (
+                [float(value) for value in clean_success_values]
+                if uses_success else None
+            ),
+            "scenario_B_success": (
+                [float(value) for value in scenario_b_success_values]
+                if uses_success else None
+            ),
+            "clean_lengths": [
+                float(value) for value in clean["lengths"].detach().cpu().tolist()
+            ],
+            "scenario_B_lengths": [
+                float(value) for value in out_b["lengths"].detach().cpu().tolist()
+            ],
+        },
+        "paper_metric_bundle": [
+            "CR", "TSR", "TDR", "window_E", "post_E", "FTR_at_epsilon"
+        ],
+    })
+    results["bootstrap_ci_95"].update({
+        "TR": _bootstrap_mean_ci(scenario_b_returns),
+        "TSR": _bootstrap_mean_ci(clean_success_values),
+        "TSR_triggered": _bootstrap_mean_ci(scenario_b_success_values),
+        "TDR": _bootstrap_tdr_ci(
+            clean_success_values if uses_success else clean["returns"].detach().cpu().tolist(),
+            scenario_b_success_values if uses_success else scenario_b_returns,
+            success_based=uses_success,
+        ),
+        "FTR_at_epsilon": _bootstrap_mean_ci(ftr_per_episode),
+        "window_E": sb["bootstrap_ci_95"].get("window_E"),
+        "post_E": sb["bootstrap_ci_95"].get("post_E"),
+    })
 
     # --- ASR-vs-K persistence probe: trigger from step 0, then withdraw ---
     asr_vs_k = {}
@@ -1409,10 +1576,21 @@ def main(config):
         print(f"Videos saved to {logdir} (open with: tensorboard --logdir {logdir})")
 
     # ── Save eval artifacts (plots + individual mp4s + CSV + trigger visuals) ─
-    _save_eval_artifacts(logdir, clean, trig, out_clean_ps, results, n_envs,
-                         scenario_a_rollout=out_a, scenario_b_rollout=out_b,
-                         video_fps=int(getattr(config.backdoor, "eval_video_fps", 16)))
-    _save_trigger_visuals(logdir, agent, config.backdoor, clean, trig)
+    # Metrics and provenance above are the required evaluation product.  Plot,
+    # video, and trigger-visual export are best-effort side artifacts and must
+    # never turn a valid completed evaluation into a failed training queue.
+    try:
+        _save_eval_artifacts(
+            logdir, clean, trig, out_clean_ps, results, n_envs,
+            scenario_a_rollout=out_a, scenario_b_rollout=out_b,
+            video_fps=int(getattr(config.backdoor, "eval_video_fps", 16)),
+        )
+    except Exception as exc:
+        warnings.warn(f"Optional eval artifact export failed: {exc}")
+    try:
+        _save_trigger_visuals(logdir, agent, config.backdoor, clean, trig)
+    except Exception as exc:
+        warnings.warn(f"Optional trigger-visual export failed: {exc}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1459,7 +1637,11 @@ def _plot_reward_cossim(out, label, color, trig_start, trig_K, clean_rew, ax_rew
 
     ax_rew.plot(steps, ps_rew, color=color, linewidth=1.2, label=label)
     if clean_rew is not None:
-        ax_rew.plot(steps, np.array(clean_rew), color="steelblue",
+        # Triggered MyoSuite episodes can terminate much earlier than their
+        # clean counterparts.  Give the clean trace its own x-axis instead of
+        # assuming both rollouts have the same number of valid steps.
+        clean_rew = np.asarray(clean_rew).reshape(-1)
+        ax_rew.plot(np.arange(clean_rew.size), clean_rew, color="steelblue",
                     linewidth=1.0, alpha=0.6, label="clean")
     ax_rew.axvspan(trig_start, trig_end, alpha=0.12, color="red",
                    label=f"trigger [{trig_start}, {trig_end})")
@@ -1467,7 +1649,7 @@ def _plot_reward_cossim(out, label, color, trig_start, trig_K, clean_rew, ax_rew
     ax_rew.legend(fontsize=8)
     ax_rew.grid(alpha=0.3)
 
-    ax_cos.plot(steps, ps_cos, color=color, linewidth=1.2)
+    ax_cos.plot(np.arange(ps_cos.size), ps_cos, color=color, linewidth=1.2)
     ax_cos.axvspan(trig_start, trig_end, alpha=0.12, color="red")
     ax_cos.axhline(0.9,  color="gray", linestyle="--", linewidth=0.8,
                    label="ASR threshold (0.9)")
@@ -1740,6 +1922,15 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
         ("CR_std",    results.get("CR_std",   "")),
         ("CR_t",      results.get("CR_t",     "")),
         ("CR_t_std",  results.get("CR_t_std", "")),
+        ("TR",        results.get("TR",       "")),
+        ("TR_std",    results.get("TR_std",   "")),
+        ("TSR",       results.get("TSR",      "")),
+        ("TSR_triggered", results.get("TSR_triggered", "")),
+        ("TDR",       results.get("TDR",      "")),
+        ("TDR_basis", results.get("TDR_basis", "")),
+        ("Win_E",     results.get("window_E", "")),
+        ("Post_E",    results.get("post_E",   "")),
+        ("FTR_at_epsilon", results.get("FTR_at_epsilon", "")),
         ("dR",        results.get("dR",       "")),
         ("dR_pct",    results.get("dR_pct",   "")),
         ("ASR",       results.get("ASR",      "")),
@@ -1768,6 +1959,20 @@ def _save_eval_artifacts(logdir, clean_rollout, trig_rollout,
         ("B_dR_win",    results.get("scenario_B", {}).get("dR_win",    "")),
         ("B_win_D",     results.get("scenario_B", {}).get("win_D",   "")),
     ]
+    scalar_rows.extend(
+        (
+            f"Post_E_p{post_step}",
+            results.get("post_E_curve", {}).get(str(post_step), ""),
+        )
+        for post_step in range(1, 9)
+    )
+    scalar_rows.extend(
+        (
+            f"Post_E_p{post_step}_count",
+            results.get("post_curve_counts", {}).get(str(post_step), ""),
+        )
+        for post_step in range(1, 9)
+    )
     with csv_path.open("w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["metric", "value"])
